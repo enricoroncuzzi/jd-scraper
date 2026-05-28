@@ -1,0 +1,15 @@
+/obs-jds
+
+# secrets and local config
+.env
+config/config.json
+
+# runtime data
+data/seen_offers.txt
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+

@@ -1,0 +1,16 @@
+{
+  "search": {
+    "role": "AI Engineer",
+    "location": "Europe",
+    "time_range": "r86400"
+  },
+  "scoring": {
+    "threshold": 8,
+    "exclude_keywords": ["Principal", "Staff", "VP", "Director", "10+ years", "8+ years", "C++", "Rust"],
+    "priority_keywords": ["LLM", "RAG", "remote", "FastAPI", "Docker", "PyTorch", "HuggingFace"],
+    "candidate_profile": "Junior ML/AI engineer, MSc Polimi, strong in Python, LLMs, RAG pipelines. Targeting remote EU roles. Experience: LangChain, HuggingFace, FastAPI, Docker."
+  },
+  "telegram": {
+    "greeting": "Hey Enrico!"
+  }
+}
