@@ -6,7 +6,7 @@ from src.models import ScoredOffer
 
 def write_notes(offers: list[ScoredOffer], vault_path: str, threshold: int) -> None:
     today = date.today().isoformat()
-    scraped_dir = os.path.join(vault_path, "jobs", "scraped")
+    scraped_dir = os.path.join(vault_path, "jobs", f"scraped_{today.replace('-', '')}")
     os.makedirs(scraped_dir, exist_ok=True)
     for offer in offers:
         tag = "high-score" if offer.score >= threshold else "low-score"
