@@ -1,6 +1,18 @@
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-from src.models import JobOffer, ScoredOffer, RankedOffers
+from pydantic import BaseModel, Field
+from src.models import JobOffer, ScoredOffer
+
+
+class _ScoringItem(BaseModel):
+    id: int
+    score: int = Field(ge=1, le=10)
+    comment: str = ""
+    summary: str = ""
+
+
+class _ScoringOutput(BaseModel):
+    offers: list[_ScoringItem]
 
 _SYSTEM = """You are a job scoring assistant. Score each job offer from 1 to 10 based on fit with the candidate profile.
 
@@ -29,7 +41,7 @@ def _build_chain(groq_api_key: str):
             ("system", _SYSTEM),
             ("human", _HUMAN),
         ])
-        | llm.with_structured_output(RankedOffers)
+        | llm.with_structured_output(_ScoringOutput)
     )
 
 
@@ -51,7 +63,7 @@ def score_offers(
         for o in offers
     )
 
-    result: RankedOffers = chain.invoke({
+    result: _ScoringOutput = chain.invoke({
         "profile": profile,
         "priority_keywords": ", ".join(priority_keywords),
         "exclude_keywords": ", ".join(exclude_keywords),
@@ -59,5 +71,14 @@ def score_offers(
         "offers": offers_text,
     })
 
-    scored_by_id = {s.id: s for s in result.offers}
-    return [scored_by_id[o.id] for o in offers if o.id in scored_by_id]
+    scoring_by_id = {s.id: s for s in result.offers}
+    return [
+        ScoredOffer(
+            **o.model_dump(),
+            score=scoring_by_id[o.id].score,
+            comment=scoring_by_id[o.id].comment,
+            summary=scoring_by_id[o.id].summary,
+        )
+        for o in offers
+        if o.id in scoring_by_id
+    ]

@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
-from src.models import JobOffer, ScoredOffer, RankedOffers
-from src.scorer import score_offers
+from src.models import JobOffer, ScoredOffer
+from src.scorer import score_offers, _ScoringItem, _ScoringOutput
 
 
 def _make_offers():
@@ -14,25 +14,18 @@ def _make_offers():
     ]
 
 
-def _make_mock_chain(scored_offers):
+def _make_mock_chain(scoring_items):
     chain = MagicMock()
-    chain.invoke.return_value = RankedOffers(offers=scored_offers)
+    chain.invoke.return_value = _ScoringOutput(offers=scoring_items)
     return chain
 
 
 def test_score_offers_returns_scored_offers(monkeypatch):
-    expected = [
-        ScoredOffer(id=0, title="AI Engineer", company="Acme",
-                    location="Milan", link="https://li.com/1",
-                    description="LLM pipeline, RAG, FastAPI",
-                    score=9, comment="Strong LLM/RAG fit", summary="LLM role"),
-        ScoredOffer(id=1, title="Java Developer", company="Corp",
-                    location="London", link="https://li.com/2",
-                    description="",
-                    score=1, comment="Description unavailable — could not evaluate.",
-                    summary=""),
+    scoring = [
+        _ScoringItem(id=0, score=9, comment="Strong LLM/RAG fit", summary="LLM role"),
+        _ScoringItem(id=1, score=1, comment="Description unavailable — could not evaluate.", summary=""),
     ]
-    monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(expected))
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(scoring))
 
     result = score_offers(
         offers=_make_offers(),
@@ -70,12 +63,12 @@ def test_score_offers_preserves_offer_order(monkeypatch):
         JobOffer(id=1, title="B", company="c", link="l1", description="d"),
         JobOffer(id=2, title="C", company="c", link="l2", description="d"),
     ]
-    scored = [
-        ScoredOffer(id=2, title="C", company="c", link="l2", score=7, comment="ok", summary="s"),
-        ScoredOffer(id=0, title="A", company="c", link="l0", score=9, comment="ok", summary="s"),
-        ScoredOffer(id=1, title="B", company="c", link="l1", score=5, comment="ok", summary="s"),
+    scoring = [
+        _ScoringItem(id=2, score=7, comment="ok", summary="s"),
+        _ScoringItem(id=0, score=9, comment="ok", summary="s"),
+        _ScoringItem(id=1, score=5, comment="ok", summary="s"),
     ]
-    monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(scored))
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(scoring))
 
     result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], groq_api_key="k")
 

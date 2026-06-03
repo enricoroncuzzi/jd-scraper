@@ -45,6 +45,7 @@ def test_load_config_raises_on_missing_env(tmp_path, monkeypatch):
         "scoring": {"threshold": 8, "exclude_keywords": [], "priority_keywords": [], "candidate_profile": "x"},
         "telegram": {"greeting": "Hi"}
     }))
+    monkeypatch.setattr("src.config.load_dotenv", lambda: None)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     with pytest.raises(KeyError):
