@@ -6,9 +6,14 @@ from dotenv import load_dotenv
 
 @dataclass
 class SearchConfig:
-    role: str
+    roles: list[str]
     location: str
     time_range: str
+    work_mode: list[str] = None
+
+    def __post_init__(self):
+        if self.work_mode is None:
+            self.work_mode = []
 
 
 @dataclass

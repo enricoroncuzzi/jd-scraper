@@ -5,7 +5,12 @@ from src.config import AppConfig, SearchConfig, ScoringConfig, TelegramConfig
 
 def _mock_config():
     return AppConfig(
-        search=SearchConfig(role="AI Engineer", location="Europe", time_range="r86400"),
+        search=SearchConfig(
+            roles=["AI Engineer", "ML Engineer"],
+            location="Europe",
+            time_range="r86400",
+            work_mode=["remote", "hybrid"],
+        ),
         scoring=ScoringConfig(
             threshold=8,
             exclude_keywords=["VP"],
@@ -48,7 +53,12 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     import main
     main.handler({}, None)
 
-    mock_fetch.assert_called_once_with(role="AI Engineer", location="Europe", time_range="r86400")
+    mock_fetch.assert_called_once_with(
+        roles=["AI Engineer", "ML Engineer"],
+        location="Europe",
+        time_range="r86400",
+        work_modes=["remote", "hybrid"],
+    )
     mock_filter.assert_called_once_with(raw_offers, "/data/seen.txt")
     mock_score.assert_called_once()
     mock_write_notes.assert_called_once_with(scored_offers, "/vault", 8)
@@ -60,7 +70,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
 def test_handler_skips_pipeline_when_no_new_offers(monkeypatch):
     mock_load_config = MagicMock(return_value=_mock_config())
     mock_fetch = MagicMock(return_value=[JobOffer(id=0, title="t", company="c", link="l")])
-    mock_filter = MagicMock(return_value=[])  # all seen
+    mock_filter = MagicMock(return_value=[])
     mock_score = MagicMock()
 
     monkeypatch.setattr("main.load_config", mock_load_config)

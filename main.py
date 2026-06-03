@@ -11,9 +11,10 @@ def handler(event: dict, context) -> None:
 
     print("[main] Fetching offers...")
     raw_offers = fetch_offers(
-        role=config.search.role,
+        roles=config.search.roles,
         location=config.search.location,
         time_range=config.search.time_range,
+        work_modes=config.search.work_mode,
     )
     print(f"[main] Fetched {len(raw_offers)} offers")
 

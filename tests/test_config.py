@@ -6,7 +6,12 @@ from src.config import load_config
 def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
     config_file = tmp_path / "config.json"
     config_file.write_text(json.dumps({
-        "search": {"role": "AI Engineer", "location": "Europe", "time_range": "r86400"},
+        "search": {
+            "roles": ["AI Engineer", "ML Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote", "hybrid"]
+        },
         "scoring": {
             "threshold": 8,
             "exclude_keywords": ["VP"],
@@ -23,9 +28,10 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
 
     config = load_config(str(config_file))
 
-    assert config.search.role == "AI Engineer"
+    assert config.search.roles == ["AI Engineer", "ML Engineer"]
     assert config.search.location == "Europe"
     assert config.search.time_range == "r86400"
+    assert config.search.work_mode == ["remote", "hybrid"]
     assert config.scoring.threshold == 8
     assert config.scoring.exclude_keywords == ["VP"]
     assert config.scoring.priority_keywords == ["LLM"]
@@ -41,7 +47,12 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
 def test_load_config_raises_on_missing_env(tmp_path, monkeypatch):
     config_file = tmp_path / "config.json"
     config_file.write_text(json.dumps({
-        "search": {"role": "AI Engineer", "location": "Europe", "time_range": "r86400"},
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote"]
+        },
         "scoring": {"threshold": 8, "exclude_keywords": [], "priority_keywords": [], "candidate_profile": "x"},
         "telegram": {"greeting": "Hi"}
     }))

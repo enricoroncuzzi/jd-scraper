@@ -12,9 +12,45 @@ HEADERS = {
     )
 }
 
+_WORK_MODE_MAP = {"remote": "2", "hybrid": "3"}
 
-def fetch_offers(role: str, location: str, time_range: str) -> list[JobOffer]:
+
+def fetch_offers(
+    roles: list[str],
+    location: str,
+    time_range: str,
+    work_modes: list[str] = None,
+) -> list[JobOffer]:
+    work_modes = work_modes or []
+    modes = work_modes if work_modes else [None]
+
+    all_offers: list[JobOffer] = []
+    seen_links: set[str] = set()
+    offer_id = 0
+
+    for role in roles:
+        for mode in modes:
+            offers = _fetch_for_query(role, location, time_range, mode, start_id=offer_id)
+            for offer in offers:
+                if offer.link not in seen_links:
+                    seen_links.add(offer.link)
+                    all_offers.append(offer)
+                    offer_id += 1
+
+    return all_offers
+
+
+def _fetch_for_query(
+    role: str,
+    location: str,
+    time_range: str,
+    work_mode: str | None,
+    start_id: int = 0,
+) -> list[JobOffer]:
     params = {"keywords": role, "location": location, "f_TPR": time_range, "start": 0}
+    if work_mode and work_mode in _WORK_MODE_MAP:
+        params["f_WT"] = _WORK_MODE_MAP[work_mode]
+
     response = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=15)
     if response.status_code != 200:
         raise RuntimeError(f"LinkedIn search returned {response.status_code}")
@@ -41,7 +77,7 @@ def fetch_offers(role: str, location: str, time_range: str) -> list[JobOffer]:
         time.sleep(1)
 
         offers.append(JobOffer(
-            id=i,
+            id=start_id + i,
             title=title,
             company=company,
             location=loc,
