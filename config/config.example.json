@@ -1,16 +1,26 @@
 {
   "search": {
-    "role": "AI Engineer",
+    "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
     "location": "Europe",
-    "time_range": "r86400"
+    "time_range": "r86400",
+    "work_mode": ["remote", "hybrid"]
   },
   "scoring": {
     "threshold": 8,
-    "exclude_keywords": ["Principal", "Staff", "VP", "Director", "10+ years", "8+ years", "C++", "Rust"],
-    "priority_keywords": ["LLM", "RAG", "remote", "FastAPI", "Docker", "PyTorch", "HuggingFace"],
-    "candidate_profile": "Junior ML/AI engineer, MSc Polimi, strong in Python, LLMs, RAG pipelines. Targeting remote EU roles. Experience: LangChain, HuggingFace, FastAPI, Docker."
+    "exclude_keywords": [
+      "Principal", "Staff", "VP", "Director",
+      "10+ years", "8+ years", "7+ years",
+      "C++", "Rust", "Java", "on-site only"
+    ],
+    "priority_keywords": [
+      "LLM", "RAG", "agentic", "LangChain", "LangGraph",
+      "PyTorch", "HuggingFace", "FastAPI", "Docker",
+      "MLflow", "LoRA", "PEFT", "fine-tuning",
+      "MoE", "multimodal", "remote"
+    ],
+    "candidate_profile": "Describe yourself here: your background, key skills, and what kind of role you are targeting."
   },
   "telegram": {
-    "greeting": "Hey Enrico!"
+    "greeting": "Hey!"
   }
 }
