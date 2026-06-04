@@ -3,6 +3,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from src.models import JobOffer, ScoredOffer
 
+BATCH_SIZE = 10
+
 
 class _ScoringItem(BaseModel):
     id: int
@@ -13,6 +15,7 @@ class _ScoringItem(BaseModel):
 
 class _ScoringOutput(BaseModel):
     offers: list[_ScoringItem]
+
 
 _SYSTEM = """You are a job scoring assistant. Score each job offer from 1 to 10 based on fit with the candidate profile.
 
@@ -45,6 +48,22 @@ def _build_chain(groq_api_key: str):
     )
 
 
+def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str]) -> list[_ScoringItem]:
+    offers_text = "\n\n".join(
+        f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
+        f"Location: {o.location}\nDescription: {o.description or '(empty)'}"
+        for o in batch
+    )
+    result: _ScoringOutput = chain.invoke({
+        "profile": profile,
+        "priority_keywords": ", ".join(priority_keywords),
+        "exclude_keywords": ", ".join(exclude_keywords),
+        "count": len(batch),
+        "offers": offers_text,
+    })
+    return result.offers
+
+
 def score_offers(
     offers: list[JobOffer],
     profile: str,
@@ -57,21 +76,13 @@ def score_offers(
 
     chain = _build_chain(groq_api_key)
 
-    offers_text = "\n\n".join(
-        f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
-        f"Location: {o.location}\nDescription: {o.description or '(empty)'}"
-        for o in offers
-    )
+    all_scoring: list[_ScoringItem] = []
+    for i in range(0, len(offers), BATCH_SIZE):
+        batch = offers[i:i + BATCH_SIZE]
+        print(f"[scorer] Scoring batch {i // BATCH_SIZE + 1}/{(len(offers) - 1) // BATCH_SIZE + 1} ({len(batch)} offers)...")
+        all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords))
 
-    result: _ScoringOutput = chain.invoke({
-        "profile": profile,
-        "priority_keywords": ", ".join(priority_keywords),
-        "exclude_keywords": ", ".join(exclude_keywords),
-        "count": len(offers),
-        "offers": offers_text,
-    })
-
-    scoring_by_id = {s.id: s for s in result.offers}
+    scoring_by_id = {s.id: s for s in all_scoring}
     return [
         ScoredOffer(
             **o.model_dump(),

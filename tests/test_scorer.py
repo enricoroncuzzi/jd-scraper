@@ -57,6 +57,33 @@ def test_score_offers_returns_empty_on_empty_input(monkeypatch):
     mock_chain.invoke.assert_not_called()
 
 
+def test_score_offers_batches_large_input(monkeypatch):
+    from src.scorer import BATCH_SIZE
+    # Create BATCH_SIZE + 1 offers to force two batches
+    offers = [
+        JobOffer(id=i, title=f"Role {i}", company="c", link=f"l{i}", description="d")
+        for i in range(BATCH_SIZE + 1)
+    ]
+    scoring = [_ScoringItem(id=i, score=5, comment="ok", summary="s") for i in range(BATCH_SIZE + 1)]
+
+    # Side-effect: return first BATCH_SIZE items on first call, remaining on second
+    call_count = {"n": 0}
+    def invoke_side_effect(payload):
+        batch_ids = [int(line.split(": ")[1]) for line in payload["offers"].split("\n") if line.startswith("ID:")]
+        items = [s for s in scoring if s.id in batch_ids]
+        call_count["n"] += 1
+        return _ScoringOutput(offers=items)
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+
+    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], groq_api_key="k")
+
+    assert mock_chain.invoke.call_count == 2  # two batches
+    assert len(result) == BATCH_SIZE + 1
+
+
 def test_score_offers_preserves_offer_order(monkeypatch):
     offers = [
         JobOffer(id=0, title="A", company="c", link="l0", description="d"),
