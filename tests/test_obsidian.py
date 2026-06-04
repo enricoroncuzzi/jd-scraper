@@ -82,6 +82,15 @@ def test_write_digest_has_high_and_low_sections(tmp_path):
     assert "1 offers below threshold" in content
 
 
+def test_write_digest_contains_wikilink_to_note(tmp_path):
+    offers = [_offer(0, "AI Engineer", "Acme", 9)]
+    write_digest(offers, str(tmp_path), threshold=8)
+    content = list((tmp_path / "jobs" / "digest").glob("*.md"))[0].read_text()
+    today = date.today().isoformat()
+    expected_link = f"[[{today}_acme_ai_engineer]]"
+    assert expected_link in content
+
+
 def test_write_digest_only_high(tmp_path):
     offers = [_offer(0, "AI Engineer", "Acme", 9)]
     write_digest(offers, str(tmp_path), threshold=8)
