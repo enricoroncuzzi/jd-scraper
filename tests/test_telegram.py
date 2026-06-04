@@ -42,6 +42,36 @@ def test_send_summary_no_offers(monkeypatch):
     assert "No new offers" in mock_post.call_args[1]["json"]["text"]
 
 
+def test_send_summary_message_fits_telegram_limit(monkeypatch):
+    mock_response = MagicMock()
+    mock_response.ok = True
+    mock_post = MagicMock(return_value=mock_response)
+    monkeypatch.setattr("src.telegram.requests.post", mock_post)
+
+    # 60 high-score offers — simulates the real failure case
+    offers = [_offer(i, f"AI Engineer Role {i}", 9) for i in range(60)]
+    send_summary(offers, threshold=8, greeting="Hey Enrico!", token="t", chat_id="c")
+
+    text = mock_post.call_args[1]["json"]["text"]
+    assert len(text) <= 4096
+
+
+def test_send_summary_shows_top5_high_score_with_remainder_note(monkeypatch):
+    mock_response = MagicMock()
+    mock_response.ok = True
+    mock_post = MagicMock(return_value=mock_response)
+    monkeypatch.setattr("src.telegram.requests.post", mock_post)
+
+    offers = [_offer(i, f"Role {i}", 9) for i in range(8)]
+    send_summary(offers, threshold=8, greeting="Hey!", token="t", chat_id="c")
+
+    text = mock_post.call_args[1]["json"]["text"]
+    assert "Role 0" in text  # top 5 shown
+    assert "Role 4" in text
+    assert "Role 5" not in text  # 6th not shown in detail
+    assert "+3 more" in text  # remainder noted
+
+
 def test_send_summary_logs_on_failure(monkeypatch, capsys):
     mock_response = MagicMock()
     mock_response.ok = False
