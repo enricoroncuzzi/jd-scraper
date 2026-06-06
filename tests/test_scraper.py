@@ -132,6 +132,14 @@ def test_fetch_offers_deduplicates_across_roles(monkeypatch):
     assert len(offers) == 1
 
 
+def test_fetch_offers_stores_work_mode_on_offer(monkeypatch):
+    monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400", work_modes=["remote"])
+    assert offers[0].work_mode == "remote"
+
+
 def test_fetch_offers_passes_work_mode_remote(monkeypatch):
     captured = {}
 

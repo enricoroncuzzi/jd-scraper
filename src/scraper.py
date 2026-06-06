@@ -83,6 +83,7 @@ def _fetch_for_query(
             location=loc,
             link=link,
             description=description,
+            work_mode=work_mode or "",
         ))
 
     return offers

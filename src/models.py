@@ -8,6 +8,7 @@ class JobOffer(BaseModel):
     location: str = "N/A"
     link: str
     description: str = ""
+    work_mode: str = ""
 
 
 class ScoredOffer(JobOffer):

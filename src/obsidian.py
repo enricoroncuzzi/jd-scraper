@@ -69,7 +69,9 @@ def _format_digest(offers: list[ScoredOffer], today: str, threshold: int) -> str
         lines.append(f"## High-Score Offers (≥{threshold})\n")
         for o in sorted(high, key=lambda x: x.score, reverse=True):
             note_name = f"{today}_{_slugify(o.company)}_{_slugify(o.title)}"
-            lines.append(f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location} · [link]({o.link}) · [[{note_name}]]")
+            mode_label = o.work_mode.capitalize() if o.work_mode else ""
+            mode_part = f" · {mode_label}" if mode_label else ""
+            lines.append(f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location}{mode_part} · [link]({o.link}) · [[{note_name}]]")
             lines.append(f"  {o.summary}\n")
 
     if low:

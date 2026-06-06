@@ -7,6 +7,7 @@ def test_job_offer_optional_fields_have_defaults():
     offer = JobOffer(id=1, title="AI Engineer", company="Acme", link="https://li.com/1")
     assert offer.location == "N/A"
     assert offer.description == ""
+    assert offer.work_mode == ""
 
 
 def test_job_offer_accepts_all_fields():

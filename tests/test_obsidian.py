@@ -4,11 +4,11 @@ from src.models import ScoredOffer
 from src.obsidian import write_notes, write_digest
 
 
-def _offer(id, title, company, score, location="EU", description="desc"):
+def _offer(id, title, company, score, location="EU", description="desc", work_mode="remote"):
     return ScoredOffer(
         id=id, title=title, company=company, location=location,
         link=f"https://li.com/{id}", description=description,
-        score=score, comment="ok", summary="summary here"
+        score=score, comment="ok", summary="summary here", work_mode=work_mode
     )
 
 
@@ -80,6 +80,20 @@ def test_write_digest_has_high_and_low_sections(tmp_path):
     assert "Low-Score" in content
     assert "AI Engineer" in content
     assert "1 offers below threshold" in content
+
+
+def test_write_digest_shows_work_mode(tmp_path):
+    offers = [_offer(0, "AI Engineer", "Acme", 9, work_mode="remote")]
+    write_digest(offers, str(tmp_path), threshold=8)
+    content = list((tmp_path / "jobs" / "digest").glob("*.md"))[0].read_text()
+    assert "Remote" in content
+
+
+def test_write_digest_shows_hybrid_work_mode(tmp_path):
+    offers = [_offer(0, "AI Engineer", "Acme", 9, work_mode="hybrid")]
+    write_digest(offers, str(tmp_path), threshold=8)
+    content = list((tmp_path / "jobs" / "digest").glob("*.md"))[0].read_text()
+    assert "Hybrid" in content
 
 
 def test_write_digest_contains_wikilink_to_note(tmp_path):
