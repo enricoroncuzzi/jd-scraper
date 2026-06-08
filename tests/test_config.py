@@ -61,3 +61,102 @@ def test_load_config_raises_on_missing_env(tmp_path, monkeypatch):
 
     with pytest.raises(KeyError):
         load_config(str(config_file))
+
+
+def test_load_config_reads_tier_countries_and_dedup_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "fallback-dedup.txt")
+
+    config_data = {
+        "tier": 1,
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "countries": ["Italy", "Spain"],
+            "time_range": "r86400",
+            "work_mode": ["remote"]
+        },
+        "scoring": {
+            "threshold": 8,
+            "exclude_keywords": [],
+            "priority_keywords": [],
+            "candidate_profile": "test profile"
+        },
+        "telegram": {"greeting": "Hey!"},
+        "dedup_log_path": "data/seen_tier1.txt"
+    }
+    config_path = tmp_path / "config_tier1.json"
+    config_path.write_text(json.dumps(config_data))
+
+    config = load_config(str(config_path))
+
+    assert config.tier == 1
+    assert config.search.countries == ["Italy", "Spain"]
+    assert config.dedup_log_path == "data/seen_tier1.txt"
+
+
+def test_load_config_uses_json_dedup_path_when_present_and_nonempty(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "fallback-dedup.txt")
+
+    config_data = {
+        "tier": 0,
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote"]
+        },
+        "scoring": {
+            "threshold": 8,
+            "exclude_keywords": [],
+            "priority_keywords": [],
+            "candidate_profile": "test profile"
+        },
+        "telegram": {"greeting": "Hey!"},
+        "dedup_log_path": "data/seen_explicit.txt"
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config_data))
+
+    config = load_config(str(config_path))
+
+    assert config.dedup_log_path == "data/seen_explicit.txt"
+
+
+def test_load_config_falls_back_to_env_dedup_path_when_not_in_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "fallback-dedup.txt")
+
+    config_data = {
+        "tier": 0,
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote"]
+        },
+        "scoring": {
+            "threshold": 8,
+            "exclude_keywords": [],
+            "priority_keywords": [],
+            "candidate_profile": "test profile"
+        },
+        "telegram": {"greeting": "Hey!"}
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config_data))
+
+    config = load_config(str(config_path))
+
+    assert config.dedup_log_path == "fallback-dedup.txt"
+    assert config.search.countries == []

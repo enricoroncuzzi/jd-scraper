@@ -201,3 +201,46 @@ def test_fetch_offers_both_work_modes_makes_two_calls_per_role(monkeypatch):
 
     fetch_offers(["AI Engineer"], "Europe", "r86400", work_modes=["remote", "hybrid"])
     assert search_call_count["n"] == 2  # one per work_mode
+
+
+def _make_location_capturing_mock_get(captured_locations):
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            captured_locations.append(kwargs["params"]["location"])
+            resp.status_code = 200
+            resp.text = "<ul></ul>"
+        else:
+            resp.status_code = 200
+            resp.text = ""
+        return resp
+    return mock_get
+
+
+def test_fetch_offers_queries_each_country_when_provided(monkeypatch):
+    captured_locations = []
+
+    monkeypatch.setattr("src.scraper.requests.get", _make_location_capturing_mock_get(captured_locations))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400", countries=["Italy", "Spain"])
+    assert captured_locations == ["Italy", "Spain"]
+
+
+def test_fetch_offers_falls_back_to_location_when_no_countries(monkeypatch):
+    captured_locations = []
+
+    monkeypatch.setattr("src.scraper.requests.get", _make_location_capturing_mock_get(captured_locations))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+    assert captured_locations == ["Europe"]
+
+
+def test_fetch_offers_deduplicates_across_countries(monkeypatch):
+    # Same offer link returned for both countries — should appear once
+    monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400", countries=["Italy", "Spain"])
+    assert len(offers) == 1

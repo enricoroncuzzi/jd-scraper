@@ -10,10 +10,13 @@ class SearchConfig:
     location: str
     time_range: str
     work_mode: list[str] = None
+    countries: list[str] = None
 
     def __post_init__(self):
         if self.work_mode is None:
             self.work_mode = []
+        if self.countries is None:
+            self.countries = []
 
 
 @dataclass
@@ -34,6 +37,7 @@ class AppConfig:
     search: SearchConfig
     scoring: ScoringConfig
     telegram: TelegramConfig
+    tier: int
     groq_api_key: str
     telegram_token: str
     telegram_chat_id: str
@@ -49,9 +53,10 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         search=SearchConfig(**data["search"]),
         scoring=ScoringConfig(**data["scoring"]),
         telegram=TelegramConfig(**data["telegram"]),
+        tier=data.get("tier", 0),
         groq_api_key=os.environ["GROQ_API_KEY"],
         telegram_token=os.environ["TELEGRAM_TOKEN"],
         telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
         obsidian_vault_path=os.environ["OBSIDIAN_VAULT_PATH"],
-        dedup_log_path=os.environ["DEDUP_LOG_PATH"],
+        dedup_log_path=data["dedup_log_path"] if "dedup_log_path" in data else os.environ["DEDUP_LOG_PATH"],
     )

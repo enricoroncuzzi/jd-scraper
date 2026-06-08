@@ -1,24 +1,30 @@
+import sys
 from src.config import load_config
 from src.scraper import fetch_offers
+from src.language_filter import filter_by_language
 from src.dedup import filter_new, mark_seen
 from src.scorer import score_offers
 from src.obsidian import write_notes, write_digest
 from src.telegram import send_summary
 
 
-def handler(event: dict, context) -> None:
-    config = load_config()
+def handler(event: dict, context, config_path: str = "config/config.json") -> None:
+    config = load_config(config_path)
 
-    print("[main] Fetching offers...")
+    print(f"[main] Tier {config.tier} — fetching offers...")
     raw_offers = fetch_offers(
         roles=config.search.roles,
         location=config.search.location,
         time_range=config.search.time_range,
         work_modes=config.search.work_mode,
+        countries=config.search.countries,
     )
     print(f"[main] Fetched {len(raw_offers)} offers")
 
-    new_offers = filter_new(raw_offers, config.dedup_log_path)
+    language_filtered = filter_by_language(raw_offers)
+    print(f"[main] {len(language_filtered)} offers after language filter")
+
+    new_offers = filter_new(language_filtered, config.dedup_log_path)
     print(f"[main] {len(new_offers)} new offers after dedup")
 
     if not new_offers:
@@ -36,7 +42,7 @@ def handler(event: dict, context) -> None:
 
     print("[main] Writing to Obsidian vault...")
     write_notes(scored, config.obsidian_vault_path, config.scoring.threshold)
-    write_digest(scored, config.obsidian_vault_path, config.scoring.threshold)
+    write_digest(scored, config.obsidian_vault_path, config.scoring.threshold, tier=config.tier)
 
     print("[main] Sending Telegram summary...")
     send_summary(
@@ -52,4 +58,5 @@ def handler(event: dict, context) -> None:
 
 
 if __name__ == "__main__":
-    handler({}, None)
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "config/config.json"
+    handler({}, None, config_path=config_path)

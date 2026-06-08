@@ -1,0 +1,29 @@
+{
+  "tier": 3,
+  "search": {
+    "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
+    "location": "Europe",
+    "countries": ["United Kingdom", "Switzerland"],
+    "time_range": "r86400",
+    "work_mode": ["remote", "hybrid"]
+  },
+  "scoring": {
+    "threshold": 8,
+    "exclude_keywords": [
+      "Principal", "Staff", "VP", "Director",
+      "10+ years", "8+ years", "7+ years",
+      "C++", "Rust", "Java", "on-site only"
+    ],
+    "priority_keywords": [
+      "LLM", "RAG", "agentic", "LangChain", "LangGraph",
+      "PyTorch", "HuggingFace", "FastAPI", "Docker",
+      "MLflow", "LoRA", "PEFT", "fine-tuning",
+      "MoE", "multimodal", "remote"
+    ],
+    "candidate_profile": "ML/AI Software Engineer, MSc Computer Science Politecnico di Milano (graduated Apr 2025). Thesis: end-to-end Mixture-of-Experts forensic image detection system — HuggingFace dataset, PyTorch Lightning training, FastAPI/Docker deployment, live HuggingFace Space, 94.1% balanced accuracy. Skills: Python, PyTorch, LangChain, LangGraph, RAG pipelines, agentic AI, fine-tuning (LoRA/PEFT), FastAPI, Docker, GitHub Actions CI/CD, MLflow, HuggingFace (Spaces + Hub), AWS (S3, EC2). Looking for fully remote or hybrid EU roles as ML/AI Engineer, Software Engineer (AI focus), or similar. Junior level, strong hands-on shipping record."
+  },
+  "telegram": {
+    "greeting": "Hey Enrico! Tier 3 (UK / Switzerland) digest is ready."
+  },
+  "dedup_log_path": "data/seen_tier3.txt"
+}

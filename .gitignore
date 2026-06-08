@@ -5,7 +5,7 @@
 config/config.json
 
 # runtime data
-data/seen_offers.txt
+data/seen_*.txt
 
 # python
 .venv/

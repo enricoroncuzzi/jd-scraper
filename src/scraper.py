@@ -20,22 +20,25 @@ def fetch_offers(
     location: str,
     time_range: str,
     work_modes: list[str] = None,
+    countries: list[str] = None,
 ) -> list[JobOffer]:
     work_modes = work_modes or []
     modes = work_modes if work_modes else [None]
+    locations = countries if countries else [location]
 
     all_offers: list[JobOffer] = []
     seen_links: set[str] = set()
     offer_id = 0
 
-    for role in roles:
-        for mode in modes:
-            offers = _fetch_for_query(role, location, time_range, mode, start_id=offer_id)
-            for offer in offers:
-                if offer.link not in seen_links:
-                    seen_links.add(offer.link)
-                    all_offers.append(offer)
-                    offer_id += 1
+    for loc in locations:
+        for role in roles:
+            for mode in modes:
+                offers = _fetch_for_query(role, loc, time_range, mode, start_id=offer_id)
+                for offer in offers:
+                    if offer.link not in seen_links:
+                        seen_links.add(offer.link)
+                        all_offers.append(offer)
+                        offer_id += 1
 
     return all_offers
 
