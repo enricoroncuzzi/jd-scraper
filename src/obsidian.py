@@ -19,13 +19,17 @@ def write_notes(offers: list[ScoredOffer], vault_path: str, threshold: int) -> N
             print(f"[obsidian] Failed to write {path}: {e}")
 
 
-def write_digest(offers: list[ScoredOffer], vault_path: str, threshold: int) -> None:
-    today = date.today().isoformat()
-    digest_dir = os.path.join(vault_path, "jobs", "digest")
-    os.makedirs(digest_dir, exist_ok=True)
-    path = os.path.join(digest_dir, f"{today}_digest.md")
-    with open(path, "w") as f:
-        f.write(_format_digest(offers, today, threshold))
+def write_digest(offers: list[ScoredOffer], vault_path: str, threshold: int, tier: int, offer_cap: int = 20) -> None:
+    today = date.today()
+    folder_name = f"digest_{today.strftime('%d%m%Y')}"
+    tier_dir = os.path.join(vault_path, "jobs", folder_name, f"tier{tier}")
+    os.makedirs(tier_dir, exist_ok=True)
+
+    for mode in ("remote", "hybrid"):
+        mode_offers = [o for o in offers if o.work_mode == mode]
+        path = os.path.join(tier_dir, f"{mode}.md")
+        with open(path, "w") as f:
+            f.write(_format_digest(mode_offers, today.isoformat(), threshold, offer_cap))
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -57,21 +61,19 @@ def _format_note(offer: ScoredOffer, tag: str, today: str) -> str:
     )
 
 
-def _format_digest(offers: list[ScoredOffer], today: str, threshold: int) -> str:
+def _format_digest(offers: list[ScoredOffer], today: str, threshold: int, offer_cap: int) -> str:
     if not offers:
         return f"# Job Digest — {today}\n\nNo new offers after dedup filter.\n"
 
-    high = [o for o in offers if o.score >= threshold]
+    high = sorted([o for o in offers if o.score >= threshold], key=lambda x: x.score, reverse=True)[:offer_cap]
     low = [o for o in offers if o.score < threshold]
     lines = [f"# Job Digest — {today}\n"]
 
     if high:
         lines.append(f"## High-Score Offers (≥{threshold})\n")
-        for o in sorted(high, key=lambda x: x.score, reverse=True):
+        for o in high:
             note_name = f"{today}_{_slugify(o.company)}_{_slugify(o.title)}"
-            mode_label = o.work_mode.capitalize() if o.work_mode else ""
-            mode_part = f" · {mode_label}" if mode_label else ""
-            lines.append(f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location}{mode_part} · [link]({o.link}) · [[{note_name}]]")
+            lines.append(f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location} · [link]({o.link}) · [[{note_name}]]")
             lines.append(f"  {o.summary}\n")
 
     if low:
