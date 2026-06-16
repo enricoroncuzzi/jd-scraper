@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from src.models import JobOffer, ScoredOffer
 
 BATCH_SIZE = 10
+_MAX_DESC_CHARS = 3000
 
 
 class _ScoringItem(BaseModel):
@@ -51,7 +52,7 @@ def _build_chain(groq_api_key: str):
 def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str]) -> list[_ScoringItem]:
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
-        f"Location: {o.location}\nDescription: {o.description or '(empty)'}"
+        f"Location: {o.location}\nDescription: {o.description[:_MAX_DESC_CHARS] or '(empty)'}"
         for o in batch
     )
     result: _ScoringOutput = chain.invoke({

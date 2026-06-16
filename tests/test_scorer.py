@@ -84,6 +84,25 @@ def test_score_offers_batches_large_input(monkeypatch):
     assert len(result) == BATCH_SIZE + 1
 
 
+def test_scorer_truncates_long_descriptions(monkeypatch):
+    from src.scorer import _MAX_DESC_CHARS
+    long_desc = "x" * (_MAX_DESC_CHARS + 500)
+    offer = JobOffer(id=0, title="Role", company="Co", link="l", description=long_desc)
+
+    captured = {}
+    def invoke_side_effect(payload):
+        captured["offers_text"] = payload["offers"]
+        return _ScoringOutput(offers=[_ScoringItem(id=0, score=5, comment="ok", summary="s")])
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+
+    score_offers(offers=[offer], profile="p", priority_keywords=[], exclude_keywords=[], groq_api_key="k")
+
+    assert "x" * (_MAX_DESC_CHARS + 1) not in captured["offers_text"]
+
+
 def test_score_offers_preserves_offer_order(monkeypatch):
     offers = [
         JobOffer(id=0, title="A", company="c", link="l0", description="d"),
