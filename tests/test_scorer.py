@@ -32,7 +32,7 @@ def test_score_offers_returns_scored_offers(monkeypatch):
         profile="test profile",
         priority_keywords=["LLM"],
         exclude_keywords=["Java"],
-        groq_api_key="test-key",
+        llm_api_key="test-key",
     )
 
     assert len(result) == 2
@@ -50,7 +50,7 @@ def test_score_offers_returns_empty_on_empty_input(monkeypatch):
         profile="p",
         priority_keywords=[],
         exclude_keywords=[],
-        groq_api_key="key",
+        llm_api_key="key",
     )
 
     assert result == []
@@ -78,7 +78,7 @@ def test_score_offers_batches_large_input(monkeypatch):
     mock_chain.invoke.side_effect = invoke_side_effect
     monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
 
-    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], groq_api_key="k")
+    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert mock_chain.invoke.call_count == 2  # two batches
     assert len(result) == BATCH_SIZE + 1
@@ -98,7 +98,7 @@ def test_scorer_truncates_long_descriptions(monkeypatch):
     mock_chain.invoke.side_effect = invoke_side_effect
     monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
 
-    score_offers(offers=[offer], profile="p", priority_keywords=[], exclude_keywords=[], groq_api_key="k")
+    score_offers(offers=[offer], profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert "x" * (_MAX_DESC_CHARS + 1) not in captured["offers_text"]
 
@@ -116,6 +116,6 @@ def test_score_offers_preserves_offer_order(monkeypatch):
     ]
     monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(scoring))
 
-    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], groq_api_key="k")
+    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert [r.id for r in result] == [0, 1, 2]

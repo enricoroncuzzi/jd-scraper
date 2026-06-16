@@ -1,9 +1,9 @@
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from src.models import JobOffer, ScoredOffer
 
-BATCH_SIZE = 10
+BATCH_SIZE = 5
 _MAX_DESC_CHARS = 3000
 
 
@@ -38,8 +38,12 @@ Score these {count} job offers:
 Return all {count} offers. Each must have: id (same as input), score (1-10), comment (one sentence reason), summary (one sentence describing the role)."""
 
 
-def _build_chain(groq_api_key: str):
-    llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=groq_api_key)
+_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
+_CEREBRAS_MODEL = "gpt-oss-120b"
+
+
+def _build_chain(llm_api_key: str):
+    llm = ChatOpenAI(model=_CEREBRAS_MODEL, api_key=llm_api_key, base_url=_CEREBRAS_BASE_URL)
     return (
         ChatPromptTemplate.from_messages([
             ("system", _SYSTEM),
@@ -70,12 +74,12 @@ def score_offers(
     profile: str,
     priority_keywords: list[str],
     exclude_keywords: list[str],
-    groq_api_key: str,
+    llm_api_key: str,
 ) -> list[ScoredOffer]:
     if not offers:
         return []
 
-    chain = _build_chain(groq_api_key)
+    chain = _build_chain(llm_api_key)
 
     all_scoring: list[_ScoringItem] = []
     for i in range(0, len(offers), BATCH_SIZE):

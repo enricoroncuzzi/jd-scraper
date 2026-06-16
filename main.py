@@ -37,7 +37,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         profile=config.scoring.candidate_profile,
         priority_keywords=config.scoring.priority_keywords,
         exclude_keywords=config.scoring.exclude_keywords,
-        groq_api_key=config.groq_api_key,
+        llm_api_key=config.llm_api_key,
     )
 
     print("[main] Writing to Obsidian vault...")

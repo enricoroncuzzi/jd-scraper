@@ -20,7 +20,7 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
         },
         "telegram": {"greeting": "Hey!"}
     }))
-    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123456")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "/vault")
@@ -37,7 +37,7 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
     assert config.scoring.priority_keywords == ["LLM"]
     assert config.scoring.candidate_profile == "test profile"
     assert config.telegram.greeting == "Hey!"
-    assert config.groq_api_key == "test-groq-key"
+    assert config.llm_api_key == "test-llm-key"
     assert config.telegram_token == "test-token"
     assert config.telegram_chat_id == "123456"
     assert config.obsidian_vault_path == "/vault"
@@ -57,14 +57,14 @@ def test_load_config_raises_on_missing_env(tmp_path, monkeypatch):
         "telegram": {"greeting": "Hi"}
     }))
     monkeypatch.setattr("src.config.load_dotenv", lambda: None)
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
 
     with pytest.raises(KeyError):
         load_config(str(config_file))
 
 
 def test_load_config_reads_tier_countries_and_dedup_override(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
@@ -99,7 +99,7 @@ def test_load_config_reads_tier_countries_and_dedup_override(tmp_path, monkeypat
 
 
 def test_load_config_uses_json_dedup_path_when_present_and_nonempty(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
@@ -131,7 +131,7 @@ def test_load_config_uses_json_dedup_path_when_present_and_nonempty(tmp_path, mo
 
 
 def test_load_config_falls_back_to_env_dedup_path_when_not_in_json(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")

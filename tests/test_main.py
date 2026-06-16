@@ -20,7 +20,7 @@ def _mock_config():
         ),
         telegram=TelegramConfig(greeting="Hey!"),
         tier=1,
-        groq_api_key="test-key",
+        llm_api_key="test-key",
         telegram_token="test-token",
         telegram_chat_id="123",
         obsidian_vault_path="/vault",

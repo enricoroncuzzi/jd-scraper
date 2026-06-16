@@ -38,7 +38,7 @@ class AppConfig:
     scoring: ScoringConfig
     telegram: TelegramConfig
     tier: int
-    groq_api_key: str
+    llm_api_key: str
     telegram_token: str
     telegram_chat_id: str
     obsidian_vault_path: str
@@ -54,7 +54,7 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         scoring=ScoringConfig(**data["scoring"]),
         telegram=TelegramConfig(**data["telegram"]),
         tier=data.get("tier", 0),
-        groq_api_key=os.environ["GROQ_API_KEY"],
+        llm_api_key=os.environ["LLM_API_KEY"],
         telegram_token=os.environ["TELEGRAM_TOKEN"],
         telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
         obsidian_vault_path=os.environ["OBSIDIAN_VAULT_PATH"],
