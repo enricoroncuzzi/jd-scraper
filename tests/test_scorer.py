@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+import openai
 from src.models import JobOffer, ScoredOffer
 from src.scorer import score_offers, _ScoringItem, _ScoringOutput
 
@@ -83,6 +84,31 @@ def test_score_offers_batches_large_input(monkeypatch):
     assert mock_chain.invoke.call_count == 2  # two batches
     assert len(result) == BATCH_SIZE + 1
 
+
+def test_scorer_retries_on_rate_limit(monkeypatch):
+    offers = [JobOffer(id=0, title="R", company="c", link="l", description="d")]
+    scoring = [_ScoringItem(id=0, score=5, comment="ok", summary="s")]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise openai.RateLimitError(
+                "queue_exceeded",
+                response=MagicMock(status_code=429, headers={}),
+                body={},
+            )
+        return _ScoringOutput(offers=scoring)
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == 1
+    assert mock_chain.invoke.call_count == 3
 
 
 def test_score_offers_preserves_offer_order(monkeypatch):

@@ -1,3 +1,5 @@
+import time
+import openai
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -52,20 +54,29 @@ def _build_chain(llm_api_key: str):
     )
 
 
-def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str]) -> list[_ScoringItem]:
+def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str], max_retries: int = 5) -> list[_ScoringItem]:
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
         f"Location: {o.location}\nDescription: {o.description or '(empty)'}"
         for o in batch
     )
-    result: _ScoringOutput = chain.invoke({
+    payload = {
         "profile": profile,
         "priority_keywords": ", ".join(priority_keywords),
         "exclude_keywords": ", ".join(exclude_keywords),
         "count": len(batch),
         "offers": offers_text,
-    })
-    return result.offers
+    }
+    for attempt in range(max_retries):
+        try:
+            result: _ScoringOutput = chain.invoke(payload)
+            return result.offers
+        except openai.RateLimitError:
+            if attempt == max_retries - 1:
+                raise
+            wait = 5 * (2 ** attempt)
+            print(f"[scorer] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(wait)
 
 
 def score_offers(
