@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from src.models import JobOffer, ScoredOffer
 
 BATCH_SIZE = 5
+_MAX_DESC_CHARS = 5000  # truncate only in LLM prompt; full description preserved in JobOffer
 
 
 class _ScoringItem(BaseModel):
@@ -59,6 +60,10 @@ _CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
 _CEREBRAS_MODEL = "gpt-oss-120b"
 
 
+def _is_quota_exceeded(e: openai.RateLimitError) -> bool:
+    return (e.body or {}).get("code") == "token_quota_exceeded"
+
+
 def _build_chain(llm_api_key: str):
     llm = ChatOpenAI(model=_CEREBRAS_MODEL, api_key=llm_api_key, base_url=_CEREBRAS_BASE_URL)
     return (
@@ -73,7 +78,7 @@ def _build_chain(llm_api_key: str):
 def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str], counter: _TokenCounter, max_retries: int = 5) -> list[_ScoringItem]:
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
-        f"Location: {o.location}\nDescription: {o.description or '(empty)'}"
+        f"Location: {o.location}\nDescription: {o.description[:_MAX_DESC_CHARS] or '(empty)'}"
         for o in batch
     )
     payload = {
@@ -87,7 +92,9 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
         try:
             result: _ScoringOutput = chain.invoke(payload, config={"callbacks": [counter]})
             return result.offers
-        except openai.RateLimitError:
+        except openai.RateLimitError as e:
+            if _is_quota_exceeded(e):
+                raise  # daily quota — no point retrying, propagate immediately
             if attempt == max_retries - 1:
                 raise
             wait = 5 * (2 ** attempt)
@@ -107,12 +114,20 @@ def score_offers(
 
     chain = _build_chain(llm_api_key)
     counter = _TokenCounter()
+    total_batches = (len(offers) - 1) // BATCH_SIZE + 1
 
     all_scoring: list[_ScoringItem] = []
     for i in range(0, len(offers), BATCH_SIZE):
         batch = offers[i:i + BATCH_SIZE]
-        print(f"[scorer] Scoring batch {i // BATCH_SIZE + 1}/{(len(offers) - 1) // BATCH_SIZE + 1} ({len(batch)} offers)...")
-        all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords, counter))
+        batch_num = i // BATCH_SIZE + 1
+        print(f"[scorer] Scoring batch {batch_num}/{total_batches} ({len(batch)} offers)...")
+        try:
+            all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords, counter))
+        except openai.RateLimitError as e:
+            if _is_quota_exceeded(e):
+                print(f"[scorer] Daily token quota exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
+                break
+            raise
 
     scoring_by_id = {s.id: s for s in all_scoring}
     scored = [

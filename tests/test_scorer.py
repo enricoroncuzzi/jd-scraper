@@ -113,6 +113,55 @@ def test_scorer_retries_on_rate_limit(monkeypatch):
     assert mock_chain.invoke.call_count == 3
 
 
+def test_scorer_returns_partial_results_on_quota_exceeded(monkeypatch):
+    from src.scorer import BATCH_SIZE
+    offers = [
+        JobOffer(id=i, title=f"Role {i}", company="c", link=f"l{i}", description="d")
+        for i in range(BATCH_SIZE * 2)
+    ]
+    first_batch_scoring = [_ScoringItem(id=i, score=5, comment="ok", summary="s") for i in range(BATCH_SIZE)]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _ScoringOutput(offers=first_batch_scoring)
+        raise openai.RateLimitError(
+            "token_quota_exceeded",
+            response=MagicMock(status_code=429, headers={}),
+            body={"code": "token_quota_exceeded"},
+        )
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == BATCH_SIZE  # only first batch saved
+    assert mock_chain.invoke.call_count == 2  # no retries on quota error
+
+
+def test_scorer_truncates_long_descriptions_in_prompt(monkeypatch):
+    from src.scorer import _MAX_DESC_CHARS
+    long_desc = "x" * (_MAX_DESC_CHARS + 500)
+    offer = JobOffer(id=0, title="Role", company="Co", link="l", description=long_desc)
+
+    captured = {}
+    def invoke_side_effect(payload, **kwargs):
+        captured["offers_text"] = payload["offers"]
+        return _ScoringOutput(offers=[_ScoringItem(id=0, score=5, comment="ok", summary="s")])
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+
+    score_offers(offers=[offer], profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert "x" * (_MAX_DESC_CHARS + 1) not in captured["offers_text"]
+    assert offer.description == long_desc  # full description untouched on the model
+
+
 def test_score_offers_preserves_offer_order(monkeypatch):
     offers = [
         JobOffer(id=0, title="A", company="c", link="l0", description="d"),
