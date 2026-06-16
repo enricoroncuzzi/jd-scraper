@@ -41,7 +41,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_fetch = MagicMock(return_value=raw_offers)
     mock_lang_filter = MagicMock(return_value=language_filtered)
     mock_filter = MagicMock(return_value=new_offers)
-    mock_score = MagicMock(return_value=scored_offers)
+    mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
     mock_write_notes = MagicMock()
     mock_write_digest = MagicMock()
     mock_send = MagicMock()

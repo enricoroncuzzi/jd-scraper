@@ -28,7 +28,7 @@ def test_score_offers_returns_scored_offers(monkeypatch):
     ]
     monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(scoring))
 
-    result = score_offers(
+    result, usage = score_offers(
         offers=_make_offers(),
         profile="test profile",
         priority_keywords=["LLM"],
@@ -40,13 +40,14 @@ def test_score_offers_returns_scored_offers(monkeypatch):
     assert result[0].score == 9
     assert result[1].score == 1
     assert result[1].comment == "Description unavailable — could not evaluate."
+    assert "total_tokens" in usage
 
 
 def test_score_offers_returns_empty_on_empty_input(monkeypatch):
     mock_chain = MagicMock()
     monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
 
-    result = score_offers(
+    result, usage = score_offers(
         offers=[],
         profile="p",
         priority_keywords=[],
@@ -55,6 +56,7 @@ def test_score_offers_returns_empty_on_empty_input(monkeypatch):
     )
 
     assert result == []
+    assert usage["total_tokens"] == 0
     mock_chain.invoke.assert_not_called()
 
 
@@ -69,7 +71,7 @@ def test_score_offers_batches_large_input(monkeypatch):
 
     # Side-effect: return first BATCH_SIZE items on first call, remaining on second
     call_count = {"n": 0}
-    def invoke_side_effect(payload):
+    def invoke_side_effect(payload, **kwargs):
         batch_ids = [int(line.split(": ")[1]) for line in payload["offers"].split("\n") if line.startswith("ID:")]
         items = [s for s in scoring if s.id in batch_ids]
         call_count["n"] += 1
@@ -79,7 +81,7 @@ def test_score_offers_batches_large_input(monkeypatch):
     mock_chain.invoke.side_effect = invoke_side_effect
     monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
 
-    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert mock_chain.invoke.call_count == 2  # two batches
     assert len(result) == BATCH_SIZE + 1
@@ -90,7 +92,7 @@ def test_scorer_retries_on_rate_limit(monkeypatch):
     scoring = [_ScoringItem(id=0, score=5, comment="ok", summary="s")]
 
     call_count = {"n": 0}
-    def invoke_side_effect(payload):
+    def invoke_side_effect(payload, **kwargs):
         call_count["n"] += 1
         if call_count["n"] < 3:
             raise openai.RateLimitError(
@@ -105,7 +107,7 @@ def test_scorer_retries_on_rate_limit(monkeypatch):
     monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
     monkeypatch.setattr("time.sleep", lambda _: None)
 
-    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert len(result) == 1
     assert mock_chain.invoke.call_count == 3
@@ -124,6 +126,6 @@ def test_score_offers_preserves_offer_order(monkeypatch):
     ]
     monkeypatch.setattr("src.scorer._build_chain", lambda _: _make_mock_chain(scoring))
 
-    result = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert [r.id for r in result] == [0, 1, 2]

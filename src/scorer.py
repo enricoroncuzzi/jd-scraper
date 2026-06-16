@@ -2,6 +2,7 @@ import time
 import openai
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field
 from src.models import JobOffer, ScoredOffer
 
@@ -17,6 +18,21 @@ class _ScoringItem(BaseModel):
 
 class _ScoringOutput(BaseModel):
     offers: list[_ScoringItem]
+
+
+class _TokenCounter(BaseCallbackHandler):
+    def __init__(self):
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+
+    def on_llm_end(self, response, **kwargs):
+        usage = (response.llm_output or {}).get("token_usage", {})
+        self.prompt_tokens += usage.get("prompt_tokens", 0)
+        self.completion_tokens += usage.get("completion_tokens", 0)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
 
 
 _SYSTEM = """You are a job scoring assistant. Score each job offer from 1 to 10 based on fit with the candidate profile.
@@ -54,7 +70,7 @@ def _build_chain(llm_api_key: str):
     )
 
 
-def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str], max_retries: int = 5) -> list[_ScoringItem]:
+def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str], counter: _TokenCounter, max_retries: int = 5) -> list[_ScoringItem]:
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
         f"Location: {o.location}\nDescription: {o.description or '(empty)'}"
@@ -69,7 +85,7 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
     }
     for attempt in range(max_retries):
         try:
-            result: _ScoringOutput = chain.invoke(payload)
+            result: _ScoringOutput = chain.invoke(payload, config={"callbacks": [counter]})
             return result.offers
         except openai.RateLimitError:
             if attempt == max_retries - 1:
@@ -85,20 +101,21 @@ def score_offers(
     priority_keywords: list[str],
     exclude_keywords: list[str],
     llm_api_key: str,
-) -> list[ScoredOffer]:
+) -> tuple[list[ScoredOffer], dict]:
     if not offers:
-        return []
+        return [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     chain = _build_chain(llm_api_key)
+    counter = _TokenCounter()
 
     all_scoring: list[_ScoringItem] = []
     for i in range(0, len(offers), BATCH_SIZE):
         batch = offers[i:i + BATCH_SIZE]
         print(f"[scorer] Scoring batch {i // BATCH_SIZE + 1}/{(len(offers) - 1) // BATCH_SIZE + 1} ({len(batch)} offers)...")
-        all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords))
+        all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords, counter))
 
     scoring_by_id = {s.id: s for s in all_scoring}
-    return [
+    scored = [
         ScoredOffer(
             **o.model_dump(),
             score=scoring_by_id[o.id].score,
@@ -108,3 +125,9 @@ def score_offers(
         for o in offers
         if o.id in scoring_by_id
     ]
+    usage = {
+        "prompt_tokens": counter.prompt_tokens,
+        "completion_tokens": counter.completion_tokens,
+        "total_tokens": counter.total_tokens,
+    }
+    return scored, usage
