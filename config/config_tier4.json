@@ -3,7 +3,7 @@
   "search": {
     "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
     "location": "Europe",
-    "countries": ["Poland", "Czechia", "Hungary", "Romania", "Bulgaria", "Croatia", "Slovakia", "Slovenia", "Estonia", "Latvia", "Lithuania", "Greece", "Cyprus", "Malta"],
+    "countries": ["Cyprus", "Malta","Poland", "Czechia", "Hungary", "Romania", "Greece", "Bulgaria", "Croatia", "Slovakia", "Slovenia", "Estonia", "Latvia", "Lithuania"],
     "time_range": "r86400",
     "work_mode": ["remote", "hybrid"]
   },
