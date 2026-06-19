@@ -23,7 +23,7 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123456")
-    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "/vault")
+    monkeypatch.setenv("OUTPUT_PATH", "/output")
     monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
 
     config = load_config(str(config_file))
@@ -40,7 +40,7 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
     assert config.llm_api_key == "test-llm-key"
     assert config.telegram_token == "test-token"
     assert config.telegram_chat_id == "123456"
-    assert config.obsidian_vault_path == "/vault"
+    assert config.output_path == "/output"
     assert config.dedup_log_path == "/data/seen.txt"
 
 
@@ -67,7 +67,6 @@ def test_load_config_reads_tier_countries_and_dedup_override(tmp_path, monkeypat
     monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
-    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
     monkeypatch.setenv("DEDUP_LOG_PATH", "fallback-dedup.txt")
 
     config_data = {
@@ -102,7 +101,6 @@ def test_load_config_uses_json_dedup_path_when_present_and_nonempty(tmp_path, mo
     monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
-    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
     monkeypatch.setenv("DEDUP_LOG_PATH", "fallback-dedup.txt")
 
     config_data = {
@@ -134,7 +132,6 @@ def test_load_config_falls_back_to_env_dedup_path_when_not_in_json(tmp_path, mon
     monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-telegram-token")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat-id")
-    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "test-vault-path")
     monkeypatch.setenv("DEDUP_LOG_PATH", "fallback-dedup.txt")
 
     config_data = {

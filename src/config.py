@@ -41,7 +41,7 @@ class AppConfig:
     llm_api_key: str
     telegram_token: str
     telegram_chat_id: str
-    obsidian_vault_path: str
+    output_path: str
     dedup_log_path: str
 
 
@@ -57,6 +57,6 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         llm_api_key=os.environ["LLM_API_KEY"],
         telegram_token=os.environ["TELEGRAM_TOKEN"],
         telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
-        obsidian_vault_path=os.environ["OBSIDIAN_VAULT_PATH"],
+        output_path=os.environ.get("OUTPUT_PATH", "output"),
         dedup_log_path=data["dedup_log_path"] if "dedup_log_path" in data else os.environ["DEDUP_LOG_PATH"],
     )
