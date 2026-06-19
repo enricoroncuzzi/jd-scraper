@@ -4,13 +4,17 @@ from datetime import date
 from src.models import ScoredOffer
 
 
+def _note_filename(offer: ScoredOffer) -> str:
+    return f"{_slugify(offer.company)}_{_slugify(offer.title)}_{offer.id}.md"
+
+
 def write_notes(offers: list[ScoredOffer], output_path: str, threshold: int, tier: int) -> None:
     today = date.today().isoformat()
     scraped_dir = os.path.join(output_path, today, f"tier{tier}", "scraped")
     os.makedirs(scraped_dir, exist_ok=True)
     for offer in offers:
         tag = "high-score" if offer.score >= threshold else "low-score"
-        filename = f"{_slugify(offer.company)}_{_slugify(offer.title)}.md"
+        filename = _note_filename(offer)
         path = os.path.join(scraped_dir, filename)
         try:
             with open(path, "w") as f:
@@ -26,8 +30,11 @@ def write_digest(offers: list[ScoredOffer], output_path: str, threshold: int, ti
     for mode in ("remote", "hybrid"):
         mode_offers = [o for o in offers if o.work_mode == mode]
         path = os.path.join(tier_dir, f"digest_{mode}.md")
-        with open(path, "w") as f:
-            f.write(_format_digest(mode_offers, today, threshold, offer_cap))
+        try:
+            with open(path, "w") as f:
+                f.write(_format_digest(mode_offers, today, threshold, offer_cap))
+        except OSError as e:
+            print(f"[writer] Failed to write {path}: {e}")
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -72,7 +79,7 @@ def _format_digest(offers: list[ScoredOffer], today: str, threshold: int, offer_
     if high:
         lines.append(f"## High-Score Offers (≥{threshold})\n")
         for o in high:
-            note_file = f"{_slugify(o.company)}_{_slugify(o.title)}.md"
+            note_file = _note_filename(o)
             lines.append(f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location} · [link]({o.link}) · [note](scraped/{note_file})")
             lines.append(f"  {o.summary}\n")
 

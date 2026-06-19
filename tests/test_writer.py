@@ -94,7 +94,7 @@ def test_write_digest_contains_relative_link_to_note(tmp_path):
     offers = [_offer(0, "AI Engineer", "Acme", 9)]
     write_digest(offers, str(tmp_path), threshold=8, tier=1)
     content = (_digest_dir(tmp_path, 1) / "digest_remote.md").read_text()
-    assert "[note](scraped/acme_ai_engineer.md)" in content
+    assert "[note](scraped/acme_ai_engineer_0.md)" in content
 
 
 def test_write_digest_only_high(tmp_path):
