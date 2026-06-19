@@ -7,7 +7,7 @@ from src.scraper import fetch_offers
 from src.language_filter import filter_by_language
 from src.dedup import filter_new, mark_seen
 from src.scorer import score_offers
-from src.obsidian import write_notes, write_digest
+from src.writer import write_notes, write_digest
 from src.telegram import send_summary
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
@@ -54,9 +54,9 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             **usage,
         }) + "\n")
 
-    print("[main] Writing to Obsidian vault...")
-    write_notes(scored, config.obsidian_vault_path, config.scoring.threshold)
-    write_digest(scored, config.obsidian_vault_path, config.scoring.threshold, tier=config.tier)
+    print("[main] Writing output files...")
+    write_notes(scored, config.output_path, config.scoring.threshold, config.tier)
+    write_digest(scored, config.output_path, config.scoring.threshold, tier=config.tier)
 
     print("[main] Sending Telegram summary...")
     send_summary(

@@ -23,7 +23,7 @@ def _mock_config():
         llm_api_key="test-key",
         telegram_token="test-token",
         telegram_chat_id="123",
-        obsidian_vault_path="/vault",
+        output_path="/output",
         dedup_log_path="/data/seen.txt",
     )
 
@@ -72,8 +72,8 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter.assert_called_once_with(raw_offers)
     mock_filter.assert_called_once_with(language_filtered, "/data/seen.txt")
     mock_score.assert_called_once()
-    mock_write_notes.assert_called_once_with(scored_offers, "/vault", 8)
-    mock_write_digest.assert_called_once_with(scored_offers, "/vault", 8, tier=1)
+    mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
+    mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1)
     mock_send.assert_called_once()
     mock_mark.assert_called_once_with(new_offers, "/data/seen.txt")
 
