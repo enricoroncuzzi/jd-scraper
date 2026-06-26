@@ -9,6 +9,7 @@ from src.dedup import filter_new, mark_seen
 from src.scorer import score_offers
 from src.writer import write_notes, write_digest
 from src.telegram import send_summary
+from src.storage import save_run, save_offers
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
 
@@ -53,6 +54,21 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             "offers_scored": len(new_offers),
             **usage,
         }) + "\n")
+
+    if config.db_url:
+        try:
+            run_id = save_run(
+                config.db_url,
+                tier=config.tier,
+                offers_fetched=len(raw_offers),
+                offers_new=len(new_offers),
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                total_tokens=usage["total_tokens"],
+            )
+            save_offers(config.db_url, scored, run_id, config.tier)
+        except Exception as e:
+            print(f"[storage] Failed: {e}")
 
     print("[main] Writing output files...")
     write_notes(scored, config.output_path, config.scoring.threshold, config.tier)

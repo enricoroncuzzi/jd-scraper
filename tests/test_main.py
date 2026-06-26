@@ -3,7 +3,7 @@ from src.models import JobOffer, ScoredOffer
 from src.config import AppConfig, SearchConfig, ScoringConfig, TelegramConfig
 
 
-def _mock_config():
+def _mock_config(db_url="postgresql://test"):
     return AppConfig(
         search=SearchConfig(
             roles=["AI Engineer", "ML Engineer"],
@@ -25,6 +25,7 @@ def _mock_config():
         telegram_chat_id="123",
         output_path="/output",
         dedup_log_path="/data/seen.txt",
+        db_url=db_url,
     )
 
 
@@ -42,6 +43,8 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter = MagicMock(return_value=language_filtered)
     mock_filter = MagicMock(return_value=new_offers)
     mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
+    mock_save_run = MagicMock(return_value=42)
+    mock_save_offers = MagicMock()
     mock_write_notes = MagicMock()
     mock_write_digest = MagicMock()
     mock_send = MagicMock()
@@ -53,6 +56,8 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
     monkeypatch.setattr("main.filter_new", mock_filter)
     monkeypatch.setattr("main.score_offers", mock_score)
+    monkeypatch.setattr("main.save_run", mock_save_run)
+    monkeypatch.setattr("main.save_offers", mock_save_offers)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
     monkeypatch.setattr("main.write_digest", mock_write_digest)
     monkeypatch.setattr("main.send_summary", mock_send)
@@ -72,10 +77,50 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter.assert_called_once_with(raw_offers)
     mock_filter.assert_called_once_with(language_filtered, "/data/seen.txt")
     mock_score.assert_called_once()
+    mock_save_run.assert_called_once_with(
+        "postgresql://test",
+        tier=1, offers_fetched=1, offers_new=1,
+        prompt_tokens=0, completion_tokens=0, total_tokens=0,
+    )
+    mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
     mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
     mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1)
     mock_send.assert_called_once()
     mock_mark.assert_called_once_with(new_offers, "/data/seen.txt")
+
+
+def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
+    raw_offers = [JobOffer(id=0, title="AI Eng", company="Acme", link="https://li.com/0")]
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+
+    mock_load_config = MagicMock(return_value=_mock_config(db_url=None))
+    mock_fetch = MagicMock(return_value=raw_offers)
+    mock_lang_filter = MagicMock(return_value=raw_offers)
+    mock_filter = MagicMock(return_value=raw_offers)
+    mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
+    mock_save_run = MagicMock()
+    mock_write_notes = MagicMock()
+    mock_write_digest = MagicMock()
+    mock_send = MagicMock()
+    mock_mark = MagicMock()
+
+    monkeypatch.setattr("main.load_config", mock_load_config)
+    monkeypatch.setattr("main.fetch_offers", mock_fetch)
+    monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
+    monkeypatch.setattr("main.filter_new", mock_filter)
+    monkeypatch.setattr("main.score_offers", mock_score)
+    monkeypatch.setattr("main.save_run", mock_save_run)
+    monkeypatch.setattr("main.write_notes", mock_write_notes)
+    monkeypatch.setattr("main.write_digest", mock_write_digest)
+    monkeypatch.setattr("main.send_summary", mock_send)
+    monkeypatch.setattr("main.mark_seen", mock_mark)
+
+    import main
+    main.handler({}, None)
+
+    mock_save_run.assert_not_called()
 
 
 def test_handler_skips_pipeline_when_no_new_offers(monkeypatch):
