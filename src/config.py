@@ -43,6 +43,7 @@ class AppConfig:
     telegram_chat_id: str
     output_path: str
     dedup_log_path: str
+    db_url: str | None = None
 
 
 def load_config(config_path: str = "config/config.json") -> AppConfig:
@@ -59,4 +60,5 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
         output_path=os.environ.get("OUTPUT_PATH", "output"),
         dedup_log_path=data["dedup_log_path"] if "dedup_log_path" in data else os.environ["DEDUP_LOG_PATH"],
+        db_url=os.environ.get("DATABASE_URL"),
     )

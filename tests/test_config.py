@@ -42,6 +42,7 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
     assert config.telegram_chat_id == "123456"
     assert config.output_path == "/output"
     assert config.dedup_log_path == "/data/seen.txt"
+    assert config.db_url is None
 
 
 def test_load_config_raises_on_missing_env(tmp_path, monkeypatch):
@@ -157,3 +158,31 @@ def test_load_config_falls_back_to_env_dedup_path_when_not_in_json(tmp_path, mon
 
     assert config.dedup_log_path == "fallback-dedup.txt"
     assert config.search.countries == []
+
+
+def test_load_config_reads_database_url(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote"],
+        },
+        "scoring": {
+            "threshold": 8,
+            "exclude_keywords": [],
+            "priority_keywords": [],
+            "candidate_profile": "test profile",
+        },
+        "telegram": {"greeting": "Hey!"},
+    }))
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host/db")
+
+    config = load_config(str(config_file))
+
+    assert config.db_url == "postgresql://user:pass@host/db"
