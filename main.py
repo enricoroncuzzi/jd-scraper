@@ -9,7 +9,7 @@ from src.dedup import filter_new, mark_seen
 from src.scorer import score_offers
 from src.writer import write_notes, write_digest
 from src.telegram import send_summary
-from src.storage import save_run, save_offers
+from src.storage import init_db, save_run, save_offers
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
 
@@ -57,6 +57,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
 
     if config.db_url:
         try:
+            init_db(config.db_url)
             run_id = save_run(
                 config.db_url,
                 tier=config.tier,
@@ -66,7 +67,8 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 completion_tokens=usage["completion_tokens"],
                 total_tokens=usage["total_tokens"],
             )
-            save_offers(config.db_url, scored, run_id, config.tier)
+            if run_id:
+                save_offers(config.db_url, scored, run_id, config.tier)
         except Exception as e:
             print(f"[storage] Failed: {e}")
 

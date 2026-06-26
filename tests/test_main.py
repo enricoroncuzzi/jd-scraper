@@ -43,6 +43,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter = MagicMock(return_value=language_filtered)
     mock_filter = MagicMock(return_value=new_offers)
     mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
+    mock_init_db = MagicMock()
     mock_save_run = MagicMock(return_value=42)
     mock_save_offers = MagicMock()
     mock_write_notes = MagicMock()
@@ -56,6 +57,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
     monkeypatch.setattr("main.filter_new", mock_filter)
     monkeypatch.setattr("main.score_offers", mock_score)
+    monkeypatch.setattr("main.init_db", mock_init_db)
     monkeypatch.setattr("main.save_run", mock_save_run)
     monkeypatch.setattr("main.save_offers", mock_save_offers)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
@@ -77,6 +79,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter.assert_called_once_with(raw_offers)
     mock_filter.assert_called_once_with(language_filtered, "/data/seen.txt")
     mock_score.assert_called_once()
+    mock_init_db.assert_called_once_with("postgresql://test")
     mock_save_run.assert_called_once_with(
         "postgresql://test",
         tier=1, offers_fetched=1, offers_new=1,
@@ -100,6 +103,7 @@ def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     mock_lang_filter = MagicMock(return_value=raw_offers)
     mock_filter = MagicMock(return_value=raw_offers)
     mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
+    mock_init_db = MagicMock()
     mock_save_run = MagicMock()
     mock_write_notes = MagicMock()
     mock_write_digest = MagicMock()
@@ -111,6 +115,7 @@ def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
     monkeypatch.setattr("main.filter_new", mock_filter)
     monkeypatch.setattr("main.score_offers", mock_score)
+    monkeypatch.setattr("main.init_db", mock_init_db)
     monkeypatch.setattr("main.save_run", mock_save_run)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
     monkeypatch.setattr("main.write_digest", mock_write_digest)
@@ -120,6 +125,7 @@ def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     import main
     main.handler({}, None)
 
+    mock_init_db.assert_not_called()
     mock_save_run.assert_not_called()
 
 
