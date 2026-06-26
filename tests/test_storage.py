@@ -62,3 +62,33 @@ def test_save_offers_does_nothing_on_empty_list():
     with patch("src.storage.psycopg2.connect") as mock_connect:
         save_offers("postgresql://test", [], run_id=42, tier=1)
     mock_connect.assert_not_called()
+
+
+def test_init_db_skips_when_db_url_is_none():
+    with patch("src.storage.psycopg2.connect") as mock_connect:
+        init_db(None)
+    mock_connect.assert_not_called()
+
+
+def test_save_run_returns_zero_when_db_url_is_none():
+    with patch("src.storage.psycopg2.connect") as mock_connect:
+        result = save_run(None, tier=1, offers_fetched=10, offers_new=5,
+                          prompt_tokens=100, completion_tokens=50, total_tokens=150)
+    assert result == 0
+    mock_connect.assert_not_called()
+
+
+def test_init_db_swallows_connect_error(capsys):
+    with patch("src.storage.psycopg2.connect", side_effect=Exception("connection refused")):
+        init_db("postgresql://bad-url")
+    captured = capsys.readouterr()
+    assert "[storage]" in captured.out
+
+
+def test_save_run_swallows_connect_error(capsys):
+    with patch("src.storage.psycopg2.connect", side_effect=Exception("connection refused")):
+        result = save_run("postgresql://bad-url", tier=1, offers_fetched=10, offers_new=5,
+                          prompt_tokens=100, completion_tokens=50, total_tokens=150)
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[storage]" in captured.out
