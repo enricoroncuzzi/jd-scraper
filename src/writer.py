@@ -45,6 +45,11 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 
 def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
+    warning = (
+        f"\n⚠ description: {offer.description_status}"
+        if offer.description_status != "ok"
+        else ""
+    )
     return (
         f"---\n"
         f"date: {today}\n"
@@ -62,7 +67,8 @@ def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
         f"**Comment:** {offer.comment}\n"
         f"**Summary:** {offer.summary}\n"
         f"**Link:** {offer.link}\n"
-        f"**Scraped:** {today}\n\n"
+        f"**Scraped:** {today}\n"
+        f"{warning}\n\n"
         f"## Job Description\n\n"
         f"{offer.description}\n"
     )

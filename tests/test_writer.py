@@ -12,6 +12,15 @@ def _offer(id, title, company, score, location="EU", description="desc", work_mo
     )
 
 
+def _offer_with_status(id, title, company, score, status):
+    return ScoredOffer(
+        id=id, title=title, company=company, location="EU",
+        link=f"https://li.com/{id}", description="desc",
+        description_status=status,
+        score=score, comment="ok", summary="summary here", work_mode="remote"
+    )
+
+
 def _scraped_dir(tmp_path, tier):
     today = date.today().isoformat()
     return tmp_path / today / f"tier{tier}" / "scraped"
@@ -141,3 +150,25 @@ def test_write_digest_caps_high_score_section_at_offer_cap(tmp_path):
     remote_text = (_digest_dir(tmp_path, 1) / "digest_remote.md").read_text()
     shown = sum(1 for i in range(25) if f"Role {i} —" in remote_text)
     assert shown == 20
+
+
+def test_write_notes_no_warning_when_description_ok(tmp_path):
+    offers = [_offer_with_status(0, "AI Engineer", "Acme", 9, "ok")]
+    write_notes(offers, str(tmp_path), threshold=8, tier=1)
+    files = list(_scraped_dir(tmp_path, 1).glob("*.md"))
+    content = files[0].read_text()
+    assert "⚠ description" not in content
+
+
+def test_write_notes_warning_when_description_partial(tmp_path):
+    offers = [_offer_with_status(0, "AI Engineer", "Acme", 9, "partial")]
+    write_notes(offers, str(tmp_path), threshold=8, tier=1)
+    files = list(_scraped_dir(tmp_path, 1).glob("*.md"))
+    assert "⚠ description: partial" in files[0].read_text()
+
+
+def test_write_notes_warning_when_description_failed(tmp_path):
+    offers = [_offer_with_status(0, "AI Engineer", "Acme", 9, "failed")]
+    write_notes(offers, str(tmp_path), threshold=8, tier=1)
+    files = list(_scraped_dir(tmp_path, 1).glob("*.md"))
+    assert "⚠ description: failed" in files[0].read_text()
