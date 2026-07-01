@@ -68,6 +68,8 @@ def test_fetch_offers_raises_on_search_non_200(monkeypatch):
         resp.status_code = 429
         return resp
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     with pytest.raises(RuntimeError, match="429"):
         fetch_offers(["AI Engineer"], "Europe", "r86400")

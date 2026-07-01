@@ -1,3 +1,4 @@
+import random
 import time
 import requests
 from bs4 import BeautifulSoup
@@ -13,6 +14,21 @@ HEADERS = {
 }
 
 _WORK_MODE_MAP = {"remote": "2", "hybrid": "3"}
+
+# Retry config — no hard time constraint, so be patient with LinkedIn rate limits.
+# Schedule: 60s → 120 → 240 → 480 → 900 → 900 → ... (±25% jitter each step)
+_SEARCH_MAX_RETRIES = 20
+_SEARCH_BASE_WAIT = 60   # seconds
+_SEARCH_WAIT_CAP = 900   # 15 min max per wait
+
+_DESC_MAX_RETRIES = 8
+_DESC_BASE_WAIT = 30
+_DESC_WAIT_CAP = 300
+
+
+def _wait_with_jitter(base_seconds: float, cap: float) -> float:
+    jittered = base_seconds * random.uniform(0.75, 1.25)
+    return min(jittered, cap)
 
 
 def fetch_offers(
@@ -54,9 +70,29 @@ def _fetch_for_query(
     if work_mode and work_mode in _WORK_MODE_MAP:
         params["f_WT"] = _WORK_MODE_MAP[work_mode]
 
-    response = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=15)
-    if response.status_code != 200:
-        raise RuntimeError(f"LinkedIn search returned {response.status_code}")
+    response = None
+    for attempt in range(_SEARCH_MAX_RETRIES):
+        try:
+            response = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=20)
+        except requests.RequestException as exc:
+            if attempt == _SEARCH_MAX_RETRIES - 1:
+                raise RuntimeError(f"LinkedIn search network error after {_SEARCH_MAX_RETRIES} retries: {exc}") from exc
+            wait = _wait_with_jitter(_SEARCH_BASE_WAIT * (2 ** min(attempt, 4)), _SEARCH_WAIT_CAP)
+            print(f"[scraper] Network error ({exc}), retrying in {wait:.0f}s (attempt {attempt + 1}/{_SEARCH_MAX_RETRIES})...")
+            time.sleep(wait)
+            continue
+
+        if response.status_code == 200:
+            break
+
+        if response.status_code in (429, 503, 504):
+            if attempt == _SEARCH_MAX_RETRIES - 1:
+                raise RuntimeError(f"LinkedIn search returned {response.status_code} after {_SEARCH_MAX_RETRIES} retries")
+            wait = _wait_with_jitter(_SEARCH_BASE_WAIT * (2 ** min(attempt, 4)), _SEARCH_WAIT_CAP)
+            print(f"[scraper] HTTP {response.status_code}, retrying in {wait:.0f}s (attempt {attempt + 1}/{_SEARCH_MAX_RETRIES})...")
+            time.sleep(wait)
+        else:
+            raise RuntimeError(f"LinkedIn search returned {response.status_code}")
 
     soup = BeautifulSoup(response.text, "html.parser")
     cards = soup.find_all("li")
@@ -77,7 +113,7 @@ def _fetch_for_query(
         link = link_el["href"].split("?")[0]
 
         description = _fetch_description(link)
-        time.sleep(1)
+        time.sleep(random.uniform(1.5, 3.0))
 
         offers.append(JobOffer(
             id=start_id + i,
@@ -93,12 +129,28 @@ def _fetch_for_query(
 
 
 def _fetch_description(url: str) -> str:
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        if response.status_code != 200:
+    for attempt in range(_DESC_MAX_RETRIES):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=15)
+        except requests.RequestException:
+            if attempt == _DESC_MAX_RETRIES - 1:
+                return ""
+            wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
+            time.sleep(wait)
+            continue
+
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            desc_el = soup.find("div", class_="show-more-less-html__markup")
+            return desc_el.get_text(strip=True) if desc_el else ""
+
+        if response.status_code in (429, 503, 504):
+            if attempt == _DESC_MAX_RETRIES - 1:
+                return ""
+            wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
+            print(f"[scraper] description HTTP {response.status_code}, retrying in {wait:.0f}s...")
+            time.sleep(wait)
+        else:
             return ""
-        soup = BeautifulSoup(response.text, "html.parser")
-        desc_el = soup.find("div", class_="show-more-less-html__markup")
-        return desc_el.get_text(strip=True) if desc_el else ""
-    except Exception:
-        return ""
+
+    return ""
