@@ -112,7 +112,7 @@ def _fetch_for_query(
         loc = location_el.get_text(strip=True) if location_el else "N/A"
         link = link_el["href"].split("?")[0]
 
-        description = _fetch_description(link)
+        description, description_status = _fetch_description(link, title, company)
         time.sleep(random.uniform(1.5, 3.0))
 
         offers.append(JobOffer(
@@ -122,35 +122,58 @@ def _fetch_for_query(
             location=loc,
             link=link,
             description=description,
+            description_status=description_status,
             work_mode=work_mode or "",
         ))
 
     return offers
 
 
-def _fetch_description(url: str) -> str:
+def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
+    fallback = f"{title} at {company}"
+
     for attempt in range(_DESC_MAX_RETRIES):
         try:
             response = requests.get(url, headers=HEADERS, timeout=15)
         except requests.RequestException:
             if attempt == _DESC_MAX_RETRIES - 1:
-                return ""
+                return "", "failed"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
             time.sleep(wait)
             continue
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
+
+            # Step 1: main LinkedIn div
             desc_el = soup.find("div", class_="show-more-less-html__markup")
-            return desc_el.get_text(strip=True) if desc_el else ""
+            if desc_el:
+                text = desc_el.get_text(strip=True)
+                if text:
+                    return text, "ok"
+
+            # Step 2: meta description tag
+            meta = soup.find("meta", attrs={"name": "description"})
+            if meta and meta.get("content", "").strip():
+                return meta["content"].strip(), "partial"
+
+            # Step 3: first substantial paragraph or article
+            for tag in soup.find_all(["p", "article"]):
+                text = tag.get_text(strip=True)
+                if len(text) > 50:
+                    return text, "partial"
+
+            # Step 4: title + company as last resort
+            return fallback, "partial"
 
         if response.status_code in (429, 503, 504):
             if attempt == _DESC_MAX_RETRIES - 1:
-                return ""
+                return "", "failed"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
             print(f"[scraper] description HTTP {response.status_code}, retrying in {wait:.0f}s...")
             time.sleep(wait)
         else:
-            return ""
+            # non-retriable (403, 404, etc.) — use title+company fallback
+            return fallback, "partial"
 
-    return ""
+    return "", "failed"

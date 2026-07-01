@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 from src.scraper import fetch_offers
 
 SEARCH_HTML = """
@@ -25,6 +25,21 @@ DESCRIPTION_HTML = """
 </div>
 """
 
+META_ONLY_HTML = """
+<html>
+<head><meta name="description" content="Exciting AI role at a top startup."></head>
+<body></body>
+</html>
+"""
+
+PARAGRAPH_HTML = """
+<html><body>
+<p>We are hiring an experienced AI Engineer to join our growing team and build production LLM systems.</p>
+</body></html>
+"""
+
+EMPTY_PAGE_HTML = "<html><body></body></html>"
+
 
 def _make_mock_get(search_html, description_html, description_status=200):
     def mock_get(url, **kwargs):
@@ -42,6 +57,7 @@ def _make_mock_get(search_html, description_html, description_status=200):
 def test_fetch_offers_parses_cards(monkeypatch):
     monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
@@ -51,11 +67,13 @@ def test_fetch_offers_parses_cards(monkeypatch):
     assert offers[0].location == "Milan, Italy"
     assert "linkedin.com/jobs/view/1234567890" in offers[0].link
     assert "RAG pipelines" in offers[0].description
+    assert offers[0].description_status == "ok"
 
 
 def test_fetch_offers_strips_link_query_params(monkeypatch):
     monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
@@ -75,15 +93,80 @@ def test_fetch_offers_raises_on_search_non_200(monkeypatch):
         fetch_offers(["AI Engineer"], "Europe", "r86400")
 
 
-def test_fetch_offers_sets_empty_description_on_fetch_failure(monkeypatch):
+def test_fetch_offers_partial_description_on_non_retriable_status(monkeypatch):
     monkeypatch.setattr("src.scraper.requests.get",
-                        _make_mock_get(SEARCH_HTML, "", description_status=404))
+                        _make_mock_get(SEARCH_HTML, EMPTY_PAGE_HTML, description_status=404))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 1
+    assert offers[0].description == "AI Engineer at Some Company"
+    assert offers[0].description_status == "partial"
+
+
+def test_fetch_offers_partial_description_from_meta_tag(monkeypatch):
+    monkeypatch.setattr("src.scraper.requests.get",
+                        _make_mock_get(SEARCH_HTML, META_ONLY_HTML))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 1
+    assert "Exciting AI role" in offers[0].description
+    assert offers[0].description_status == "partial"
+
+
+def test_fetch_offers_partial_description_from_paragraph(monkeypatch):
+    monkeypatch.setattr("src.scraper.requests.get",
+                        _make_mock_get(SEARCH_HTML, PARAGRAPH_HTML))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 1
+    assert "LLM systems" in offers[0].description
+    assert offers[0].description_status == "partial"
+
+
+def test_fetch_offers_partial_description_falls_back_to_title_company(monkeypatch):
+    monkeypatch.setattr("src.scraper.requests.get",
+                        _make_mock_get(SEARCH_HTML, EMPTY_PAGE_HTML))
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 1
+    assert offers[0].description == "AI Engineer at Some Company"
+    assert offers[0].description_status == "partial"
+
+
+def test_fetch_offers_failed_description_when_429_exhausted(monkeypatch):
+    call_count = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            resp.text = SEARCH_HTML
+        else:
+            call_count["n"] += 1
+            resp.status_code = 429
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert len(offers) == 1
     assert offers[0].description == ""
+    assert offers[0].description_status == "failed"
 
 
 def test_fetch_offers_skips_cards_without_title_or_link(monkeypatch):
@@ -94,6 +177,7 @@ def test_fetch_offers_skips_cards_without_title_or_link(monkeypatch):
     """
     monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(html_no_link, ""))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
     assert offers == []
@@ -106,7 +190,6 @@ def test_fetch_offers_multiple_roles_merged(monkeypatch):
         resp = MagicMock()
         if "seeMoreJobPostings" in url:
             resp.status_code = 200
-            # Return a different job per role call
             if call_count["n"] == 0:
                 resp.text = SEARCH_HTML.replace("1234567890", "111")
             else:
@@ -119,16 +202,17 @@ def test_fetch_offers_multiple_roles_merged(monkeypatch):
 
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer", "ML Engineer"], "Europe", "r86400")
     assert len(offers) == 2
-    assert call_count["n"] == 2  # one search request per role
+    assert call_count["n"] == 2
 
 
 def test_fetch_offers_deduplicates_across_roles(monkeypatch):
-    # Both roles return the same link — should appear once
     monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer", "ML Engineer"], "Europe", "r86400")
     assert len(offers) == 1
@@ -137,6 +221,7 @@ def test_fetch_offers_deduplicates_across_roles(monkeypatch):
 def test_fetch_offers_stores_work_mode_on_offer(monkeypatch):
     monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400", work_modes=["remote"])
     assert offers[0].work_mode == "remote"
@@ -158,6 +243,7 @@ def test_fetch_offers_passes_work_mode_remote(monkeypatch):
 
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     fetch_offers(["AI Engineer"], "Europe", "r86400", work_modes=["remote"])
     assert captured["params"]["f_WT"] == "2"
@@ -179,6 +265,7 @@ def test_fetch_offers_passes_work_mode_hybrid(monkeypatch):
 
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     fetch_offers(["AI Engineer"], "Europe", "r86400", work_modes=["hybrid"])
     assert captured["params"]["f_WT"] == "3"
@@ -200,9 +287,10 @@ def test_fetch_offers_both_work_modes_makes_two_calls_per_role(monkeypatch):
 
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     fetch_offers(["AI Engineer"], "Europe", "r86400", work_modes=["remote", "hybrid"])
-    assert search_call_count["n"] == 2  # one per work_mode
+    assert search_call_count["n"] == 2
 
 
 def _make_location_capturing_mock_get(captured_locations):
@@ -224,6 +312,7 @@ def test_fetch_offers_queries_each_country_when_provided(monkeypatch):
 
     monkeypatch.setattr("src.scraper.requests.get", _make_location_capturing_mock_get(captured_locations))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     fetch_offers(["AI Engineer"], "Europe", "r86400", countries=["Italy", "Spain"])
     assert captured_locations == ["Italy", "Spain"]
@@ -234,15 +323,16 @@ def test_fetch_offers_falls_back_to_location_when_no_countries(monkeypatch):
 
     monkeypatch.setattr("src.scraper.requests.get", _make_location_capturing_mock_get(captured_locations))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     fetch_offers(["AI Engineer"], "Europe", "r86400")
     assert captured_locations == ["Europe"]
 
 
 def test_fetch_offers_deduplicates_across_countries(monkeypatch):
-    # Same offer link returned for both countries — should appear once
     monkeypatch.setattr("src.scraper.requests.get", _make_mock_get(SEARCH_HTML, DESCRIPTION_HTML))
     monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400", countries=["Italy", "Spain"])
     assert len(offers) == 1
