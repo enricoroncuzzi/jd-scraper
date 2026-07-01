@@ -1,4 +1,5 @@
 import pytest
+from typing import Literal
 from pydantic import ValidationError
 from src.models import JobOffer, ScoredOffer, RankedOffers
 
@@ -43,3 +44,19 @@ def test_ranked_offers_wraps_list():
     ranked = RankedOffers(offers=offers)
     assert len(ranked.offers) == 1
     assert ranked.offers[0].score == 5
+
+
+def test_job_offer_description_status_defaults_to_ok():
+    offer = JobOffer(id=1, title="AI Engineer", company="Acme", link="https://li.com/1")
+    assert offer.description_status == "ok"
+
+
+def test_job_offer_description_status_accepts_valid_values():
+    for status in ("ok", "partial", "failed"):
+        offer = JobOffer(id=1, title="t", company="c", link="l", description_status=status)
+        assert offer.description_status == status
+
+
+def test_scored_offer_inherits_description_status():
+    offer = ScoredOffer(id=1, title="t", company="c", link="l", score=7, description_status="partial")
+    assert offer.description_status == "partial"

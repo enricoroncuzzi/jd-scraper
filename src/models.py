@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
@@ -8,6 +9,7 @@ class JobOffer(BaseModel):
     location: str = "N/A"
     link: str
     description: str = ""
+    description_status: Literal["ok", "partial", "failed"] = "ok"
     work_mode: str = ""
 
 
