@@ -4,10 +4,8 @@ import types as _types
 try:
     import psycopg2
 except ImportError:
-    # psycopg2 not installed — create a stub so the module can be imported
-    # and tests can patch src.storage.psycopg2.connect cleanly.
     psycopg2 = _types.ModuleType("psycopg2")
-    psycopg2.connect = None  # placeholder; replaced by patch() in tests
+    psycopg2.connect = None
 
 from src.models import ScoredOffer
 
@@ -33,21 +31,23 @@ def init_db(db_url: str) -> None:
                 """)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS offers (
-                        id          SERIAL PRIMARY KEY,
-                        run_id      INTEGER NOT NULL REFERENCES runs(id),
-                        link        TEXT NOT NULL,
-                        title       TEXT,
-                        company     TEXT,
-                        location    TEXT,
-                        work_mode   TEXT,
-                        description TEXT,
-                        score       INTEGER,
-                        comment     TEXT,
-                        summary     TEXT,
-                        tier        INTEGER,
-                        run_at      TIMESTAMPTZ
+                        id                 SERIAL PRIMARY KEY,
+                        run_id             INTEGER NOT NULL REFERENCES runs(id),
+                        link               TEXT NOT NULL,
+                        title              TEXT,
+                        company            TEXT,
+                        location           TEXT,
+                        work_mode          TEXT,
+                        description        TEXT,
+                        description_status VARCHAR(10) NOT NULL DEFAULT 'ok',
+                        score              INTEGER,
+                        comment            TEXT,
+                        summary            TEXT,
+                        tier               INTEGER,
+                        run_at             TIMESTAMPTZ
                     )
                 """)
+                cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS description_status VARCHAR(10) NOT NULL DEFAULT 'ok'""")
             conn.commit()
         finally:
             conn.close()
@@ -103,13 +103,13 @@ def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) 
                         """
                         INSERT INTO offers
                             (run_id, link, title, company, location, work_mode,
-                             description, score, comment, summary, tier, run_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             description, description_status, score, comment, summary, tier, run_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             run_id, offer.link, offer.title, offer.company, offer.location,
-                            offer.work_mode, offer.description, offer.score, offer.comment,
-                            offer.summary, tier, now,
+                            offer.work_mode, offer.description, offer.description_status,
+                            offer.score, offer.comment, offer.summary, tier, now,
                         ),
                     )
             conn.commit()

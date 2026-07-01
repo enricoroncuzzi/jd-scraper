@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 from src.models import ScoredOffer
 from src.storage import init_db, save_run, save_offers
 
@@ -15,10 +15,11 @@ def test_init_db_creates_runs_and_offers_tables():
     mock_conn, mock_cur = _mock_conn_cur()
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
         init_db("postgresql://test")
-    assert mock_cur.execute.call_count == 2
+    assert mock_cur.execute.call_count == 3
     sqls = [call[0][0] for call in mock_cur.execute.call_args_list]
     assert any("CREATE TABLE IF NOT EXISTS runs" in s for s in sqls)
     assert any("CREATE TABLE IF NOT EXISTS offers" in s for s in sqls)
+    assert any("ALTER TABLE offers ADD COLUMN IF NOT EXISTS description_status" in s for s in sqls)
     mock_conn.commit.assert_called_once()
     mock_conn.close.assert_called_once()
 
@@ -45,10 +46,10 @@ def test_save_offers_inserts_one_row_per_offer():
     offers = [
         ScoredOffer(id=0, title="AI Engineer", company="Acme", location="Remote",
                     link="https://li.com/0", description="full description text",
-                    work_mode="remote", score=9, comment="great", summary="LLM role"),
+                    description_status="ok", work_mode="remote", score=9, comment="great", summary="LLM role"),
         ScoredOffer(id=1, title="ML Engineer", company="Corp", location="Berlin",
                     link="https://li.com/1", description="another description",
-                    work_mode="hybrid", score=7, comment="ok", summary="ML role"),
+                    description_status="partial", work_mode="hybrid", score=7, comment="ok", summary="ML role"),
     ]
     mock_conn, mock_cur = _mock_conn_cur()
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
@@ -56,6 +57,20 @@ def test_save_offers_inserts_one_row_per_offer():
     assert mock_cur.execute.call_count == 2
     mock_conn.commit.assert_called_once()
     mock_conn.close.assert_called_once()
+
+
+def test_save_offers_includes_description_status_in_insert():
+    offers = [
+        ScoredOffer(id=0, title="AI Engineer", company="Acme", location="Remote",
+                    link="https://li.com/0", description="",
+                    description_status="failed", work_mode="remote", score=1, comment="c", summary="s"),
+    ]
+    mock_conn, mock_cur = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        save_offers("postgresql://test", offers, run_id=1, tier=1)
+    sql, params = mock_cur.execute.call_args[0]
+    assert "description_status" in sql
+    assert "failed" in params
 
 
 def test_save_offers_does_nothing_on_empty_list():
