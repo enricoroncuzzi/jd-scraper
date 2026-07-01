@@ -37,6 +37,11 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         print("[main] No new offers. Exiting.")
         return
 
+    ok = sum(1 for o in new_offers if o.description_status == "ok")
+    partial = sum(1 for o in new_offers if o.description_status == "partial")
+    failed = sum(1 for o in new_offers if o.description_status == "failed")
+    print(f"[main] Description quality — ok: {ok}, partial: {partial}, failed: {failed}")
+
     print("[main] Scoring offers...")
     scored, usage = score_offers(
         offers=new_offers,

@@ -146,3 +146,39 @@ def test_handler_skips_pipeline_when_no_new_offers(monkeypatch):
     main.handler({}, None)
 
     mock_score.assert_not_called()
+
+
+def test_handler_logs_description_quality_summary(monkeypatch, tmp_path, capsys):
+    # patch fetch_offers to return two offers with known statuses
+    offers = [
+        JobOffer(id=0, title="AI Eng", company="A", link="https://li.com/0",
+                 description="text", description_status="ok"),
+        JobOffer(id=1, title="ML Eng", company="B", link="https://li.com/1",
+                 description="", description_status="failed"),
+    ]
+    config = _mock_config()
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    monkeypatch.setattr("main.fetch_offers", lambda **kw: offers)
+    monkeypatch.setattr("main.filter_by_language", lambda x: x)
+    monkeypatch.setattr("main.filter_new", lambda x, p: x)
+    monkeypatch.setattr("main.score_offers", lambda **kw: (
+        [ScoredOffer(**o.model_dump(), score=7, comment="c", summary="s") for o in offers],
+        {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.send_summary", lambda **kw: None)
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main.init_db", lambda *a: None)
+    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
+    monkeypatch.setattr("main.os.makedirs", lambda *a, **kw: None)
+    monkeypatch.setattr("builtins.open", lambda *a, **kw: __import__("io").StringIO())
+
+    import main
+    main.handler({}, None, config_path="config/config_tier1.json")
+
+    out = capsys.readouterr().out
+    assert "Description quality" in out
+    assert "ok: 1" in out
+    assert "failed: 1" in out
