@@ -62,7 +62,7 @@ def generate(
     jd: JobDescription,
     master: MasterCV,
     api_key: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
 ) -> TailoredOutput:
     from google import genai
     from google.genai import types
