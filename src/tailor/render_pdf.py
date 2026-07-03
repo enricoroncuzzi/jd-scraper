@@ -9,6 +9,8 @@ _HTML_TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
 @page {{ size: A4; margin: 12mm 14mm; }}
 body {{ margin: 0; }}
+/* 13px matches the target OhMyCV PDF density while keeping the second
+   Experience header row on one line and the whole CV on a single A4 page. */
 #vue-smart-pages-preview {{ font-family: Tahoma, sans-serif; font-size: 13px; }}
 {css}
 </style></head>
@@ -58,7 +60,7 @@ def _split_header_region(cv_markdown: str):
 
 def _render_header(header_md: str, md: MarkdownIt) -> str:
     name_line, _, rest = header_md.partition("\n")
-    name = name_line[2:].strip()  # strip leading "# "
+    name = md.renderInline(name_line[2:].strip())  # strip leading "# "
     rest = rest.strip("\n")
 
     paragraphs = []

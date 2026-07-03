@@ -39,6 +39,23 @@ def test_html_transforms_header_region():
     assert "no-separator" in html
 
 
+def test_header_two_rows_each_end_no_separator():
+    md = (
+        "# Enrico Roncuzzi\n\n"
+        '<span class="iconify" data-icon="tabler:mail"></span> [mail](mailto:x)\n'
+        "  : [phone](https://p)\n\n"
+        '<span class="iconify" data-icon="tabler:brand-github"></span> [gh](https://g)\n'
+        "  : [medium](https://m)\n\n"
+        "## Summary\nhi"
+    )
+    html = markdown_to_html(md, CSS)
+    # two separate contact rows produced, and no-separator applied once per
+    # row (last item of EACH row), i.e. twice total -- not once for the
+    # whole flat list.
+    assert html.count('class="resume-header-row"') == 2
+    assert html.count("no-separator") == 2
+
+
 def test_html_splits_consecutive_definition_entries_into_separate_dl():
     md = "**A**\n  : **x**\n\n**B**\n  : **y**"
     html = markdown_to_html(md, CSS)
