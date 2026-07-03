@@ -8,6 +8,7 @@ config/config.json
 data/seen_*.txt
 data/usage_log.jsonl
 data/cron.log
+/output/
 
 # python
 .venv/
