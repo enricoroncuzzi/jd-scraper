@@ -1,3 +1,5 @@
+import pytest
+
 from src.tailor.cv_master import load_master
 
 MASTER = """# Enrico Roncuzzi
@@ -76,3 +78,10 @@ def test_reassemble_substitutes_only_targets(tmp_path):
     assert "- A." in out and "- B." in out and "- C." in out
     assert "## Skills" in out and "## Education" in out  # untouched sections remain
     assert "First bullet about agents." not in out
+
+
+def test_reassemble_raises_on_per_role_bullet_mismatch(tmp_path):
+    m = load_master(_write(tmp_path))
+    # master roles have [2, 1] bullets (total 3); pass [1, 2] — total matches but per-role differs
+    with pytest.raises(ValueError):
+        m.reassemble(m.summary, [["only one bullet"], ["first", "second"]])

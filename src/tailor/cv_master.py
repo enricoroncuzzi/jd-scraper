@@ -25,12 +25,19 @@ class MasterCV:
 
     def reassemble(self, summary: str, bullets_by_role: list[list[str]]) -> str:
         text = self.raw.replace(self.summary, summary, 1)
+        if len(bullets_by_role) != len(self.bullets_by_role):
+            raise ValueError(
+                f"role count mismatch: master has {len(self.bullets_by_role)}, "
+                f"got {len(bullets_by_role)}"
+            )
+        for i, (old_role, new_role) in enumerate(zip(self.bullets_by_role, bullets_by_role)):
+            if len(old_role) != len(new_role):
+                raise ValueError(
+                    f"bullet count mismatch in role {i}: "
+                    f"master has {len(old_role)}, got {len(new_role)}"
+                )
         old_flat = [b for role in self.bullets_by_role for b in role]
         new_flat = [b for role in bullets_by_role for b in role]
-        if len(old_flat) != len(new_flat):
-            raise ValueError(
-                f"bullet count mismatch: master has {len(old_flat)}, got {len(new_flat)}"
-            )
         for old, new in zip(old_flat, new_flat):
             text = text.replace(f"- {old}", f"- {new}", 1)
         return text
