@@ -9,12 +9,15 @@ _HTML_TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
 @page {{ size: A4; margin: 12mm 14mm; }}
 body {{ margin: 0; }}
-#vue-smart-pages-preview {{ font-family: Tahoma, sans-serif; font-size: 15px; }}
+#vue-smart-pages-preview {{ font-family: Tahoma, sans-serif; font-size: 13px; }}
 {css}
 </style></head>
 <body><div id="vue-smart-pages-preview">{body}</div></body></html>"""
 
-_HEADER_ITEM_BOUNDARY_RE = re.compile(r"\n[ \t]*:[ \t]|\n\s*\n")
+_HEADER_PARA_SPLIT_RE = re.compile(r"\n\s*\n")
+_HEADER_ITEM_SPLIT_RE = re.compile(r"\n[ \t]*:[ \t]")
+_DL_RE = re.compile(r"<dl>(.*?)</dl>", re.DOTALL)
+_DT_RE = re.compile(r"(<dt>.*?</dt>)", re.DOTALL)
 
 
 def _strip_css_fence(css: str) -> str:
@@ -58,22 +61,60 @@ def _render_header(header_md: str, md: MarkdownIt) -> str:
     name = name_line[2:].strip()  # strip leading "# "
     rest = rest.strip("\n")
 
-    items = []
+    paragraphs = []
     if rest:
-        for raw_item in _HEADER_ITEM_BOUNDARY_RE.split(rest):
-            item = raw_item.strip()
-            if item:
-                items.append(item)
+        for raw_para in _HEADER_PARA_SPLIT_RE.split(rest):
+            para = raw_para.strip()
+            if para:
+                paragraphs.append(para)
 
-    item_html_parts = []
-    for i, item in enumerate(items):
-        css_class = "resume-header-item"
-        if i == len(items) - 1:
-            css_class += " no-separator"
-        inline_html = md.renderInline(item)
-        item_html_parts.append(f'<span class="{css_class}">{inline_html}</span>')
+    row_html_parts = []
+    for para in paragraphs:
+        items = [
+            item.strip()
+            for item in _HEADER_ITEM_SPLIT_RE.split(para)
+            if item.strip()
+        ]
+        item_html_parts = []
+        for i, item in enumerate(items):
+            css_class = "resume-header-item"
+            if i == len(items) - 1:
+                css_class += " no-separator"
+            inline_html = md.renderInline(item)
+            item_html_parts.append(f'<span class="{css_class}">{inline_html}</span>')
+        row_html_parts.append(
+            f'<div class="resume-header-row">{"".join(item_html_parts)}</div>'
+        )
 
-    return f'<div class="resume-header"><h1>{name}</h1>{"".join(item_html_parts)}</div>'
+    return f'<div class="resume-header"><h1>{name}</h1>{"".join(row_html_parts)}</div>'
+
+
+def _split_multi_dt_dl(html: str) -> str:
+    """Split any <dl> that contains more than one <dt> into multiple <dl>
+    elements, each with exactly one <dt> and the <dd>(s) that follow it up
+    to the next <dt>. Leaves single-<dt> <dl>s (e.g. Experience role
+    headers) untouched."""
+
+    def repl(match: "re.Match[str]") -> str:
+        content = match.group(1)
+        if content.count("<dt>") <= 1:
+            return f"<dl>{content}</dl>"
+
+        groups = []
+        current = None
+        for part in _DT_RE.split(content):
+            if part.startswith("<dt>"):
+                if current is not None:
+                    groups.append(current)
+                current = part
+            elif current is not None:
+                current += part
+        if current is not None:
+            groups.append(current)
+
+        return "".join(f"<dl>{group}</dl>" for group in groups)
+
+    return _DL_RE.sub(repl, html)
 
 
 def markdown_to_html(cv_markdown: str, css: str) -> str:
@@ -88,6 +129,7 @@ def markdown_to_html(cv_markdown: str, css: str) -> str:
         body_html = md.render(body_md)
         body = header_html + body_html
 
+    body = _split_multi_dt_dl(body)
     body = _inline_icons(body)
     return _HTML_TEMPLATE.format(css=_strip_css_fence(css), body=body)
 

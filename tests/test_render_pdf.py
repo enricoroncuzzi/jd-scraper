@@ -39,6 +39,12 @@ def test_html_transforms_header_region():
     assert "no-separator" in html
 
 
+def test_html_splits_consecutive_definition_entries_into_separate_dl():
+    md = "**A**\n  : **x**\n\n**B**\n  : **y**"
+    html = markdown_to_html(md, CSS)
+    assert html.count("<dl>") == 2
+
+
 MASTER_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
 CSS_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/cv_css.md"
 
