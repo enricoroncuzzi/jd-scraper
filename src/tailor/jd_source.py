@@ -28,8 +28,11 @@ def _frontmatter(text: str) -> dict:
 
 
 def _title(text: str) -> str:
-    m = re.search(r"^# (.+?) — ", text, re.MULTILINE)
-    return m.group(1).strip() if m else ""
+    m = re.search(r"^# (.+)$", text, re.MULTILINE)
+    if not m:
+        return ""
+    heading = m.group(1).strip()
+    return heading.rsplit(" — ", 1)[0].strip() if " — " in heading else heading
 
 
 def _description(text: str) -> str:

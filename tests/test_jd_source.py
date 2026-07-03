@@ -46,3 +46,14 @@ def test_parse_note_offer_id_from_filename(tmp_path):
     p = tmp_path / "acme_ai_engineer_128.md"
     p.write_text(NOTE)
     assert parse_note(str(p)).offer_id == 128
+
+
+def test_parse_note_title_with_em_dash_in_title(tmp_path):
+    note = NOTE.replace(
+        "# Data Scientist / AI Engineer — Logicalis Spain",
+        "# Machine Learning — LLM Platform — Acme Corp",
+    )
+    p = tmp_path / "acme_corp_ml_9.md"
+    p.write_text(note)
+    jd = parse_note(str(p))
+    assert jd.title == "Machine Learning — LLM Platform"
