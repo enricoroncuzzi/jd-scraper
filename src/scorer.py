@@ -75,7 +75,7 @@ def _build_chain(llm_api_key: str):
     )
 
 
-def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str], counter: _TokenCounter, max_retries: int = 5) -> list[_ScoringItem]:
+def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords: list[str], exclude_keywords: list[str], counter: _TokenCounter, max_retries: int = 10) -> list[_ScoringItem]:
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
         f"Location: {o.location}\nDescription: {o.description[:_MAX_DESC_CHARS] or '(empty)'}"
@@ -97,7 +97,7 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
                 raise  # daily quota — no point retrying, propagate immediately
             if attempt == max_retries - 1:
                 raise
-            wait = 5 * (2 ** attempt)
+            wait = min(10 * (2 ** attempt), 300)  # 10s → 20 → 40 → 80 → 160 → 300s cap
             print(f"[scorer] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
             time.sleep(wait)
 
@@ -126,8 +126,9 @@ def score_offers(
         except openai.RateLimitError as e:
             if _is_quota_exceeded(e):
                 print(f"[scorer] Daily token quota exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
-                break
-            raise
+            else:
+                print(f"[scorer] Rate limit retries exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
+            break
 
     scoring_by_id = {s.id: s for s in all_scoring}
     scored = [
