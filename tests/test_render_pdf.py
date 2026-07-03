@@ -26,6 +26,19 @@ def test_html_renders_definition_list():
     assert "<dl>" in html and "<dd>" in html
 
 
+def test_html_transforms_header_region():
+    md = (
+        '# Name\n\n'
+        '<span class="iconify" data-icon="tabler:mail"></span> [e](mailto:x)\n'
+        '  : [b](https://b)\n\n'
+        '## Summary\nhi'
+    )
+    html = markdown_to_html(md, CSS)
+    assert 'class="resume-header"' in html
+    assert 'class="resume-header-item' in html
+    assert "no-separator" in html
+
+
 MASTER_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
 CSS_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/cv_css.md"
 
