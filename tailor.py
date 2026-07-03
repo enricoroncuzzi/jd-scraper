@@ -1,5 +1,6 @@
 import os
 import sys
+import urllib.parse
 from dotenv import load_dotenv
 from src.tailor.jd_source import parse_note
 from src.tailor.cv_master import load_master
@@ -7,6 +8,7 @@ from src.tailor.generate import generate
 from src.tailor.ground_check import check_claims
 from src.tailor.render_pdf import render_pdf, pdf_page_count
 from src.tailor.output import artifact_dir, write_sources
+from src.tailor.notify import notify, reveal
 
 _DEFAULT_MASTER = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
 _DEFAULT_CSS = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/cv_css.md"
@@ -54,15 +56,42 @@ def run(
     return directory
 
 
+def resolve_uri(uri: str, jd_output_root: str) -> str:
+    decoded = urllib.parse.unquote(uri)
+    rel = decoded.split("tailor:", 1)[1] if "tailor:" in decoded else decoded
+    rel = rel.lstrip("/")
+    root = os.path.realpath(jd_output_root)
+    resolved = os.path.realpath(os.path.join(root, rel))
+    if resolved != root and not resolved.startswith(root + os.sep):
+        raise ValueError(f"refusing note path outside jd-output root: {rel}")
+    return resolved
+
+
+def handle_uri(
+    uri: str,
+    jd_output_root: str,
+    cv_master_path: str,
+    css_path: str,
+    api_key: str,
+) -> str:
+    try:
+        note_path = resolve_uri(uri, jd_output_root)
+        directory = run(note_path, jd_output_root, cv_master_path, css_path, api_key)
+    except Exception as e:
+        notify("Tailoring failed", str(e)[:120])
+        raise
+    notify("CV tailored", os.path.basename(directory))
+    reveal(directory)
+    return directory
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python tailor.py <note_path>")
-        sys.exit(1)
     load_dotenv()
-    run(
-        note_path=sys.argv[1],
-        jd_output_root=_DEFAULT_ROOT,
-        cv_master_path=_DEFAULT_MASTER,
-        css_path=_DEFAULT_CSS,
-        api_key=os.environ["GEMINI_API_KEY"],
-    )
+    args = sys.argv[1:]
+    if args and args[0] == "--uri" and len(args) >= 2:
+        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GEMINI_API_KEY"])
+    elif args and args[0] != "--uri":
+        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GEMINI_API_KEY"])
+    else:
+        print("Usage: python tailor.py <note_path> | --uri <tailor:...>")
+        sys.exit(1)
