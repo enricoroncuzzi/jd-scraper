@@ -32,7 +32,7 @@ def write_digest(offers: list[ScoredOffer], output_path: str, threshold: int, ti
         path = os.path.join(tier_dir, f"digest_{mode}.md")
         try:
             with open(path, "w") as f:
-                f.write(_format_digest(mode_offers, today, threshold, offer_cap))
+                f.write(_format_digest(mode_offers, today, threshold, tier, offer_cap))
         except OSError as e:
             print(f"[writer] Failed to write {path}: {e}")
 
@@ -74,7 +74,7 @@ def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
     )
 
 
-def _format_digest(offers: list[ScoredOffer], today: str, threshold: int, offer_cap: int) -> str:
+def _format_digest(offers: list[ScoredOffer], today: str, threshold: int, tier: int, offer_cap: int) -> str:
     if not offers:
         return f"# Job Digest — {today}\n\nNo new offers after dedup filter.\n"
 
@@ -86,7 +86,11 @@ def _format_digest(offers: list[ScoredOffer], today: str, threshold: int, offer_
         lines.append(f"## High-Score Offers (≥{threshold})\n")
         for o in high:
             note_file = _note_filename(o)
-            lines.append(f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location} · [link]({o.link}) · [note](scraped/{note_file})")
+            lines.append(
+                f"- **{o.title} — {o.company}** ({o.score}/10) · {o.location} "
+                f"· [link]({o.link}) · [note](scraped/{note_file}) "
+                f"· [🎯 tailor](tailor:{today}/tier{tier}/scraped/{note_file})"
+            )
             lines.append(f"  {o.summary}\n")
 
     if low:

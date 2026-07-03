@@ -172,3 +172,19 @@ def test_write_notes_warning_when_description_failed(tmp_path):
     write_notes(offers, str(tmp_path), threshold=8, tier=1)
     files = list(_scraped_dir(tmp_path, 1).glob("*.md"))
     assert "⚠ description: failed" in files[0].read_text()
+
+
+def test_write_digest_contains_tailor_link(tmp_path):
+    from datetime import date
+    offers = [_offer(0, "AI Engineer", "Acme", 9)]
+    write_digest(offers, str(tmp_path), threshold=8, tier=1)
+    content = (_digest_dir(tmp_path, 1) / "digest_remote.md").read_text()
+    today = date.today().isoformat()
+    assert f"[🎯 tailor](tailor:{today}/tier1/scraped/acme_ai_engineer_0.md)" in content
+
+
+def test_write_digest_low_score_has_no_tailor_link(tmp_path):
+    offers = [_offer(0, "Java Dev", "Corp", 3)]
+    write_digest(offers, str(tmp_path), threshold=8, tier=1)
+    content = (_digest_dir(tmp_path, 1) / "digest_remote.md").read_text()
+    assert "tailor:" not in content
