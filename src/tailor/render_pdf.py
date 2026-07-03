@@ -86,14 +86,46 @@ def markdown_to_html(cv_markdown: str, css: str) -> str:
     )
 
 
+# A4 at 96 dpi is 794 x 1123 px. OhMyCV's content is intrinsically taller than
+# one A4 page at its native 15px, and its export fits one page via a scale-to-fit
+# step (~0.88). We reproduce that by shrinking the base font until the content
+# fits one page height at full width — never upscaling beyond the native 15px.
+_A4_WIDTH_PX = 794
+_A4_HEIGHT_PX = 1123
+_FIT_TARGET_PX = 1116  # A4 printable height minus a small safety margin
+_MAX_FONT_PX = 15.0
+_MIN_FONT_PX = 9.0
+_PREVIEW_HEIGHT_JS = (
+    "() => document.getElementById('vue-smart-pages-preview')"
+    ".getBoundingClientRect().height"
+)
+
+
+def _fit_font_size(page) -> float:
+    """Shrink the base font-size until the CV fits one A4 page height, mirroring
+    OhMyCV's scale-to-fit export. Never upscales beyond the native 15px."""
+    font = _MAX_FONT_PX
+    while font >= _MIN_FONT_PX:
+        page.evaluate(f"document.body.style.fontSize = '{font}px'")
+        height = page.evaluate(_PREVIEW_HEIGHT_JS)
+        if height <= _FIT_TARGET_PX:
+            break
+        font -= 0.5
+    return font
+
+
 def render_pdf(cv_markdown: str, css: str, out_path: str) -> None:
     from playwright.sync_api import sync_playwright
 
     html = markdown_to_html(cv_markdown, css)
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page()
+        page = browser.new_page(
+            viewport={"width": _A4_WIDTH_PX, "height": _A4_HEIGHT_PX}
+        )
         page.set_content(html, wait_until="networkidle")
+        page.emulate_media(media="print")
+        _fit_font_size(page)
         page.pdf(
             path=out_path,
             format="A4",
