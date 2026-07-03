@@ -26,20 +26,7 @@ def test_html_renders_definition_list():
     assert "<dl>" in html and "<dd>" in html
 
 
-def test_html_transforms_header_region():
-    md = (
-        '# Name\n\n'
-        '<span class="iconify" data-icon="tabler:mail"></span> [e](mailto:x)\n'
-        '  : [b](https://b)\n\n'
-        '## Summary\nhi'
-    )
-    html = markdown_to_html(md, CSS)
-    assert 'class="resume-header"' in html
-    assert 'class="resume-header-item' in html
-    assert "no-separator" in html
-
-
-def test_header_two_rows_each_end_no_separator():
+def test_header_renders_as_plain_deflists_no_separator_spans():
     md = (
         "# Enrico Roncuzzi\n\n"
         '<span class="iconify" data-icon="tabler:mail"></span> [mail](mailto:x)\n'
@@ -49,11 +36,12 @@ def test_header_two_rows_each_end_no_separator():
         "## Summary\nhi"
     )
     html = markdown_to_html(md, CSS)
-    # two separate contact rows produced, and no-separator applied once per
-    # row (last item of EACH row), i.e. twice total -- not once for the
-    # whole flat list.
-    assert html.count('class="resume-header-row"') == 2
-    assert html.count("no-separator") == 2
+    # No markup produces resume-header-item spans (the CSS dynamic-styles
+    # block legitimately references the selector `.resume-header-item` for
+    # backwards compat, so we check the class attribute form specifically).
+    assert 'class="resume-header-item' not in html
+    assert " | " not in html
+    assert html.count("<dl>") >= 2
 
 
 def test_html_splits_consecutive_definition_entries_into_separate_dl():

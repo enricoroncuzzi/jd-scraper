@@ -5,19 +5,30 @@ from src.tailor.icons import ICONS
 
 _ICON_RE = re.compile(r'<span class="iconify" data-icon="([^"]+)"></span>')
 
+_DYNAMIC_STYLES = """
+body { font-family: Tahoma, sans-serif; font-size: 15px; background-color: white; margin: 0; }
+#vue-smart-pages-preview { background-color: white; width: 793px; max-width: 100%; padding: 55px 45px; box-sizing: border-box; }
+:not(.resume-header-item) > a { color: #000000; }
+h1, h2, h3 { color: #000000; }
+h1, h2 { border-bottom-color: #000000; }
+p, li { line-height: 1.30; }
+h2, h3 { line-height: 1.50; }
+dl { line-height: 1.35; }
+h2 { margin-top: 5px; }
+@media print {
+  body { background-color: white; padding: 0; margin: 0; }
+  #vue-smart-pages-preview { width: 100%; max-width: none; box-shadow: none; margin: 0; padding: 55px 45px; }
+  @page { size: A4; margin: 0; }
+}
+"""
+
 _HTML_TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
-@page {{ size: A4; margin: 12mm 14mm; }}
-body {{ margin: 0; }}
-/* 13px matches the target OhMyCV PDF density while keeping the second
-   Experience header row on one line and the whole CV on a single A4 page. */
-#vue-smart-pages-preview {{ font-family: Tahoma, sans-serif; font-size: 13px; }}
 {css}
+{dynamic_styles}
 </style></head>
-<body><div id="vue-smart-pages-preview">{body}</div></body></html>"""
+<body><main id="vue-smart-pages-preview"><div class="resume-header"></div>{body}</main></body></html>"""
 
-_HEADER_PARA_SPLIT_RE = re.compile(r"\n\s*\n")
-_HEADER_ITEM_SPLIT_RE = re.compile(r"\n[ \t]*:[ \t]")
 _DL_RE = re.compile(r"<dl>(.*?)</dl>", re.DOTALL)
 _DT_RE = re.compile(r"(<dt>.*?</dt>)", re.DOTALL)
 
@@ -34,61 +45,6 @@ def _inline_icons(html: str) -> str:
         ),
         html,
     )
-
-
-def _split_header_region(cv_markdown: str):
-    """Return (header_md, body_md) if cv_markdown starts with a level-1
-    heading and contains a later level-2 heading; otherwise None."""
-    if not cv_markdown.startswith("# "):
-        return None
-
-    lines = cv_markdown.split("\n")
-    h2_index = None
-    for i, line in enumerate(lines):
-        if i == 0:
-            continue
-        if line.startswith("## "):
-            h2_index = i
-            break
-    if h2_index is None:
-        return None
-
-    header_md = "\n".join(lines[:h2_index])
-    body_md = "\n".join(lines[h2_index:])
-    return header_md, body_md
-
-
-def _render_header(header_md: str, md: MarkdownIt) -> str:
-    name_line, _, rest = header_md.partition("\n")
-    name = md.renderInline(name_line[2:].strip())  # strip leading "# "
-    rest = rest.strip("\n")
-
-    paragraphs = []
-    if rest:
-        for raw_para in _HEADER_PARA_SPLIT_RE.split(rest):
-            para = raw_para.strip()
-            if para:
-                paragraphs.append(para)
-
-    row_html_parts = []
-    for para in paragraphs:
-        items = [
-            item.strip()
-            for item in _HEADER_ITEM_SPLIT_RE.split(para)
-            if item.strip()
-        ]
-        item_html_parts = []
-        for i, item in enumerate(items):
-            css_class = "resume-header-item"
-            if i == len(items) - 1:
-                css_class += " no-separator"
-            inline_html = md.renderInline(item)
-            item_html_parts.append(f'<span class="{css_class}">{inline_html}</span>')
-        row_html_parts.append(
-            f'<div class="resume-header-row">{"".join(item_html_parts)}</div>'
-        )
-
-    return f'<div class="resume-header"><h1>{name}</h1>{"".join(row_html_parts)}</div>'
 
 
 def _split_multi_dt_dl(html: str) -> str:
@@ -122,18 +78,12 @@ def _split_multi_dt_dl(html: str) -> str:
 def markdown_to_html(cv_markdown: str, css: str) -> str:
     md = MarkdownIt("commonmark", {"html": True}).use(deflist_plugin)
 
-    split = _split_header_region(cv_markdown)
-    if split is None:
-        body = md.render(cv_markdown)
-    else:
-        header_md, body_md = split
-        header_html = _render_header(header_md, md)
-        body_html = md.render(body_md)
-        body = header_html + body_html
-
+    body = md.render(cv_markdown)
     body = _split_multi_dt_dl(body)
     body = _inline_icons(body)
-    return _HTML_TEMPLATE.format(css=_strip_css_fence(css), body=body)
+    return _HTML_TEMPLATE.format(
+        css=_strip_css_fence(css), dynamic_styles=_DYNAMIC_STYLES, body=body
+    )
 
 
 def render_pdf(cv_markdown: str, css: str, out_path: str) -> None:
