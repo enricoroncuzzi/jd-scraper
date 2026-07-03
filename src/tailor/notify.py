@@ -1,9 +1,18 @@
 import subprocess
 
 
+def _escape(s: str) -> str:
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", " ")
+        .replace("\r", " ")
+    )
+
+
 def _notify_script(title: str, message: str) -> str:
-    t = title.replace('"', '\\"')
-    m = message.replace('"', '\\"')
+    t = _escape(title)
+    m = _escape(message)
     return f'display notification "{m}" with title "{t}"'
 
 
