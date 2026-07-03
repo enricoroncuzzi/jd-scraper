@@ -6,6 +6,8 @@ config/config.json
 
 # runtime data
 data/seen_*.txt
+data/usage_log.jsonl
+data/cron.log
 
 # python
 .venv/
