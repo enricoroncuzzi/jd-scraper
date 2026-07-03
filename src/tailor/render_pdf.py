@@ -8,6 +8,7 @@ _ICON_RE = re.compile(r'<span class="iconify" data-icon="([^"]+)"></span>')
 _DYNAMIC_STYLES = """
 body { font-family: Tahoma, sans-serif; font-size: 15px; background-color: white; margin: 0; }
 #vue-smart-pages-preview { background-color: white; width: 793px; max-width: 100%; padding: 55px 45px; box-sizing: border-box; }
+#vue-smart-pages-preview dl dt { white-space: nowrap; }
 :not(.resume-header-item) > a { color: #000000; }
 h1, h2, h3 { color: #000000; }
 h1, h2 { border-bottom-color: #000000; }
