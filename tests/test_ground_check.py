@@ -29,3 +29,21 @@ def test_ignores_numbers_in_hr_message():
     # hr_message is outreach copy, not a CV claim — not ground-checked
     out = _out(summary="Hit 94.1%.", hr="I have 3 reasons to apply.")
     assert check_claims(out, MASTER) == []
+
+
+def test_cover_letter_number_grounded_in_jd_not_flagged():
+    jd_text = "This role is 100% remote."
+    out = _out(summary="Hit 94.1% on 6,000 images.", cover="Excited about the 100% remote setup.")
+    assert check_claims(out, MASTER, jd_text) == []
+
+
+def test_summary_number_only_in_jd_still_flagged():
+    jd_text = "This role is 100% remote."
+    out = _out(summary="This is a 100% remote role for me.")
+    flagged = check_claims(out, MASTER, jd_text)
+    assert any("100" in f for f in flagged)
+
+
+def test_normalizes_thousands_separators_and_trailing_zeros():
+    out = _out(summary="Hit 94.10% on 6000 images.")
+    assert check_claims(out, MASTER) == []
