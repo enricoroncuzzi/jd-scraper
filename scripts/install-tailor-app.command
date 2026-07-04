@@ -8,19 +8,22 @@ APP="$HOME/Applications/Tailor.app"
 WORK="$(mktemp -d)"
 SCPT="$WORK/tailor-handler.applescript"
 
-# The handler hands the command to Terminal instead of running it directly.
-# Full Disk Access granted to an AppleScript applet does NOT propagate to the
-# shell subprocess it spawns (the process is denied files under ~/Desktop), but
-# Terminal already holds that access — so we delegate to Terminal. Tailor.app
-# then needs only a one-time "control Terminal" (Automation) approval, not FDA.
+# The handler writes a .command file to /tmp and `open`s it — LaunchServices then
+# runs it in Terminal. This sidesteps two macOS TCC walls:
+#   1. Full Disk Access on an AppleScript applet does NOT reach a shell subprocess
+#      it spawns, so running python directly gets "Operation not permitted" on
+#      files under ~/Desktop.
+#   2. Sending Terminal an Apple Event ("do script") needs an Automation grant
+#      whose consent prompt doesn't reliably fire for an unsigned applet (and
+#      Automation grants can't be added manually).
+# Writing /tmp needs no permission, `open` is LaunchServices (not an Apple Event),
+# and Terminal — which already has file access — runs the engine. So Tailor.app
+# itself needs NO Full Disk Access and NO Automation grant.
 cat > "$SCPT" <<APPLESCRIPT
 on open location theURL
     set repo to "$REPO"
-    set cmd to "cd " & quoted form of repo & " && ./.venv/bin/python tailor.py --uri " & quoted form of theURL & " 2>&1 | tee /tmp/tailor-app.log"
-    tell application "Terminal"
-        activate
-        do script cmd
-    end tell
+    set runline to "cd " & quoted form of repo & " && ./.venv/bin/python tailor.py --uri " & quoted form of theURL & " 2>&1 | tee /tmp/tailor-app.log"
+    do shell script "echo '#!/bin/bash' > /tmp/tailor-run.command; echo " & quoted form of runline & " >> /tmp/tailor-run.command; chmod +x /tmp/tailor-run.command; open /tmp/tailor-run.command"
 end open location
 APPLESCRIPT
 
@@ -43,13 +46,11 @@ echo "Scheme check: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBu
 
 echo ""
 echo "=============================================================="
-echo "HOW IT WORKS: Tailor.app hands the job to Terminal (which already"
-echo "has file access), so Tailor.app itself needs NO Full Disk Access."
-echo "  - On your FIRST click, macOS asks:"
-echo "      \"Tailor\" wants to control \"Terminal\"  ->  click OK (one time)."
-echo "  - The tailoring then runs in a Terminal window; a notification +"
-echo "    Finder folder appear when it finishes (~40s)."
+echo "HOW IT WORKS: clicking a tailor: link opens a short-lived Terminal"
+echo "window that runs the tailoring (~40s), then a notification + Finder"
+echo "folder appear with the 3 files."
 echo ""
-echo "  You can REMOVE Tailor.app from Full Disk Access (no longer needed)."
-echo "  Terminal must keep file access to ~/Desktop, which it already has."
+echo "Tailor.app needs NO permissions of its own — Terminal (which already"
+echo "has file access) does the work. You can REMOVE Tailor.app from Full"
+echo "Disk Access if you added it earlier; it is no longer needed."
 echo "=============================================================="
