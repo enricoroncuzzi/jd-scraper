@@ -134,10 +134,10 @@ class CanonicalCV:
         included = set(included_bullet_ids)
         order = {bid: i for i, bid in enumerate(included_bullet_ids)}
         for s in self.sections:
-            orig_block = "\n".join(f"- {s.bullets[bid]}" for bid in s.bullet_ids)
+            orig_block = "\n\n".join(f"- {s.bullets[bid]}" for bid in s.bullet_ids)
             kept = [bid for bid in s.bullet_ids if bid in included]
             kept.sort(key=lambda bid: order[bid])
-            new_block = "\n".join(f"- {s.bullets[bid]}" for bid in kept)
+            new_block = "\n\n".join(f"- {s.bullets[bid]}" for bid in kept)
             text = text.replace(orig_block, new_block, 1)
         return text
 

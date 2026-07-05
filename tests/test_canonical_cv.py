@@ -20,7 +20,9 @@ Original summary about AI, at 94.1% accuracy.
   : **Jun 2026 - Present**
 
 - First bullet about agents.
+
 - Second bullet about pipelines.
+
 - Third bullet about tests.
 
 **ML Engineer Intern**
@@ -28,6 +30,7 @@ Original summary about AI, at 94.1% accuracy.
   : **Sep 2024 - Apr 2025**
 
 - Dataset bullet.
+
 - Detector bullet.
 
 ## Education
