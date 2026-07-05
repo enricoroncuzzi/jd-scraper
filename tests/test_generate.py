@@ -55,3 +55,12 @@ def test_prompt_contains_jd_and_budgets(tmp_path):
 def test_prompt_lists_the_master_bullets(tmp_path):
     prompt = build_prompt(_jd(), _master(tmp_path))
     assert "First bullet about agents." in prompt
+
+
+def test_prompt_hr_message_direction_and_voice(tmp_path):
+    prompt = build_prompt(_jd(), _master(tmp_path)).lower()
+    # HR message is Enrico's own outreach TO the recruiter, not the reverse
+    assert "by enrico to" in prompt
+    # human-voice / anti-AI rules are present
+    assert "never use a dash" in prompt
+    assert "first person voice" in prompt  # cover letter in Enrico's voice

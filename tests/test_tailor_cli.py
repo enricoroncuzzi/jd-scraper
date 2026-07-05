@@ -59,10 +59,13 @@ def test_run_end_to_end(tmp_path, monkeypatch):
         hr_message="Hi, I saw your AI Engineer role.",
     )
     monkeypatch.setattr(tailor_cli, "generate", lambda jd, m, key, **kw: fake)
-    pdfs = []
     monkeypatch.setattr(
         tailor_cli, "render_pdf",
-        lambda md, css, out: pdfs.append(out) or open(out, "w").write("PDF"),
+        lambda md, css, out: open(out, "w").write("PDF"),
+    )
+    monkeypatch.setattr(
+        tailor_cli, "render_cover_letter_pdf",
+        lambda text, out: open(out, "w").write("PDF"),
     )
     monkeypatch.setattr(tailor_cli, "pdf_page_count", lambda path: 1)
 
@@ -71,10 +74,10 @@ def test_run_end_to_end(tmp_path, monkeypatch):
         cv_master_path=str(master_path), css_path="", api_key="fake",
     )
 
-    assert os.path.exists(os.path.join(out_dir, "cv.pdf"))
-    assert os.path.exists(os.path.join(out_dir, "cover_letter.pdf"))
+    assert os.path.exists(os.path.join(out_dir, "Roncuzzi_CV.pdf"))
+    assert os.path.exists(os.path.join(out_dir, "Roncuzzi_CL.pdf"))
     assert os.path.exists(os.path.join(out_dir, "hr_message.txt"))
-    cv_md = open(os.path.join(out_dir, "cv.md")).read()
+    cv_md = open(os.path.join(out_dir, "Roncuzzi_CV.md")).read()
     assert "Tailored summary for Acme role now." in cv_md
     assert "- New A." in cv_md and "- New B." in cv_md
     assert "First bullet about agents." not in cv_md  # replaced

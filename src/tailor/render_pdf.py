@@ -1,4 +1,5 @@
 import re
+from html import escape as _html_escape
 from markdown_it import MarkdownIt
 from mdit_py_plugins.deflist import deflist_plugin
 from src.tailor.icons import ICONS
@@ -140,3 +141,72 @@ def pdf_page_count(path: str) -> int:
     from pypdf import PdfReader
 
     return len(PdfReader(path).pages)
+
+
+# --- Cover letter (Enhancv-style letterhead) ---------------------------------
+# No dash characters anywhere in the header/signature (space-separated phone,
+# "|" and "/" in the tagline, comma in the signature) to keep the whole document
+# dash-free, matching the generation style.
+_CL_NAME = "Enrico Roncuzzi"
+_CL_TAGLINE = "AI / ML Engineer | LLM &amp; Agentic Systems | Production ML"
+_CL_CONTACT = (
+    "enrico.roncuzzi98@gmail.com &nbsp;&middot;&nbsp; (+39) 334 814 7584 "
+    "&nbsp;&middot;&nbsp; linkedin.com/in/enricoroncuzzi &nbsp;&middot;&nbsp; Italy"
+)
+_CL_SIGNATURE = "Enrico Roncuzzi, AI / ML Engineer"
+
+_COVER_TEMPLATE = """<!doctype html>
+<html><head><meta charset="utf-8"><style>
+@page {{ size: A4; margin: 0; }}
+body {{ margin: 0; font-family: Helvetica, Arial, sans-serif; color: #1f2937; }}
+.page {{ padding: 64px 74px; }}
+.name {{ text-align: center; font-family: Georgia, "Times New Roman", serif; font-weight: bold; font-size: 27px; letter-spacing: 1px; color: #111827; }}
+.tagline {{ text-align: center; color: #6b7280; font-size: 12px; margin-top: 5px; }}
+.contact {{ text-align: center; color: #6b7280; font-size: 10.5px; margin-top: 6px; }}
+.rule {{ border: none; border-top: 1px solid #d1d5db; margin: 16px 0 0; }}
+.title {{ text-align: center; font-family: Georgia, serif; font-weight: bold; font-size: 15px; letter-spacing: 3px; margin: 22px 0 18px; color: #111827; }}
+.body p {{ font-size: 12px; line-height: 1.6; margin: 0 0 13px; text-align: left; }}
+.sign {{ font-size: 12px; margin-top: 20px; color: #111827; }}
+</style></head>
+<body><div class="page">
+  <div class="name">{name}</div>
+  <div class="tagline">{tagline}</div>
+  <div class="contact">{contact}</div>
+  <hr class="rule">
+  <div class="title">COVER LETTER</div>
+  <div class="body">{body}</div>
+  <div class="sign">{signature}</div>
+</div></body></html>"""
+
+
+def cover_letter_html(cover_text: str) -> str:
+    """Wrap the generated cover-letter body (greeting + paragraphs) in the letterhead."""
+    paras = [p.strip() for p in re.split(r"\n\s*\n", cover_text.strip()) if p.strip()]
+    body = "\n".join(f"<p>{_html_escape(p)}</p>" for p in paras)
+    return _COVER_TEMPLATE.format(
+        name=_html_escape(_CL_NAME),
+        tagline=_CL_TAGLINE,
+        contact=_CL_CONTACT,
+        body=body,
+        signature=_html_escape(_CL_SIGNATURE),
+    )
+
+
+def render_cover_letter_pdf(cover_text: str, out_path: str) -> None:
+    from playwright.sync_api import sync_playwright
+
+    html = cover_letter_html(cover_text)
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(
+            viewport={"width": _A4_WIDTH_PX, "height": _A4_HEIGHT_PX}
+        )
+        page.set_content(html, wait_until="networkidle")
+        page.emulate_media(media="print")
+        page.pdf(
+            path=out_path,
+            format="A4",
+            print_background=True,
+            margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+        )
+        browser.close()

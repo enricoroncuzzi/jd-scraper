@@ -22,6 +22,6 @@ def test_artifact_dir_path_and_creation(tmp_path):
 def test_write_sources_creates_three_files(tmp_path):
     d = artifact_dir(_jd(), str(tmp_path))
     write_sources(d, "# CV", "Dear team", "Hi there")
-    assert (open(os.path.join(d, "cv.md")).read()) == "# CV"
-    assert (open(os.path.join(d, "cover_letter.md")).read()) == "Dear team"
+    assert (open(os.path.join(d, "Roncuzzi_CV.md")).read()) == "# CV"
+    assert (open(os.path.join(d, "Roncuzzi_CL.md")).read()) == "Dear team"
     assert (open(os.path.join(d, "hr_message.txt")).read()) == "Hi there"
