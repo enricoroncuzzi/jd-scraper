@@ -51,7 +51,7 @@ def test_html_splits_consecutive_definition_entries_into_separate_dl():
 
 
 MASTER_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
-CSS_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/cv_css.md"
+CSS_PATH = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/source/CV_css.md"
 
 
 @pytest.mark.skipif(not os.path.exists(MASTER_PATH), reason="master CV not present")
@@ -64,3 +64,16 @@ def test_master_renders_to_single_page(tmp_path):
     render_pdf(md, css, out)
     assert os.path.exists(out)
     assert pdf_page_count(out) == 1
+
+
+def test_cover_letter_html_letterhead():
+    from src.tailor.render_pdf import cover_letter_html
+
+    html = cover_letter_html("Dear Acme team,\n\nI built X.\n\nLooking forward.")
+    assert "Enrico Roncuzzi" in html
+    assert "AI / ML Engineer" in html
+    assert "COVER LETTER" in html
+    assert "<p>Dear Acme team,</p>" in html
+    assert "<p>I built X.</p>" in html
+    assert "334 814 7584" in html        # dash-free phone in the letterhead
+    assert "334-814-7584" not in html    # no dash tell
