@@ -25,3 +25,25 @@ def test_write_sources_creates_three_files(tmp_path):
     assert (open(os.path.join(d, "Roncuzzi_CV.md")).read()) == "# CV"
     assert (open(os.path.join(d, "Roncuzzi_CL.md")).read()) == "Dear team"
     assert (open(os.path.join(d, "hr_message.txt")).read()) == "Hi there"
+
+
+def test_write_review_lists_claims_and_status(tmp_path):
+    from src.tailor.output import write_review
+    d = str(tmp_path)
+    write_review(d, "Acme", cv_violations=[], cl_violations=[],
+                 claims=["Acme builds travel tools.", "You use AI for support."])
+    text = open(os.path.join(d, "CLAIMS_REVIEW.txt")).read()
+    assert "Acme" in text
+    assert "PASS" in text  # no violations
+    assert "Acme builds travel tools." in text
+    assert "You use AI for support." in text
+
+
+def test_write_review_shows_failures(tmp_path):
+    from src.tailor.output import write_review
+    d = str(tmp_path)
+    write_review(d, "Acme", cv_violations=["required metric missing: 94.1%"],
+                 cl_violations=[], claims=[])
+    text = open(os.path.join(d, "CLAIMS_REVIEW.txt")).read()
+    assert "FAIL" in text
+    assert "required metric missing: 94.1%" in text
