@@ -1,101 +1,90 @@
 from pydantic import BaseModel
 from src.tailor.jd_source import JobDescription
-from src.tailor.cv_master import MasterCV
+from src.tailor.cv_master import CanonicalCV
 
-
-class RoleBullets(BaseModel):
-    role_index: int
-    bullets: list[str]
-
-
-class TailoredOutput(BaseModel):
-    summary: str
-    experience: list[RoleBullets]
-    cover_letter: str
-    hr_message: str
-
-
-_PERSONA = (
-    "You help Enrico Roncuzzi, a junior AI/ML engineer, tailor his job application to a specific "
-    "role. You get his master CV (the ONLY source of truth) and a job description. A recruiter and "
-    "hiring manager will read the result, so it must feel written by a real person, not by AI.\n\n"
-    "GROUNDING (hard): never invent experience, metrics, tools, employers, dates, or personal "
-    "facts. Every claim must trace to the master CV. When unsure, cut it. Do NOT invent where he "
-    "lives, relocation, office visits, availability, or visa status: he is based in Italy and open "
-    "to fully remote roles in the EU, so never claim he lives in or will visit the company's city "
-    "or country. If location comes up at all, the only true framing is 'based in Italy, working "
-    "fully remotely'. Respect the exact length budgets given.\n\n"
-    "VOICE (matters as much as the content):\n"
-    "* Never use a dash of any kind. No em dash, no en dash, no '-'. Not as punctuation, not to "
-    "join words. Use commas and periods, and write compound terms as separate words (end to end, "
-    "real time, cross distribution, two stage, sub pixel).\n"
-    "* Ban corporate/AI filler and anything like it: leverage, spearheaded, passionate, driven, "
-    "esteemed, cutting edge, synergy, delve, furthermore, moreover, robust, seamless, 'proven "
-    "track record', 'I am writing to', 'align with your goals', 'fast paced', 'at your earliest "
-    "convenience', 'esteemed company'.\n"
-    "* No rule of three lists, no 'not only X but also Y', no symmetrical or balanced sentences. "
-    "Vary the rhythm, keep it plain and specific. Contractions are welcome.\n"
-    "* Warm, direct, a little understated. Confident about what he actually built, honest about "
-    "the rest. Concrete beats grand. Never flatter the company."
+FIXED_CLOSE = (
+    "I am based in Italy and work fully remotely. I would be glad to discuss how my "
+    "background fits your team."
 )
 
 
-def build_prompt(jd: JobDescription, master: MasterCV) -> str:
-    lc = master.length_contract
-    role_specs = []
-    for role in lc.roles:
-        originals = "\n".join(
-            f"    - (<= {budget} chars) original: {master.bullets_by_role[role.index][i]}"
-            for i, budget in enumerate(role.bullet_budgets)
-        )
-        role_specs.append(
-            f"  Role {role.index} ({role.name}): rewrite exactly "
-            f"{len(role.bullet_budgets)} bullets.\n{originals}"
-        )
-    roles_block = "\n".join(role_specs)
+class CoverLetterParts(BaseModel):
+    hook: str
+    bridge: str
+    proof_id: str
+
+
+class Selection(BaseModel):
+    included_bullet_ids: list[str]
+    skill_order: list[str]
+    cover_letter: CoverLetterParts
+    hr_message: str
+
+
+def build_prompt(jd: JobDescription, canonical: CanonicalCV) -> str:
+    bullets = "\n".join(
+        f"    {bid}: {canonical.bullet_text(bid)}"
+        for s in canonical.sections for bid in s.bullet_ids
+    )
+    sections = "\n".join(
+        f"  {s.id} ({s.name}): bullets {s.bullet_ids}" for s in canonical.sections
+    )
+    skills = "\n".join(f"    {sid}: {line}" for sid, line in canonical.skills)
     return (
-        f"{_PERSONA}\n\n"
-        f"=== TARGET JOB ===\n"
-        f"Title: {jd.title}\nCompany: {jd.company}\nLocation: {jd.location}\n"
-        f"Work mode: {jd.work_mode}\n\nDescription:\n{jd.description}\n\n"
-        f"=== MASTER CV (source of truth) ===\n{master.raw}\n\n"
-        f"=== YOUR TASK (obey the VOICE rules above in every field, especially no dashes) ===\n"
-        f"1. Summary: rewrite it for this job in <= {lc.summary_budget} characters. Sharp and "
-        f"specific, CV register.\n"
-        f"2. Experience bullets: keep the exact count per role, each within its char budget, "
-        f"start with a real verb, keep the numbers:\n{roles_block}\n"
-        f"3. Cover letter: write it in Enrico's own first person voice, about 150 to 200 words, "
-        f"as a greeting plus three short paragraphs (NO header, NO signature, those get added "
-        f"around it). Open with 'Dear {jd.company} team,'. Paragraph 1: one genuine, specific "
-        f"reason this role interests him, tied to what the company actually builds (no flattery). "
-        f"Paragraph 2: one real thing he built from the CV, with its number, and why it maps to "
-        f"this job. Paragraph 3: a short warm close that invites a conversation, no groveling. It "
-        f"should sound like a smart, motivated person wrote it in ten minutes, not a template.\n"
-        f"4. HR message: a short LinkedIn note written BY Enrico TO the company's recruiter or "
-        f"hiring manager (his outreach to them, never the reverse). First person, 3 to 4 "
-        f"sentences: a real hook about the role, one concrete reason he'd fit (from the CV), and a "
-        f"light ask to connect or chat. Relaxed but professional, the way a real person opens a "
-        f"conversation on LinkedIn.\n"
-        f"Return summary, experience (role_index + bullets per role), cover_letter, hr_message."
+        "You tailor Enrico Roncuzzi's job application. You SELECT and ORDER pre-written "
+        "content and write ONLY the cover-letter hook and bridge and the LinkedIn message. "
+        "You may not write, rephrase, summarize, or improve any resume text.\n\n"
+        "=== TARGET JOB ===\n"
+        f"Title: {jd.title}\nCompany: {jd.company}\nWork mode: {jd.work_mode}\n\n"
+        f"Job description (the ONLY source of company facts):\n{jd.description}\n\n"
+        "=== CANONICAL CV (verbatim, ID-addressed) ===\n"
+        f"Sections (reverse chronological, keep this order):\n{sections}\n"
+        f"Bullets:\n{bullets}\n"
+        f"Skill groups:\n{skills}\n\n"
+        "=== RETURN A SELECTION OBJECT ===\n"
+        "1. included_bullet_ids: include EVERY bullet ID exactly once, in the given canonical "
+        "order. Do NOT drop any bullet (the metrics live in these bullets and must all stay).\n"
+        "2. skill_order: the skill group IDs reordered to surface the ones the job asks for "
+        "first. Include every skill ID exactly once.\n"
+        "3. cover_letter: hook, bridge, proof_id. Free text you write (hook + bridge only).\n"
+        "   - hook (1 to 2 sentences): why THIS company, using ONLY facts from the job "
+        "description above. No flattery, no facts from your own knowledge.\n"
+        "   - bridge (1 sentence): map his work to their need, containing ONE concrete "
+        "specific (a number, a system name like Model Context Protocol, or a named "
+        "technique), not adjectives.\n"
+        "   - proof_id: the ID of the single canonical bullet that best proves the bridge.\n"
+        "   hook + bridge combined must be <= 60 words.\n"
+        "4. hr_message: a short LinkedIn note written BY Enrico TO the company's recruiter or "
+        "hiring manager (his outreach to them, never the reverse). First person, 3 to 4 "
+        "sentences: a real hook about the role from the job description, one concrete reason he "
+        "fits (a fact from the CV bullets above), and a light ask to connect. Relaxed but "
+        "professional.\n\n"
+        "STYLE for ALL free text (hook, bridge, hr_message): never use a dash of any kind (no em "
+        "dash, en dash, or hyphen as punctuation); use commas and periods. Banned words: excited, "
+        "passionate, leverage, cutting-edge, delve, seamless, fast-paced, thrilled, furthermore, "
+        "moreover, resonates, 'align with your mission', 'I am writing to'. Plain declarative "
+        "sentences, one idea each. The cover-letter close is fixed and added for you (based in "
+        "Italy, fully remote), so do NOT write a close and do NOT mention Spain, relocation, or "
+        "availability anywhere."
     )
 
 
 def generate(
     jd: JobDescription,
-    master: MasterCV,
+    canonical: CanonicalCV,
     api_key: str,
     model: str = "gemini-3.5-flash",
-) -> TailoredOutput:
+) -> Selection:
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=model,
-        contents=build_prompt(jd, master),
+        contents=build_prompt(jd, canonical),
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
-            response_schema=TailoredOutput,
+            response_schema=Selection,
             temperature=0.4,
         ),
     )
