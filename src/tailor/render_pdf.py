@@ -179,6 +179,12 @@ body {{ margin: 0; font-family: Helvetica, Arial, sans-serif; color: #1f2937; }}
 </div></body></html>"""
 
 
+def compose_cover_letter(hook: str, bridge: str, proof_text: str) -> str:
+    from src.tailor.generate import FIXED_CLOSE
+
+    return "\n\n".join([hook.strip(), bridge.strip(), proof_text.strip(), FIXED_CLOSE])
+
+
 def cover_letter_html(cover_text: str) -> str:
     """Wrap the generated cover-letter body (greeting + paragraphs) in the letterhead."""
     paras = [p.strip() for p in re.split(r"\n\s*\n", cover_text.strip()) if p.strip()]

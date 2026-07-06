@@ -1,14 +1,17 @@
-from src.tailor.generate import build_prompt, TailoredOutput, RoleBullets
+from src.tailor.generate import build_prompt, Selection, CoverLetterParts
 from src.tailor.jd_source import JobDescription
-from src.tailor.cv_master import load_master
+from src.tailor.cv_master import load_canonical
 
 MASTER = """# Enrico Roncuzzi
 
 ## Summary
-Original summary about AI engineering here now.
+Original summary about AI.
 
 ## Skills
+
 **Languages:** Python
+
+**AI stack:** LangGraph
 
 ## Experience
 
@@ -17,7 +20,6 @@ Original summary about AI engineering here now.
   : **Jun 2026 - Present**
 
 - First bullet about agents.
-- Second bullet about pipelines.
 
 ## Education
 MSc
@@ -27,10 +29,10 @@ English
 """
 
 
-def _master(tmp_path):
+def _canon(tmp_path):
     p = tmp_path / "CV_master.md"
     p.write_text(MASTER)
-    return load_master(str(p))
+    return load_canonical(str(p))
 
 
 def _jd():
@@ -41,26 +43,40 @@ def _jd():
     )
 
 
-def test_prompt_contains_jd_and_budgets(tmp_path):
-    prompt = build_prompt(_jd(), _master(tmp_path))
+def test_prompt_lists_selectable_ids_and_bullets(tmp_path):
+    prompt = build_prompt(_jd(), _canon(tmp_path))
+    assert "exp.0.b0" in prompt
+    assert "First bullet about agents." in prompt
+    assert "skill.ai_stack" in prompt
     assert "Acme" in prompt
     assert "Build RAG agents in Python." in prompt
-    assert "recruiter" in prompt.lower()
-    assert "never invent" in prompt.lower()
-    # length budgets surfaced
-    assert str(len("Original summary about AI engineering here now.")) in prompt
-    assert "2 bullet" in prompt.lower() or "2 bullets" in prompt.lower()
 
 
-def test_prompt_lists_the_master_bullets(tmp_path):
-    prompt = build_prompt(_jd(), _master(tmp_path))
-    assert "First bullet about agents." in prompt
+def test_prompt_forbids_rewriting_cv(tmp_path):
+    low = build_prompt(_jd(), _canon(tmp_path)).lower()
+    assert "may not write, rephrase, summarize, or improve any resume text" in low
 
 
-def test_prompt_hr_message_direction_and_voice(tmp_path):
-    prompt = build_prompt(_jd(), _master(tmp_path)).lower()
-    # HR message is Enrico's own outreach TO the recruiter, not the reverse
-    assert "by enrico to" in prompt
-    # human-voice / anti-AI rules are present
-    assert "never use a dash" in prompt
-    assert "first person voice" in prompt  # cover letter in Enrico's voice
+def test_prompt_cover_letter_rules(tmp_path):
+    low = build_prompt(_jd(), _canon(tmp_path)).lower()
+    assert "60 words" in low
+    assert "never use a dash" in low
+    assert "based in italy" in low  # fixed close is stated as fixed
+
+
+def test_prompt_includes_all_bullets_and_hr_direction(tmp_path):
+    low = build_prompt(_jd(), _canon(tmp_path)).lower()
+    assert "include every bullet id" in low          # never drop a bullet
+    assert "written by enrico to" in low             # hr message is his outreach
+    assert "hr_message" in low
+
+
+def test_selection_schema_shape():
+    s = Selection(
+        included_bullet_ids=["exp.0.b0"],
+        skill_order=["skill.ai_stack", "skill.languages"],
+        cover_letter=CoverLetterParts(hook="h", bridge="b", proof_id="exp.0.b0"),
+        hr_message="Hi, I saw your role.",
+    )
+    assert s.cover_letter.proof_id == "exp.0.b0"
+    assert s.hr_message.startswith("Hi")

@@ -54,5 +54,5 @@ def test_handle_uri_failure_notifies_error(tmp_path, monkeypatch):
             "tailor:2026-07-02/tier1/scraped/acme_1.md",
             str(tmp_path), "master.md", "css.md", "key",
         )
-    assert calls and calls[0][0] == "Tailoring failed"
+    assert calls and calls[0][0] == "Tailoring halted"
     assert "generation returned no result" in calls[0][1]
