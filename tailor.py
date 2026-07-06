@@ -12,6 +12,23 @@ from src.tailor.render_pdf import (
 from src.tailor.output import artifact_dir, write_sources, write_review
 from src.tailor.notify import notify, reveal
 
+
+def _ordered_skill_ids(canonical, requested: list[str]) -> list[str]:
+    """All canonical skills, in the model's requested order first, any missing appended;
+    invalid ids and duplicates dropped. Guarantees assemble never drops a skill or crashes."""
+    valid = [sid for sid, _ in canonical.skills]
+    seen, ordered = set(), []
+    for sid in requested:
+        if sid in valid and sid not in seen:
+            ordered.append(sid)
+            seen.add(sid)
+    for sid in valid:
+        if sid not in seen:
+            ordered.append(sid)
+            seen.add(sid)
+    return ordered
+
+
 _DEFAULT_MASTER = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
 _DEFAULT_CSS = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/source/CV_css.md"
 _DEFAULT_ROOT = "/Users/enricoroncuzzi/Desktop/raw/work/jd-output"
@@ -36,11 +53,14 @@ def run(
     # required-metrics gate can never fail on a legit run). included_bullet_ids stays in
     # the schema for a future page-overflow feature but is NOT used to filter yet.
     all_bullets = [bid for s in canonical.sections for bid in s.bullet_ids]
-    cv_markdown = canonical.assemble(all_bullets, sel.skill_order)
+    cv_markdown = canonical.assemble(all_bullets, _ordered_skill_ids(canonical, sel.skill_order))
     cv_violations = validate_cv(cv_markdown, canonical)
     cl = sel.cover_letter
     cl_violations = validate_cover_letter(cl.hook, cl.bridge)
     claims = hook_claims(cl.hook)
+
+    if cl.proof_id not in set(all_bullets):
+        cl_violations.append(f"cover-letter proof_id is not a canonical bullet: {cl.proof_id}")
 
     if cv_violations or cl_violations:
         directory = artifact_dir(jd, jd_output_root)
@@ -56,6 +76,7 @@ def run(
     n_pages = pdf_page_count(cv_pdf_path)
     if n_pages != 1:
         os.remove(cv_pdf_path)
+        write_review(directory, jd.company, [f"tailored CV overflowed to {n_pages} pages"], [], claims)
         raise ValueError(f"HALTED: tailored CV overflowed to {n_pages} pages")
 
     cover_body = compose_cover_letter(cl.hook, cl.bridge, canonical.bullet_text(cl.proof_id))
