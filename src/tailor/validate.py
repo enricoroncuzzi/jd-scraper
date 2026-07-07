@@ -70,7 +70,7 @@ def validate_cv(assembled_md: str, canonical: CanonicalCV) -> list[str]:
     return violations
 
 
-def validate_cover_letter(hook: str, bridge: str) -> list[str]:
+def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
     violations: list[str] = []
     combined = f"{hook} {bridge}"
     low = combined.lower()
@@ -80,10 +80,15 @@ def validate_cover_letter(hook: str, bridge: str) -> list[str]:
     if "—" in combined or "–" in combined or " - " in combined:
         violations.append("dash used (write with commas/periods)")
     words = len(combined.split())
-    if words > 60:
-        violations.append(f"hook+bridge is {words} words (max 60 words)")
+    if words > 100:
+        violations.append(f"hook+bridge is {words} words (max 100 words)")
     if not _CONCRETE_RE.search(bridge):
         violations.append("bridge has no concrete specific (need a number, system, or technique)")
+    if hook.strip().lower().startswith(company.strip().lower()):
+        violations.append(
+            "hook opens with the company describing itself (mail-merge tell); "
+            "open with Enrico first instead"
+        )
     return violations
 
 

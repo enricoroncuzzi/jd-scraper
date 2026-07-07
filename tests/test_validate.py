@@ -78,23 +78,40 @@ def test_validate_cover_letter_ok():
     assert validate_cover_letter(
         "I follow how Heymondo applies AI to travel insurance.",
         "At Hey Movo I built a coordinator agent using the Model Context Protocol.",
+        "Heymondo",
     ) == []
 
 
 def test_validate_cover_letter_banned_phrase():
-    v = validate_cover_letter("I am excited to apply and passionate about travel.", "I built agents.")
+    v = validate_cover_letter(
+        "I am excited to apply and passionate about travel.", "I built agents.", "Acme"
+    )
     assert any("banned" in x.lower() for x in v)
 
 
 def test_validate_cover_letter_too_long():
-    long_hook = " ".join(["word"] * 70)
-    assert any("60 words" in x for x in validate_cover_letter(long_hook, "I built one agent system."))
+    long_hook = " ".join(["word"] * 110)
+    assert any(
+        "100 words" in x
+        for x in validate_cover_letter(long_hook, "I built one agent system.", "Acme")
+    )
 
 
 def test_validate_cover_letter_needs_concrete():
     # bridge with no number, system name, or named technique
-    v = validate_cover_letter("I like your product.", "I would be a really good and helpful person.")
+    v = validate_cover_letter(
+        "I like your product.", "I would be a really good and helpful person.", "Acme"
+    )
     assert any("concrete" in x.lower() for x in v)
+
+
+def test_validate_cover_letter_rejects_company_first_opener():
+    v = validate_cover_letter(
+        "Acme is building production-grade GenAI systems for enterprise clients.",
+        "I built a coordinator agent using the Model Context Protocol.",
+        "Acme",
+    )
+    assert any("mail-merge" in x.lower() or "company" in x.lower() for x in v)
 
 
 def test_hook_claims_splits_sentences():

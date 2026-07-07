@@ -84,12 +84,14 @@ def test_compose_cover_letter_orders_parts_and_fixed_close():
     from src.tailor.generate import FIXED_CLOSE
 
     body = compose_cover_letter(
+        company="Acme",
         hook="I follow how Acme builds travel tools.",
         bridge="At Hey Movo I built a coordinator agent using the Model Context Protocol.",
         proof_text="Built the agentic layer with planner and critic loops.",
     )
     parts = [p.strip() for p in body.split("\n\n") if p.strip()]
-    assert parts[0].startswith("I follow how Acme")
-    assert "Model Context Protocol" in parts[1]
-    assert parts[2] == "Built the agentic layer with planner and critic loops."
-    assert parts[3] == FIXED_CLOSE
+    assert parts[0] == "Dear Acme team,"
+    assert parts[1].startswith("I follow how Acme")
+    assert "Model Context Protocol" in parts[2]
+    assert parts[3] == "Built the agentic layer with planner and critic loops."
+    assert parts[4] == FIXED_CLOSE

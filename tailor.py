@@ -56,11 +56,13 @@ def run(
     cv_markdown = canonical.assemble(all_bullets, _ordered_skill_ids(canonical, sel.skill_order))
     cv_violations = validate_cv(cv_markdown, canonical)
     cl = sel.cover_letter
-    cl_violations = validate_cover_letter(cl.hook, cl.bridge)
+    cl_violations = validate_cover_letter(cl.hook, cl.bridge, jd.company)
     claims = hook_claims(cl.hook)
 
-    if cl.proof_id not in set(all_bullets):
-        cl_violations.append(f"cover-letter proof_id is not a canonical bullet: {cl.proof_id}")
+    if cl.proof_id not in set(canonical.eligible_proof_ids()):
+        cl_violations.append(
+            f"cover-letter proof_id is not an eligible letter-grade proof: {cl.proof_id}"
+        )
 
     if cv_violations or cl_violations:
         directory = artifact_dir(jd, jd_output_root)
@@ -79,7 +81,9 @@ def run(
         write_review(directory, jd.company, [f"tailored CV overflowed to {n_pages} pages"], [], claims)
         raise ValueError(f"HALTED: tailored CV overflowed to {n_pages} pages")
 
-    cover_body = compose_cover_letter(cl.hook, cl.bridge, canonical.bullet_text(cl.proof_id))
+    cover_body = compose_cover_letter(
+        jd.company, cl.hook, cl.bridge, canonical.bullet_text(cl.proof_id)
+    )
     render_cover_letter_pdf(cover_body, os.path.join(directory, "Roncuzzi_CL.pdf"))
     write_sources(directory, cv_markdown, cover_body, sel.hr_message)
     write_review(directory, jd.company, cv_violations, cl_violations, claims)
@@ -121,9 +125,9 @@ if __name__ == "__main__":
     load_dotenv()
     args = sys.argv[1:]
     if args and args[0] == "--uri" and len(args) >= 2:
-        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GEMINI_API_KEY"])
+        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GROQ_API_KEY"])
     elif args and args[0] != "--uri":
-        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GEMINI_API_KEY"])
+        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GROQ_API_KEY"])
     else:
         print("Usage: python tailor.py <note_path> | --uri <tailor:...>")
         sys.exit(1)

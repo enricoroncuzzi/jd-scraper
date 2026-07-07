@@ -74,7 +74,7 @@ def _full_selection(master_path):
         cover_letter=CoverLetterParts(
             hook="I follow how Acme builds travel tools.",
             bridge="At Hey Movo I built a coordinator agent using the Model Context Protocol.",
-            proof_id=c.sections[0].bullet_ids[0],
+            proof_id=c.sections[1].bullet_ids[0],
         ),
         hr_message="Hi, I saw your AI Engineer role and would love to connect.",
     )

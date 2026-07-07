@@ -88,3 +88,45 @@ def test_assemble_drops_a_bullet_verbatim(tmp_path):
     assert "- Dataset bullet." in out
     # every retained bullet is byte-verbatim
     assert "- First bullet about agents." in out
+
+
+MASTER_WITH_POOL = MASTER + """
+## Letter Proof Pool
+<!-- NOT rendered in the CV. Past-tense standalone proof sentences for cover-letter selection only. -->
+
+- lp.agentic.0 :: At Acme, built a coordinator agent that calls tools via MCP.
+
+- lp.agentic.1 :: At Acme, built a multi-agent layer with planner and critic loops.
+"""
+
+
+def _write_with_pool(tmp_path):
+    p = tmp_path / "CV_master.md"
+    p.write_text(MASTER_WITH_POOL)
+    return str(p)
+
+
+def test_letter_proof_pool_parsed_but_not_a_cv_section(tmp_path):
+    c = load_canonical(_write_with_pool(tmp_path))
+    assert c.letter_proof_pool == {
+        "lp.agentic.0": "At Acme, built a coordinator agent that calls tools via MCP.",
+        "lp.agentic.1": "At Acme, built a multi-agent layer with planner and critic loops.",
+    }
+    assert c.bullet_text("lp.agentic.0") == "At Acme, built a coordinator agent that calls tools via MCP."
+
+
+def test_letter_proof_pool_included_in_eligible_proofs(tmp_path):
+    c = load_canonical(_write_with_pool(tmp_path))
+    eligible = c.eligible_proof_ids()
+    assert "lp.agentic.0" in eligible
+    assert "lp.agentic.1" in eligible
+
+
+def test_assembled_cv_never_contains_letter_proof_pool(tmp_path):
+    c = load_canonical(_write_with_pool(tmp_path))
+    default_bullets = [bid for s in c.sections for bid in s.bullet_ids]
+    default_skills = [sid for sid, _ in c.skills]
+    out = c.assemble(default_bullets, default_skills)
+    assert "lp.agentic" not in out
+    assert "Letter Proof Pool" not in out
+    assert "coordinator agent that calls tools via MCP" not in out

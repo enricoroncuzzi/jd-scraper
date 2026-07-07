@@ -84,6 +84,26 @@ def load_master(path: str) -> MasterCV:
     )
 
 
+_IRREGULAR_PAST_VERBS = {
+    "built", "led", "sent", "ran", "wrote", "made", "grew", "gave", "chose",
+    "began", "brought", "bought", "caught", "taught", "sought", "fought",
+    "thought", "spent", "kept", "left", "met", "found", "sold", "told",
+    "held", "won", "sat", "hit", "cut", "put", "shut", "spread", "cast",
+    "shot", "set", "let", "hurt", "bet", "cost", "quit",
+}
+
+
+def _is_letter_grade(bullet_text: str) -> bool:
+    """True if the bullet reads as a standalone past-tense sentence (a real
+    subject-verb clause), not an imperative CV fragment ("Build the...",
+    "Improve...") or a subjectless opener ("One of two engineers...")."""
+    first_word = re.match(r"[A-Za-z-]+", bullet_text)
+    if not first_word:
+        return False
+    word = first_word.group(0).lower()
+    return word in _IRREGULAR_PAST_VERBS or word.endswith("ed")
+
+
 _SKILL_RE = re.compile(r"^\*\*(?P<label>[^:]+):\*\*")
 
 
@@ -99,21 +119,53 @@ class Section:
     bullets: dict[str, str]
 
 
+_POOL_HEADER_RE = re.compile(r"## Letter Proof Pool\n(.*)\Z", re.DOTALL)
+_POOL_STRIP_RE = re.compile(r"\n*## Letter Proof Pool\n.*\Z", re.DOTALL)
+_POOL_LINE_RE = re.compile(r"^-\s*(?P<id>lp\.\S+)\s*::\s*(?P<text>.+)$")
+
+
+def _letter_proof_pool(raw: str) -> dict[str, str]:
+    """Parse the '## Letter Proof Pool' tail section: cover-letter-only proof
+    sentences, never part of the rendered CV or the CV byte-match gate."""
+    m = _POOL_HEADER_RE.search(raw)
+    if not m:
+        return {}
+    pool = {}
+    for line in m.group(1).splitlines():
+        pm = _POOL_LINE_RE.match(line.strip())
+        if pm:
+            pool[pm.group("id")] = pm.group("text").strip()
+    return pool
+
+
 @dataclass
 class CanonicalCV:
     raw: str
     summary: str
     skills: list[tuple[str, str]]          # [(id, verbatim line), ...]
     sections: list["Section"]
+    letter_proof_pool: dict[str, str]
 
     def bullet_text(self, bullet_id: str) -> str:
         for s in self.sections:
             if bullet_id in s.bullets:
                 return s.bullets[bullet_id]
+        if bullet_id in self.letter_proof_pool:
+            return self.letter_proof_pool[bullet_id]
         raise KeyError(bullet_id)
 
     def all_bullet_texts(self) -> set[str]:
         return {t for s in self.sections for t in s.bullets.values()}
+
+    def eligible_proof_ids(self) -> list[str]:
+        """Proof candidates for the cover letter: bullets that stand alone as a
+        natural past-tense sentence (imperative CV fragments are not), plus the
+        dedicated Letter Proof Pool sentences."""
+        cv_bullets = [
+            bid for s in self.sections for bid in s.bullet_ids
+            if _is_letter_grade(s.bullets[bid])
+        ]
+        return cv_bullets + list(self.letter_proof_pool.keys())
 
     def skill_line(self, skill_id: str) -> str:
         for sid, line in self.skills:
@@ -125,7 +177,7 @@ class CanonicalCV:
         return [s.id for s in self.sections]
 
     def assemble(self, included_bullet_ids: list[str], skill_order: list[str]) -> str:
-        text = self.raw
+        text = _POOL_STRIP_RE.sub("", self.raw)
         # 1) reorder the Skills block, verbatim lines only
         skills_block = "\n\n".join(self.skill_line(sid) for sid in skill_order)
         orig_skills_block = "\n\n".join(line for _, line in self.skills)
@@ -164,4 +216,7 @@ def load_canonical(path: str) -> CanonicalCV:
                 bullets=dict(zip(bullet_ids, bullets)),
             )
         )
-    return CanonicalCV(raw=raw, summary=summary, skills=skills, sections=sections)
+    return CanonicalCV(
+        raw=raw, summary=summary, skills=skills, sections=sections,
+        letter_proof_pool=_letter_proof_pool(raw),
+    )

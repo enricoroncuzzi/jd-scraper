@@ -59,7 +59,7 @@ def test_prompt_forbids_rewriting_cv(tmp_path):
 
 def test_prompt_cover_letter_rules(tmp_path):
     low = build_prompt(_jd(), _canon(tmp_path)).lower()
-    assert "60 words" in low
+    assert "100 words" in low
     assert "never use a dash" in low
     assert "based in italy" in low  # fixed close is stated as fixed
 

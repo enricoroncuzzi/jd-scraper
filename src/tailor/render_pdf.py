@@ -153,7 +153,7 @@ _CL_CONTACT = (
     "enrico.roncuzzi98@gmail.com &nbsp;&middot;&nbsp; (+39) 334 814 7584 "
     "&nbsp;&middot;&nbsp; linkedin.com/in/enricoroncuzzi &nbsp;&middot;&nbsp; Italy"
 )
-_CL_SIGNATURE = "Enrico Roncuzzi, AI / ML Engineer"
+_CL_SIGNATURE = "Enrico Roncuzzi"
 
 _COVER_TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -179,10 +179,11 @@ body {{ margin: 0; font-family: Helvetica, Arial, sans-serif; color: #1f2937; }}
 </div></body></html>"""
 
 
-def compose_cover_letter(hook: str, bridge: str, proof_text: str) -> str:
+def compose_cover_letter(company: str, hook: str, bridge: str, proof_text: str) -> str:
     from src.tailor.generate import FIXED_CLOSE
 
-    return "\n\n".join([hook.strip(), bridge.strip(), proof_text.strip(), FIXED_CLOSE])
+    greeting = f"Dear {company.strip()} team,"
+    return "\n\n".join([greeting, hook.strip(), bridge.strip(), proof_text.strip(), FIXED_CLOSE])
 
 
 def cover_letter_html(cover_text: str) -> str:
