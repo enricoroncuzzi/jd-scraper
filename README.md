@@ -30,7 +30,7 @@ Job hunting for AI/ML roles is two problems at once: a **data problem** (finding
         │
         │  click  [🎯 tailor]
         ▼
- CV tailoring engine (Gemini Flash, grounded)
+ CV tailoring engine (Groq, verbatim + validated)
         │  → headless-Chromium PDF render
         ▼
  tailored CV · cover letter · recruiter message
@@ -50,9 +50,9 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 - Deployed on a **Netcup VPS** via a sequential-tier cron orchestrator — unattended.
 
 ### 2 · CV tailoring engine + one-click button
-- `tailor.py <job>` → **Google Gemini Flash** rewrites my CV for the specific JD under an HR-recruiter persona.
-- **Grounded / no hallucination** — every rewritten claim must trace back to my master CV; a numeric ground-check **aborts** on any fabricated metric.
-- **Identical layout** — only the summary + experience bullets change; everything else is copied *byte-for-byte*, so the tailored CV renders to the **same single A4 page** as the original.
+- `tailor.py <job>` → **Groq** (`openai/gpt-oss-120b`) selects and reorders verbatim bullets/skills from my canonical CV for the specific JD, and writes only the cover-letter hook/bridge and the recruiter message as free text.
+- **No hallucination by construction** — the CV body is never paraphrased, only selected/reordered from hand-written text; a validation gate byte-matches the assembled CV against required metrics and checks cover-letter claims, **aborting** on any mismatch.
+- **Identical layout** — only the summary + experience bullets are selected/reordered; everything else is copied *byte-for-byte*, so the tailored CV renders to the **same single A4 page** as the original.
 - **Faithful PDF** — headless Chromium reproduces my exact résumé template (fonts, columns, scale-to-fit) offline; the output is visually indistinguishable from my real CV.
 - **One click** — a custom macOS URL handler runs the whole pipeline straight from a link in the digest.
 
@@ -60,13 +60,13 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 
 ## Tech stack
 
-`Python` · `Cerebras` & `Google Gemini` LLM APIs · `Pydantic` · `PostgreSQL (Neon)` · `Playwright` (headless Chromium) · `LangChain` (thin scoring adapter) · `pytest` (TDD) · `Netcup VPS` + `cron`
+`Python` · `Cerebras` & `Groq` LLM APIs · `Pydantic` · `PostgreSQL (Neon)` · `Playwright` (headless Chromium) · `LangChain` (thin scoring adapter) · `pytest` (TDD) · `Netcup VPS` + `cron`
 
 ---
 
 ## Engineering notes
 
-- **Test-driven throughout** — ~130 tests, every module built RED → GREEN.
+- **Test-driven throughout** — 150 tests, every module built RED → GREEN.
 - **Structured LLM I/O** — Pydantic schemas for both scoring and generation; no brittle output parsing.
 - **Resilience by design** — capped exponential backoff + partial-save mean rate limits degrade gracefully instead of dropping a run.
 - **Anti-hallucination in code, not just the prompt** — the "every claim traces to the source CV" guarantee is enforced by a runtime check.
