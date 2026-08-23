@@ -56,22 +56,61 @@ Score these {count} job offers:
 Return all {count} offers. Each must have: id (same as input), score (1-10), comment (one sentence reason), summary (one sentence describing the role)."""
 
 
-_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
-_CEREBRAS_MODEL = "gpt-oss-120b"
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
+# OpenRouter's native fallback mechanism: if the primary model is busy/rate-limited,
+# OpenRouter itself retries the request against the next model in this list before
+# ever returning an error to us. Order picked from empirical latency/reliability
+# testing against this repo's real scoring prompt (see PR description for numbers).
+_OPENROUTER_FALLBACK_MODELS = [
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "z-ai/glm-5.2:free",
+]
+
+# OpenRouter's 429 body has no Cerebras-style string "code" to tell a same-day quota
+# exhaustion apart from a transient per-minute throttle - both come back as
+# {"code": 429, ...}. The reliable signal is how far away X-RateLimit-Reset is: a
+# per-minute/upstream throttle resets within seconds, a daily free-tier cap resets
+# at the next UTC day boundary (hours away). Empirically verified against a live key.
+_QUOTA_RESET_THRESHOLD_SECONDS = 90
 
 
 def _is_quota_exceeded(e: openai.RateLimitError) -> bool:
-    return (e.body or {}).get("code") == "token_quota_exceeded"
+    body = e.body or {}
+    if body.get("code") == "token_quota_exceeded":  # legacy Cerebras shape
+        return True
+    headers = getattr(getattr(e, "response", None), "headers", None) or {}
+    reset_ms = headers.get("x-ratelimit-reset")
+    if reset_ms is None:
+        reset_ms = (body.get("metadata") or {}).get("headers", {}).get("X-RateLimit-Reset")
+    if reset_ms is None:
+        return False
+    try:
+        return int(reset_ms) / 1000 - time.time() > _QUOTA_RESET_THRESHOLD_SECONDS
+    except (TypeError, ValueError):
+        return False
 
 
 def _build_chain(llm_api_key: str):
-    llm = ChatOpenAI(model=_CEREBRAS_MODEL, api_key=llm_api_key, base_url=_CEREBRAS_BASE_URL)
+    llm = ChatOpenAI(
+        model=_OPENROUTER_MODEL,
+        api_key=llm_api_key,
+        base_url=_OPENROUTER_BASE_URL,
+        extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
+    )
     return (
         ChatPromptTemplate.from_messages([
             ("system", _SYSTEM),
             ("human", _HUMAN),
         ])
-        | llm.with_structured_output(_ScoringOutput)
+        # method="function_calling" forces tool_choice to this schema's function
+        # (vs. the default "json_schema"/response_format method, which isn't
+        # supported by every free OpenRouter model and produced noticeably
+        # bloated completions in testing). Forced tool-calling is the only mode
+        # validated clean (no reasoning-token bloat) across the primary + fallback
+        # models below.
+        | llm.with_structured_output(_ScoringOutput, method="function_calling")
     )
 
 
