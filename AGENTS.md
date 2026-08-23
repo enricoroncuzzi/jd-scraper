@@ -11,12 +11,16 @@ what the README doesn't (or what has drifted from it).
    Postgres (Neon) storage, then an Obsidian digest + Telegram summary.
    `orchestrator.py` runs the 4 tier configs in `config/config_tier{1..4}.json`
    sequentially via `main.py`.
-2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): rewrites a
-   CV/cover-letter/recruiter message per job posting, with a runtime
-   anti-hallucination ground-check. Generation currently uses **Groq**
-   (`src/tailor/generate.py`, key read as `GROQ_API_KEY` in `tailor.py`) — the
-   README still describes this step as Gemini in places; trust the code/env
-   var over the README's prose on this point.
+2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
+   CV/cover-letter/recruiter message per job posting. The CV body is never
+   rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders
+   verbatim bullets/skills from a hand-written canonical CV; only the cover
+   letter's hook/bridge and the recruiter message are freely generated text
+   (see the prompt in `src/tailor/generate.py`). `src/tailor/validate.py`
+   is the validation gate: it byte-matches the assembled CV against
+   `REQUIRED_METRICS` and checks cover-letter claims, halting on a mismatch.
+   Generation uses **Groq** (`openai/gpt-oss-120b`, key read as
+   `GROQ_API_KEY` in `tailor.py`).
 
 ## Config and secrets
 
