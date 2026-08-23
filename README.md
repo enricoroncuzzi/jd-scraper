@@ -23,7 +23,7 @@ Job hunting for AI/ML roles is two problems at once: a **data problem** (finding
  Scraper ─ dedup ─ language filter
         │
         ▼
- LLM scorer (Cerebras, structured output)  ──►  Postgres corpus (Neon)
+ LLM scorer (OpenRouter, structured output)  ──►  Postgres corpus (Neon)
         │                                              (full text + scores)
         ▼
  Daily digest (Obsidian)  +  Telegram summary
@@ -44,7 +44,7 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 
 ### 1 · Scraper + scoring + corpus  *(in production)*
 - **4-tier scraper** (Italy/Spain → Western EU → UK/CH → Eastern EU), config-driven per tier.
-- **LLM scoring** via Cerebras (free tier, 1M tokens/day) with **structured Pydantic output** — not string-parsing.
+- **LLM scoring** via OpenRouter (free-tier models, with a native fallback array across 3 alternates) with **structured Pydantic output** — not string-parsing.
 - Per-tier **dedup**, language filtering, **exponential-backoff retries**, and **partial-save on quota exhaustion** (a daily run never loses completed work).
 - **Neon Postgres corpus** (full descriptions + scores) — the data foundation for the retrieval/eval work on the roadmap.
 - Deployed on a **Netcup VPS** via a sequential-tier cron orchestrator — unattended.
@@ -60,7 +60,7 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 
 ## Tech stack
 
-`Python` · `Cerebras` & `Groq` LLM APIs · `Pydantic` · `PostgreSQL (Neon)` · `Playwright` (headless Chromium) · `LangChain` (thin scoring adapter) · `pytest` (TDD) · `Netcup VPS` + `cron`
+`Python` · `OpenRouter` & `Groq` LLM APIs · `Pydantic` · `PostgreSQL (Neon)` · `Playwright` (headless Chromium) · `LangChain` (thin scoring adapter) · `pytest` (TDD) · `Netcup VPS` + `cron`
 
 ---
 

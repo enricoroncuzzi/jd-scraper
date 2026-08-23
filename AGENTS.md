@@ -7,10 +7,18 @@ what the README doesn't (or what has drifted from it).
 ## Subsystems
 
 1. **Scraper -> scoring -> corpus** (`main.py`, `orchestrator.py`, `src/`): a
-   4-tier LinkedIn scraper, language filter, dedup, LLM scoring (Cerebras),
+   4-tier LinkedIn scraper, language filter, dedup, LLM scoring (OpenRouter,
+   free-tier models with a native model fallback array - see
+   `_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`),
    Postgres (Neon) storage, then an Obsidian digest + Telegram summary.
    `orchestrator.py` runs the 4 tier configs in `config/config_tier{1..4}.json`
-   sequentially via `main.py`.
+   sequentially via `main.py`. Scoring migrated from Cerebras to OpenRouter in
+   2026-08 after Cerebras killed its permanent free tier; OpenRouter's $0 tier
+   caps at 50 requests/day account-wide (not per-model, not per-key - the
+   whole account), and its 429 error body has no Cerebras-style string code to
+   tell a same-day cap exhaustion apart from a transient per-minute/upstream
+   throttle - see `_is_quota_exceeded` in `src/scorer.py` for the actual
+   distinguishing signal (how far away `X-RateLimit-Reset` is).
 2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
    CV/cover-letter/recruiter message per job posting. The CV body is never
    rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders
@@ -27,11 +35,13 @@ what the README doesn't (or what has drifted from it).
 - Scraper tier configs live in `config/config_tier1.json` .. `config_tier4.json`
   (one per tier); `config/config.example.json` is the template for the
   gitignored `config/config.json`.
-- Runtime secrets are read from a gitignored `.env`. `.env.template` lists the
-  expected keys but is stale: it still has `GEMINI_API_KEY` even though
-  tailoring generation reads `GROQ_API_KEY` (see `tailor.py`). Check
-  `src/config.py` and `tailor.py` for the actual env vars consumed rather than
-  trusting the template.
+- Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
+  expected keys. `LLM_API_KEY` is read generically (`src/config.py:58`, not
+  provider-specific by name) and currently holds an OpenRouter key consumed by
+  `src/scorer.py`'s scoring calls; `GROQ_API_KEY` is unrelated, used only by
+  the tailoring engine (`src/tailor/generate.py`). Check `src/config.py`,
+  `src/scorer.py`, and `tailor.py` for the actual env vars consumed rather
+  than trusting the template.
 
 ## Tests
 

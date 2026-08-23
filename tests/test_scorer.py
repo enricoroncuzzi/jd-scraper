@@ -1,7 +1,8 @@
+import time
 from unittest.mock import MagicMock
 import openai
 from src.models import JobOffer, ScoredOffer
-from src.scorer import score_offers, _ScoringItem, _ScoringOutput
+from src.scorer import score_offers, _ScoringItem, _ScoringOutput, _is_quota_exceeded
 
 
 def _make_offers():
@@ -160,6 +161,48 @@ def test_scorer_truncates_long_descriptions_in_prompt(monkeypatch):
 
     assert "x" * (_MAX_DESC_CHARS + 1) not in captured["offers_text"]
     assert offer.description == long_desc  # full description untouched on the model
+
+
+def test_is_quota_exceeded_true_for_legacy_cerebras_shape():
+    e = openai.RateLimitError(
+        "token_quota_exceeded",
+        response=MagicMock(status_code=429, headers={}),
+        body={"code": "token_quota_exceeded"},
+    )
+    assert _is_quota_exceeded(e) is True
+
+
+def test_is_quota_exceeded_false_for_openrouter_per_minute_throttle():
+    # Real shape observed from OpenRouter: reset is seconds away (per-minute window).
+    reset_ms = int((time.time() + 30) * 1000)
+    e = openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={"x-ratelimit-reset": str(reset_ms)}),
+        body={"code": 429, "metadata": {"headers": {"X-RateLimit-Reset": str(reset_ms)}}},
+    )
+    assert _is_quota_exceeded(e) is False
+
+
+def test_is_quota_exceeded_true_for_openrouter_daily_cap():
+    # Real shape observed from OpenRouter: reset is hours away (daily free-tier cap).
+    reset_ms = int((time.time() + 3600) * 1000)
+    e = openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={"x-ratelimit-reset": str(reset_ms)}),
+        body={"code": 429, "metadata": {"headers": {"X-RateLimit-Reset": str(reset_ms)}}},
+    )
+    assert _is_quota_exceeded(e) is True
+
+
+def test_is_quota_exceeded_false_for_upstream_provider_busy():
+    # Real shape observed from OpenRouter when an underlying free model is
+    # temporarily overloaded (no X-RateLimit-Reset header at all).
+    e = openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={}),
+        body={"code": 429, "metadata": {"provider_error_code": "upstream_429", "retry_after_seconds": 5}},
+    )
+    assert _is_quota_exceeded(e) is False
 
 
 def test_score_offers_preserves_offer_order(monkeypatch):
