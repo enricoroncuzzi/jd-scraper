@@ -1,6 +1,10 @@
 from unittest.mock import MagicMock, patch, call
 from src.models import ScoredOffer
-from src.storage import init_db, save_run, save_offers
+from src.storage import (
+    init_db, save_run, save_offers,
+    save_application_channel, is_application_packaged,
+    save_application, count_applications_packaged_today,
+)
 
 
 def _mock_conn_cur():
@@ -15,11 +19,13 @@ def test_init_db_creates_runs_and_offers_tables():
     mock_conn, mock_cur = _mock_conn_cur()
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
         init_db("postgresql://test")
-    assert mock_cur.execute.call_count == 3
+    assert mock_cur.execute.call_count == 5
     sqls = [call[0][0] for call in mock_cur.execute.call_args_list]
     assert any("CREATE TABLE IF NOT EXISTS runs" in s for s in sqls)
     assert any("CREATE TABLE IF NOT EXISTS offers" in s for s in sqls)
     assert any("ALTER TABLE offers ADD COLUMN IF NOT EXISTS description_status" in s for s in sqls)
+    assert any("ALTER TABLE offers ADD COLUMN IF NOT EXISTS application_channel" in s for s in sqls)
+    assert any("CREATE TABLE IF NOT EXISTS applications" in s for s in sqls)
     mock_conn.commit.assert_called_once()
     mock_conn.close.assert_called_once()
 
@@ -107,3 +113,77 @@ def test_save_run_swallows_connect_error(capsys):
     assert result == 0
     captured = capsys.readouterr()
     assert "[storage]" in captured.out
+
+
+def test_save_application_channel_updates_offers_by_link():
+    mock_conn, mock_cur = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        save_application_channel("postgresql://test", "https://li.com/1", "external_ats")
+    sql, params = mock_cur.execute.call_args[0]
+    assert "UPDATE offers" in sql
+    assert params == ("external_ats", "https://li.com/1")
+    mock_conn.commit.assert_called_once()
+
+
+def test_save_application_channel_skips_when_db_url_is_none():
+    with patch("src.storage.psycopg2.connect") as mock_connect:
+        save_application_channel(None, "https://li.com/1", "external_ats")
+    mock_connect.assert_not_called()
+
+
+def test_is_application_packaged_true_when_row_found():
+    mock_conn, mock_cur = _mock_conn_cur()
+    mock_cur.fetchone.return_value = (1,)
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        result = is_application_packaged("postgresql://test", "https://li.com/1")
+    assert result is True
+
+
+def test_is_application_packaged_false_when_no_row():
+    mock_conn, mock_cur = _mock_conn_cur()
+    mock_cur.fetchone.return_value = None
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        result = is_application_packaged("postgresql://test", "https://li.com/1")
+    assert result is False
+
+
+def test_is_application_packaged_false_when_db_url_is_none():
+    with patch("src.storage.psycopg2.connect") as mock_connect:
+        result = is_application_packaged(None, "https://li.com/1")
+    assert result is False
+    mock_connect.assert_not_called()
+
+
+def test_save_application_inserts_with_dedup_key():
+    mock_conn, mock_cur = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        save_application(
+            "postgresql://test", "https://li.com/1", "AI Engineer", "Acme",
+            "linkedin_easy_apply", dry_run=False,
+        )
+    sql, params = mock_cur.execute.call_args[0]
+    assert "INSERT INTO applications" in sql
+    assert "ON CONFLICT" in sql
+    assert params[1:] == ("https://li.com/1", "AI Engineer", "Acme", "linkedin_easy_apply", False)
+    mock_conn.commit.assert_called_once()
+
+
+def test_save_application_skips_when_db_url_is_none():
+    with patch("src.storage.psycopg2.connect") as mock_connect:
+        save_application(None, "https://li.com/1", "t", "c", "email_apply", dry_run=True)
+    mock_connect.assert_not_called()
+
+
+def test_count_applications_packaged_today_returns_count():
+    mock_conn, mock_cur = _mock_conn_cur()
+    mock_cur.fetchone.return_value = (3,)
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        result = count_applications_packaged_today("postgresql://test")
+    assert result == 3
+
+
+def test_count_applications_packaged_today_zero_when_db_url_is_none():
+    with patch("src.storage.psycopg2.connect") as mock_connect:
+        result = count_applications_packaged_today(None)
+    assert result == 0
+    mock_connect.assert_not_called()

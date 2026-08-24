@@ -40,7 +40,7 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 
 ---
 
-## Two subsystems
+## Three subsystems
 
 ### 1 · Scraper + scoring + corpus  *(in production)*
 - **4-tier scraper** (Italy/Spain → Western EU → UK/CH → Eastern EU), config-driven per tier.
@@ -55,6 +55,11 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 - **Identical layout** — only the summary + experience bullets are selected/reordered; everything else is copied *byte-for-byte*, so the tailored CV renders to the **same single A4 page** as the original.
 - **Faithful PDF** — headless Chromium reproduces my exact résumé template (fonts, columns, scale-to-fit) offline; the output is visually indistinguishable from my real CV.
 - **One click** — a custom macOS URL handler runs the whole pipeline straight from a link in the digest.
+
+### 3 · Auto-apply v1 (draft-and-notify, opt-in)
+- Off by default (`config.autoapply.enabled: false`) — the production tier configs don't enable it, so the daily run stays zero-touch as described above unless I opt in.
+- When enabled: classifies each above-threshold offer's application channel with a read-only HTTP GET (no browser automation, no logins), auto-runs the same tailoring pipeline, and packages the result with a notification for me to review and submit **manually** — there is no auto-submit path.
+- See `AGENTS.md` for the full design and the storage/config wiring.
 
 ---
 

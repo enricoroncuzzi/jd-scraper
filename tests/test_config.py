@@ -186,3 +186,42 @@ def test_load_config_reads_database_url(tmp_path, monkeypatch):
     config = load_config(str(config_file))
 
     assert config.db_url == "postgresql://user:pass@host/db"
+
+
+def test_load_config_defaults_autoapply_when_absent(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({
+        "search": {"roles": ["AI Engineer"], "location": "Europe", "time_range": "r86400", "work_mode": ["remote"]},
+        "scoring": {"threshold": 8, "exclude_keywords": [], "priority_keywords": [], "candidate_profile": "x"},
+        "telegram": {"greeting": "Hey!"},
+    }))
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
+
+    config = load_config(str(config_file))
+
+    assert config.autoapply.enabled is False
+    assert config.autoapply.dry_run is True
+    assert config.autoapply.daily_cap == 5
+
+
+def test_load_config_reads_autoapply_section(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({
+        "search": {"roles": ["AI Engineer"], "location": "Europe", "time_range": "r86400", "work_mode": ["remote"]},
+        "scoring": {"threshold": 8, "exclude_keywords": [], "priority_keywords": [], "candidate_profile": "x"},
+        "telegram": {"greeting": "Hey!"},
+        "autoapply": {"enabled": True, "dry_run": False, "daily_cap": 3},
+    }))
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
+
+    config = load_config(str(config_file))
+
+    assert config.autoapply.enabled is True
+    assert config.autoapply.dry_run is False
+    assert config.autoapply.daily_cap == 3
