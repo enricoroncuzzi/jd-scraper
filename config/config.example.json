@@ -22,5 +22,10 @@
   },
   "telegram": {
     "greeting": "Hey!"
+  },
+  "autoapply": {
+    "enabled": false,
+    "dry_run": true,
+    "daily_cap": 5
   }
 }

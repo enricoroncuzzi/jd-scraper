@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timezone
 import types as _types
 
@@ -8,6 +9,10 @@ except ImportError:
     psycopg2.connect = None
 
 from src.models import ScoredOffer
+
+
+def _link_hash(link: str) -> str:
+    return hashlib.md5(link.encode()).hexdigest()
 
 
 def init_db(db_url: str) -> None:
@@ -48,6 +53,19 @@ def init_db(db_url: str) -> None:
                     )
                 """)
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS description_status VARCHAR(10) NOT NULL DEFAULT 'ok'""")
+                cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS application_channel VARCHAR(20)""")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS applications (
+                        id           SERIAL PRIMARY KEY,
+                        link_hash    VARCHAR(32) NOT NULL UNIQUE,
+                        link         TEXT NOT NULL,
+                        title        TEXT,
+                        company      TEXT,
+                        channel      VARCHAR(20),
+                        packaged_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        dry_run      BOOLEAN NOT NULL DEFAULT FALSE
+                    )
+                """)
             conn.commit()
         finally:
             conn.close()
@@ -117,3 +135,88 @@ def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) 
             conn.close()
     except Exception as e:
         print(f"[storage] save_offers failed: {e}")
+
+
+def save_application_channel(db_url: str, link: str, channel: str) -> None:
+    if db_url is None:
+        return
+    try:
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE offers SET application_channel = %s WHERE link = %s",
+                    (channel, link),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[storage] save_application_channel failed: {e}")
+
+
+def is_application_packaged(db_url: str, link: str) -> bool:
+    """True if this offer link has already been packaged (non-dry-run) in a past run —
+    the application-time dedup gate, distinct from src/dedup.py's scrape-time dedup."""
+    if db_url is None:
+        return False
+    try:
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM applications WHERE link_hash = %s AND dry_run = FALSE",
+                    (_link_hash(link),),
+                )
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[storage] is_application_packaged failed: {e}")
+        return False
+
+
+def save_application(
+    db_url: str, link: str, title: str, company: str, channel: str, dry_run: bool
+) -> None:
+    if db_url is None:
+        return
+    try:
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO applications (link_hash, link, title, company, channel, dry_run)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (link_hash) DO UPDATE SET
+                        channel = EXCLUDED.channel,
+                        packaged_at = NOW(),
+                        dry_run = EXCLUDED.dry_run
+                    """,
+                    (_link_hash(link), link, title, company, channel, dry_run),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[storage] save_application failed: {e}")
+
+
+def count_applications_packaged_today(db_url: str) -> int:
+    if db_url is None:
+        return 0
+    try:
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM applications "
+                    "WHERE dry_run = FALSE AND packaged_at::date = CURRENT_DATE"
+                )
+                return cur.fetchone()[0]
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[storage] count_applications_packaged_today failed: {e}")
+        return 0

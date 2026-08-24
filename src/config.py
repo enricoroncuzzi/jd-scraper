@@ -33,6 +33,14 @@ class TelegramConfig:
 
 
 @dataclass
+class AutoApplyConfig:
+    # Draft-and-notify only: never submits anything. See data/jds-autoapply-explore/report.md.
+    enabled: bool = False
+    dry_run: bool = True
+    daily_cap: int = 5
+
+
+@dataclass
 class AppConfig:
     search: SearchConfig
     scoring: ScoringConfig
@@ -44,6 +52,11 @@ class AppConfig:
     output_path: str
     dedup_log_path: str
     db_url: str | None = None
+    autoapply: AutoApplyConfig = None
+
+    def __post_init__(self):
+        if self.autoapply is None:
+            self.autoapply = AutoApplyConfig()
 
 
 def load_config(config_path: str = "config/config.json") -> AppConfig:
@@ -61,4 +74,5 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         output_path=os.environ.get("OUTPUT_PATH", "output"),
         dedup_log_path=data["dedup_log_path"] if "dedup_log_path" in data else os.environ["DEDUP_LOG_PATH"],
         db_url=os.environ.get("DATABASE_URL"),
+        autoapply=AutoApplyConfig(**data.get("autoapply", {})),
     )

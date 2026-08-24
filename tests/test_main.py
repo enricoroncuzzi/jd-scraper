@@ -1,9 +1,9 @@
 from unittest.mock import MagicMock, patch
 from src.models import JobOffer, ScoredOffer
-from src.config import AppConfig, SearchConfig, ScoringConfig, TelegramConfig
+from src.config import AppConfig, SearchConfig, ScoringConfig, TelegramConfig, AutoApplyConfig
 
 
-def _mock_config(db_url="postgresql://test"):
+def _mock_config(db_url="postgresql://test", autoapply=None):
     return AppConfig(
         search=SearchConfig(
             roles=["AI Engineer", "ML Engineer"],
@@ -26,6 +26,7 @@ def _mock_config(db_url="postgresql://test"):
         output_path="/output",
         dedup_log_path="/data/seen.txt",
         db_url=db_url,
+        autoapply=autoapply or AutoApplyConfig(),
     )
 
 
@@ -182,3 +183,69 @@ def test_handler_logs_description_quality_summary(monkeypatch, tmp_path, capsys)
     assert "Description quality" in out
     assert "ok: 1" in out
     assert "failed: 1" in out
+
+
+def test_handler_skips_autoapply_when_disabled(monkeypatch):
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=False))
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    monkeypatch.setattr("main.fetch_offers", lambda **kw: [scored_offers[0]])
+    monkeypatch.setattr("main.filter_by_language", lambda x: x)
+    monkeypatch.setattr("main.filter_new", lambda x, p: x)
+    monkeypatch.setattr("main.score_offers", lambda **kw: (
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.send_summary", lambda **kw: None)
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main.init_db", lambda *a: None)
+    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
+    mock_autoapply = MagicMock()
+    monkeypatch.setattr("main.run_autoapply", mock_autoapply)
+
+    import main
+    main.handler({}, None)
+
+    mock_autoapply.assert_not_called()
+
+
+def test_handler_runs_autoapply_when_enabled(monkeypatch):
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=True, daily_cap=3))
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    monkeypatch.setattr("main.fetch_offers", lambda **kw: [scored_offers[0]])
+    monkeypatch.setattr("main.filter_by_language", lambda x: x)
+    monkeypatch.setattr("main.filter_new", lambda x, p: x)
+    monkeypatch.setattr("main.score_offers", lambda **kw: (
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.send_summary", lambda **kw: None)
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main.init_db", lambda *a: None)
+    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
+    mock_autoapply = MagicMock(return_value=[])
+    monkeypatch.setattr("main.run_autoapply", mock_autoapply)
+
+    import main
+    main.handler({}, None)
+
+    mock_autoapply.assert_called_once()
+    kwargs = mock_autoapply.call_args.kwargs
+    assert kwargs["offers"] == scored_offers
+    assert kwargs["threshold"] == 8
+    assert kwargs["tier"] == 1
+    assert kwargs["daily_cap"] == 3
+    assert kwargs["dry_run"] is True
+    assert kwargs["groq_api_key"] == "test-groq-key"

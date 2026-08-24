@@ -29,6 +29,33 @@ what the README doesn't (or what has drifted from it).
    `REQUIRED_METRICS` and checks cover-letter claims, halting on a mismatch.
    Generation uses **Groq** (`openai/gpt-oss-120b`, key read as
    `GROQ_API_KEY` in `tailor.py`).
+3. **Auto-apply v1 (draft-and-notify)** (`src/autoapply/`): a
+   **draft-and-notify system, not an auto-submit system - there is no code
+   path anywhere that submits an application.** Wired into `main.py` behind
+   `config.autoapply.enabled` (default `false`; see
+   `config/config.example.json`). When enabled, for each offer scoring
+   `>= config.scoring.threshold` it: (a) resolves the offer's `link` and
+   classifies the application channel via a read-only HTTP GET + redirect
+   follow (`src/autoapply/classify.py::classify_channel` - never logs in,
+   never drives a browser, never touches LinkedIn's or an ATS's UI); (b)
+   auto-invokes the existing one-click `tailor.py` flow (`tailor_cli.run()`,
+   unmodified) instead of waiting for a human to click the digest's `tailor:`
+   link; (c) writes a package manifest and fires a notification for the
+   captain to review and submit manually
+   (`src/autoapply/package.py`, extending `src/tailor/notify.py`'s pattern).
+   `src/storage.py`'s `applications` table (keyed by an md5 link hash, same
+   scheme as `src/dedup.py`) is the application-time dedup gate - distinct
+   from `src/dedup.py`'s scrape-time dedup - and gates the per-day cap
+   (`config.autoapply.daily_cap`) via
+   `count_applications_packaged_today`/`is_application_packaged`.
+   `config.autoapply.dry_run` (default `true`) runs the full pipeline
+   (classify, tailor, package) but skips the notification and the tracking
+   write, for safe testing. See
+   `data/jds-autoapply-explore/report.md` in the firstmate home (not this
+   repo - it's outside the jd-scraper worktree) for the full design
+   rationale and the captain's approval; treat any change to auto-submit
+   scope or to `src/tailor/validate.py`'s gate itself as requiring a fresh
+   captain decision, not a worker judgment call.
 
 ## Config and secrets
 

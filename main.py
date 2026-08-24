@@ -10,6 +10,8 @@ from src.scorer import score_offers
 from src.writer import write_notes, write_digest
 from src.telegram import send_summary
 from src.storage import init_db, save_run, save_offers
+from src.autoapply.pipeline import run_autoapply
+import tailor as tailor_cli
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
 
@@ -80,6 +82,23 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     print("[main] Writing output files...")
     write_notes(scored, config.output_path, config.scoring.threshold, config.tier)
     write_digest(scored, config.output_path, config.scoring.threshold, tier=config.tier)
+
+    if config.autoapply.enabled:
+        mode = "dry-run" if config.autoapply.dry_run else "live"
+        print(f"[main] Auto-apply ({mode}): classifying and tailoring above-threshold offers...")
+        packaged = run_autoapply(
+            offers=scored,
+            threshold=config.scoring.threshold,
+            output_path=config.output_path,
+            tier=config.tier,
+            db_url=config.db_url,
+            cv_master_path=tailor_cli._DEFAULT_MASTER,
+            css_path=tailor_cli._DEFAULT_CSS,
+            groq_api_key=os.environ["GROQ_API_KEY"],
+            daily_cap=config.autoapply.daily_cap,
+            dry_run=config.autoapply.dry_run,
+        )
+        print(f"[main] Auto-apply packaged {len(packaged)} offer(s)")
 
     print("[main] Sending Telegram summary...")
     send_summary(
