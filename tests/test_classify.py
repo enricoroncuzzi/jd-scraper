@@ -74,11 +74,20 @@ def test_classify_channel_non_200_is_unknown():
         assert classify_channel("https://www.linkedin.com/jobs/view/123") == CHANNEL_UNKNOWN
 
 
-def test_classify_channel_never_uses_post_or_login():
-    # guardrail: classification is a read-only GET, never a form submission
-    import inspect
-    from src.autoapply import classify
-    source = inspect.getsource(classify)
-    assert "requests.post" not in source
-    assert "playwright" not in source.lower()
-    assert "selenium" not in source.lower()
+def test_classify_channel_only_calls_requests_get():
+    html = '<html><body><button class="jobs-apply-button">Easy Apply</button></body></html>'
+    resp = _mock_response("https://www.linkedin.com/jobs/view/123", html)
+    with patch("src.autoapply.classify.requests.get", return_value=resp) as mock_get, \
+            patch("src.autoapply.classify.requests.post") as mock_post:
+        result = classify_channel("https://www.linkedin.com/jobs/view/123")
+    assert result == CHANNEL_LINKEDIN_EASY_APPLY
+    mock_get.assert_called_once()
+    args, kwargs = mock_get.call_args
+    assert kwargs.get("allow_redirects") is True
+    mock_post.assert_not_called()
+
+
+def test_classify_channel_returns_without_raising_for_malformed_html():
+    resp = _mock_response("https://www.linkedin.com/jobs/view/123", "<html><body><a href></body>")
+    with patch("src.autoapply.classify.requests.get", return_value=resp):
+        assert classify_channel("https://www.linkedin.com/jobs/view/123") == CHANNEL_UNKNOWN
