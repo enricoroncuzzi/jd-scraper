@@ -17,4 +17,7 @@ __pycache__/
 .pytest_cache/
 .superpowers/
 
+docs/
+
+
 
