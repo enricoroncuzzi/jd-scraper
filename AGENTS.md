@@ -1,6 +1,6 @@
 # Project agent memory
 
-jd-scraper is an AI job-hunt pipeline with two subsystems. See `README.md` for
+jd-scraper is an AI job-hunt pipeline with three subsystems. See `README.md` for
 the full product description and architecture diagram; this file only covers
 what the README doesn't (or what has drifted from it).
 
