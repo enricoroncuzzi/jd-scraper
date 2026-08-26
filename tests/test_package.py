@@ -37,17 +37,18 @@ def test_notify_package_sends_telegram_message(monkeypatch):
     calls = {"send": []}
     monkeypatch.setattr(
         "src.autoapply.package.send_message",
-        lambda text, token, chat_id: calls["send"].append((text, token, chat_id)),
+        lambda text, token, chat_id, parse_mode="Markdown": calls["send"].append((text, token, chat_id, parse_mode)),
     )
     notify_package(_offer(), "linkedin_easy_apply", "/tmp/acme", "tok", "chat1")
     assert len(calls["send"]) == 1
-    text, token, chat_id = calls["send"][0]
+    text, token, chat_id, parse_mode = calls["send"][0]
     assert "AI Engineer" in text
     assert "Acme" in text
     assert "LinkedIn Easy Apply" in text
     assert "/tmp/acme" in text
     assert token == "tok"
     assert chat_id == "chat1"
+    assert parse_mode is None
 
 
 def test_write_manifest_writes_only_the_manifest_file(tmp_path):
@@ -62,7 +63,7 @@ def test_notify_package_side_effects_are_limited_to_send_message(monkeypatch):
     calls = {"send": []}
     monkeypatch.setattr(
         "src.autoapply.package.send_message",
-        lambda text, token, chat_id: calls["send"].append((text, token, chat_id)),
+        lambda text, token, chat_id, parse_mode="Markdown": calls["send"].append((text, token, chat_id, parse_mode)),
     )
     result = notify_package(_offer(), "linkedin_easy_apply", "/tmp/acme", "tok", "chat1")
     assert result is None

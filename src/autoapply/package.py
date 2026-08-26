@@ -48,4 +48,4 @@ def notify_package(offer: ScoredOffer, channel: str, directory: str, telegram_to
         f"{offer.link}\n\n"
         f"Package: {directory}"
     )
-    send_message(text, telegram_token, telegram_chat_id)
+    send_message(text, telegram_token, telegram_chat_id, parse_mode=None)
