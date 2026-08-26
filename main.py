@@ -97,6 +97,8 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             groq_api_key=os.environ["GROQ_API_KEY"],
             daily_cap=config.autoapply.daily_cap,
             dry_run=config.autoapply.dry_run,
+            telegram_token=config.telegram_token,
+            telegram_chat_id=config.telegram_chat_id,
         )
         print(f"[main] Auto-apply packaged {len(packaged)} offer(s)")
 

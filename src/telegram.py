@@ -15,6 +15,10 @@ def send_summary(
     chat_id: str,
 ) -> None:
     text = _format_message(offers, threshold, greeting)
+    send_message(text, token, chat_id)
+
+
+def send_message(text: str, token: str, chat_id: str) -> None:
     url = _API_URL.format(token=token)
     response = requests.post(
         url,

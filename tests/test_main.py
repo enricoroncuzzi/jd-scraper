@@ -249,3 +249,5 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
     assert kwargs["daily_cap"] == 3
     assert kwargs["dry_run"] is True
     assert kwargs["groq_api_key"] == "test-groq-key"
+    assert kwargs["telegram_token"] == config.telegram_token
+    assert kwargs["telegram_chat_id"] == config.telegram_chat_id

@@ -40,9 +40,13 @@ what the README doesn't (or what has drifted from it).
    never drives a browser, never touches LinkedIn's or an ATS's UI); (b)
    auto-invokes the existing one-click `tailor.py` flow (`tailor_cli.run()`,
    unmodified) instead of waiting for a human to click the digest's `tailor:`
-   link; (c) writes a package manifest and fires a notification for the
-   captain to review and submit manually
-   (`src/autoapply/package.py`, extending `src/tailor/notify.py`'s pattern).
+   link; (c) writes a package manifest and fires a Telegram notification for
+   the captain to review and submit manually
+   (`src/autoapply/package.py::notify_package`, via
+   `src/telegram.py::send_message` - the same channel/token the daily digest
+   uses, not `src/tailor/notify.py`'s macOS-only osascript/open, which only
+   fires from the one-click `tailor.py` CLI run by a human, not from
+   unattended cron).
    `src/storage.py`'s `applications` table (keyed by an md5 link hash, same
    scheme as `src/dedup.py`) is the application-time dedup gate - distinct
    from `src/dedup.py`'s scrape-time dedup - and gates the per-day cap
