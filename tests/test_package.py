@@ -33,23 +33,22 @@ def test_write_manifest_records_dry_run_flag(tmp_path):
     assert manifest["dry_run"] is True
 
 
-def test_notify_package_notifies_and_reveals(monkeypatch):
-    calls = {"notify": [], "reveal": []}
+def test_notify_package_sends_telegram_message(monkeypatch):
+    calls = {"send": []}
     monkeypatch.setattr(
-        "src.autoapply.package.notify",
-        lambda title, msg: calls["notify"].append((title, msg)),
+        "src.autoapply.package.send_message",
+        lambda text, token, chat_id, parse_mode="Markdown": calls["send"].append((text, token, chat_id, parse_mode)),
     )
-    monkeypatch.setattr(
-        "src.autoapply.package.reveal",
-        lambda p: calls["reveal"].append(p),
-    )
-    notify_package(_offer(), "linkedin_easy_apply", "/tmp/acme")
-    assert len(calls["notify"]) == 1
-    title, message = calls["notify"][0]
-    assert "AI Engineer" in message
-    assert "Acme" in message
-    assert "LinkedIn Easy Apply" in message
-    assert calls["reveal"] == ["/tmp/acme"]
+    notify_package(_offer(), "linkedin_easy_apply", "/tmp/acme", "tok", "chat1")
+    assert len(calls["send"]) == 1
+    text, token, chat_id, parse_mode = calls["send"][0]
+    assert "AI Engineer" in text
+    assert "Acme" in text
+    assert "LinkedIn Easy Apply" in text
+    assert "/tmp/acme" in text
+    assert token == "tok"
+    assert chat_id == "chat1"
+    assert parse_mode is None
 
 
 def test_write_manifest_writes_only_the_manifest_file(tmp_path):
@@ -60,17 +59,12 @@ def test_write_manifest_writes_only_the_manifest_file(tmp_path):
     assert after - before == {"APPLICATION_PACKAGE.json"}
 
 
-def test_notify_package_side_effects_are_limited_to_notify_and_reveal(monkeypatch):
-    calls = {"notify": [], "reveal": []}
+def test_notify_package_side_effects_are_limited_to_send_message(monkeypatch):
+    calls = {"send": []}
     monkeypatch.setattr(
-        "src.autoapply.package.notify",
-        lambda title, msg: calls["notify"].append((title, msg)),
+        "src.autoapply.package.send_message",
+        lambda text, token, chat_id, parse_mode="Markdown": calls["send"].append((text, token, chat_id, parse_mode)),
     )
-    monkeypatch.setattr(
-        "src.autoapply.package.reveal",
-        lambda p: calls["reveal"].append(p),
-    )
-    result = notify_package(_offer(), "linkedin_easy_apply", "/tmp/acme")
+    result = notify_package(_offer(), "linkedin_easy_apply", "/tmp/acme", "tok", "chat1")
     assert result is None
-    assert len(calls["notify"]) == 1
-    assert calls["reveal"] == ["/tmp/acme"]
+    assert len(calls["send"]) == 1

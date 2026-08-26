@@ -15,10 +15,17 @@ def send_summary(
     chat_id: str,
 ) -> None:
     text = _format_message(offers, threshold, greeting)
+    send_message(text, token, chat_id)
+
+
+def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "Markdown") -> None:
     url = _API_URL.format(token=token)
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     response = requests.post(
         url,
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        json=payload,
         timeout=10,
     )
     if not response.ok:

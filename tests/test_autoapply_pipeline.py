@@ -48,7 +48,9 @@ def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False, c
     )
     monkeypatch.setattr(
         "src.autoapply.pipeline.notify_package",
-        lambda offer, channel, directory: calls["notify"].append((offer.id, channel, directory)),
+        lambda offer, channel, directory, telegram_token, telegram_chat_id: calls["notify"].append(
+            (offer.id, channel, directory, telegram_token, telegram_chat_id)
+        ),
     )
     return calls
 
@@ -60,6 +62,7 @@ def test_run_autoapply_skips_offers_below_threshold(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
     assert calls["classify"] == []
@@ -72,11 +75,12 @@ def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert len(results) == 1
     assert calls["classify"] == ["https://li.com/1"]
     assert len(calls["tailor_run"]) == 1
-    assert calls["notify"] == [(1, "external_ats", "/out/acme")]
+    assert calls["notify"] == [(1, "external_ats", "/out/acme", "tok", "chat1")]
     assert calls["save_application"] == [("https://li.com/1", "external_ats", False)]
 
 
@@ -87,6 +91,7 @@ def test_run_autoapply_dry_run_skips_notify_and_tracking(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=5, dry_run=True,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert len(results) == 1
     assert results[0]["dry_run"] is True
@@ -105,6 +110,7 @@ def test_run_autoapply_respects_already_packaged_dedup(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
     assert calls["tailor_run"] == []
@@ -118,6 +124,7 @@ def test_run_autoapply_stops_at_daily_cap(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=2, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert len(results) == 2
     assert len(calls["tailor_run"]) == 2
@@ -130,6 +137,7 @@ def test_run_autoapply_cap_accounts_for_already_packaged_today(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=2, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
     assert calls["tailor_run"] == []
@@ -147,6 +155,7 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch):
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
     assert calls["notify"] == []
@@ -162,6 +171,7 @@ def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch
         [], threshold=8, output_path="/out", tier=1, db_url=None,
         cv_master_path="m", css_path="c", groq_api_key="k",
         daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
     assert called["count"] is False

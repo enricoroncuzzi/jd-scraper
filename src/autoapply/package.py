@@ -1,7 +1,7 @@
 import json
 import os
 from src.models import ScoredOffer
-from src.tailor.notify import notify, reveal
+from src.telegram import send_message
 
 _CHANNEL_LABELS = {
     "linkedin_easy_apply": "LinkedIn Easy Apply",
@@ -35,13 +35,17 @@ def write_manifest(directory: str, offer: ScoredOffer, channel: str, dry_run: bo
     return path
 
 
-def notify_package(offer: ScoredOffer, channel: str, directory: str) -> None:
+def notify_package(offer: ScoredOffer, channel: str, directory: str, telegram_token: str, telegram_chat_id: str) -> None:
     """Notify the captain that a package is ready for manual review and submission.
-    Extends src/tailor/notify.py's existing macOS notification pattern; performs no
-    submission of any kind."""
+    Sends a Telegram message via src/telegram.py (the same mechanism the daily digest
+    uses), since production cron runs on a Linux VPS where the prior macOS-only
+    osascript/open notification would silently no-op. Performs no submission of any
+    kind."""
     label = _CHANNEL_LABELS.get(channel, channel)
-    notify(
-        "Application ready to review",
-        f"{offer.title} — {offer.company} ({label})",
+    text = (
+        "Application package ready to review\n\n"
+        f"{offer.title} - {offer.company} ({label})\n"
+        f"{offer.link}\n\n"
+        f"Package: {directory}"
     )
-    reveal(directory)
+    send_message(text, telegram_token, telegram_chat_id, parse_mode=None)

@@ -25,5 +25,10 @@
   "telegram": {
     "greeting": "Hey Enrico! Tier 3 (UK / Switzerland) digest is ready."
   },
-  "dedup_log_path": "data/seen_tier3.txt"
+  "dedup_log_path": "data/seen_tier3.txt",
+  "autoapply": {
+    "enabled": true,
+    "dry_run": true,
+    "daily_cap": 10
+  }
 }

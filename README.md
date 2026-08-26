@@ -56,9 +56,9 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 - **Faithful PDF** — headless Chromium reproduces my exact résumé template (fonts, columns, scale-to-fit) offline; the output is visually indistinguishable from my real CV.
 - **One click** — a custom macOS URL handler runs the whole pipeline straight from a link in the digest.
 
-### 3 · Auto-apply v1 (draft-and-notify, opt-in)
-- Off by default (`config.autoapply.enabled: false`) — the production tier configs don't enable it, so the daily run stays zero-touch as described above unless I opt in.
-- When enabled: classifies each above-threshold offer's application channel with a read-only HTTP GET (no browser automation, no logins), auto-runs the same tailoring pipeline, and packages the result with a notification for me to review and submit **manually** — there is no auto-submit path.
+### 3 · Auto-apply v1 (draft-and-notify)
+- Enabled on the production tier configs, in **dry-run** (`config.autoapply.dry_run: true`) — packages are written but no Telegram notification is sent yet, while I inspect a few auto-tailored packages before going fully live.
+- When notifying (dry-run off): classifies each above-threshold offer's application channel with a read-only HTTP GET (no browser automation, no logins), auto-runs the same tailoring pipeline, packages the result, and sends me a Telegram notification (the same channel as the daily digest) to review and submit **manually** — there is no auto-submit path.
 - See `AGENTS.md` for the full design and the storage/config wiring.
 
 ---

@@ -23,6 +23,8 @@ def run_autoapply(
     groq_api_key: str,
     daily_cap: int,
     dry_run: bool,
+    telegram_token: str,
+    telegram_chat_id: str,
 ) -> list[dict]:
     """Auto-tailor and package every above-threshold, not-yet-packaged offer, up to
     `daily_cap` per day. Draft-and-notify only: this reuses tailor.py's existing
@@ -61,7 +63,7 @@ def run_autoapply(
         if dry_run:
             print(f"[autoapply] dry-run: packaged {offer.company} without notifying or recording")
         else:
-            notify_package(offer, channel, directory)
+            notify_package(offer, channel, directory, telegram_token, telegram_chat_id)
             storage.save_application(db_url, offer.link, offer.title, offer.company, channel, dry_run=False)
 
         results.append({"offer": offer, "channel": channel, "directory": directory, "dry_run": dry_run})
