@@ -2,6 +2,12 @@ import os
 import sys
 import urllib.parse
 from dotenv import load_dotenv
+
+# Loaded at import time (not just in __main__) so the CV_MASTER_PATH/CV_CSS_PATH/
+# JD_OUTPUT_ROOT overrides below see .env values regardless of who imports this
+# module first (main.py imports this before ever calling load_config()).
+load_dotenv()
+
 from src.tailor.jd_source import parse_note
 from src.tailor.cv_master import load_canonical
 from src.tailor.generate import generate
@@ -29,9 +35,16 @@ def _ordered_skill_ids(canonical, requested: list[str]) -> list[str]:
     return ordered
 
 
-_DEFAULT_MASTER = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
-_DEFAULT_CSS = "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/source/CV_css.md"
-_DEFAULT_ROOT = "/Users/enricoroncuzzi/Desktop/raw/work/jd-output"
+# These absolute paths only exist on the captain's own Mac; every other machine
+# (VPS included) must set the env vars below to point at wherever the CV source
+# content and jd-output tree actually live on that host.
+_DEFAULT_MASTER = os.environ.get(
+    "CV_MASTER_PATH", "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
+)
+_DEFAULT_CSS = os.environ.get(
+    "CV_CSS_PATH", "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/source/CV_css.md"
+)
+_DEFAULT_ROOT = os.environ.get("JD_OUTPUT_ROOT", "/Users/enricoroncuzzi/Desktop/raw/work/jd-output")
 
 
 def run(
@@ -122,7 +135,6 @@ def handle_uri(
 
 
 if __name__ == "__main__":
-    load_dotenv()
     args = sys.argv[1:]
     if args and args[0] == "--uri" and len(args) >= 2:
         handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GROQ_API_KEY"])

@@ -60,8 +60,19 @@ what the README doesn't (or what has drifted from it).
    (`config.autoapply.daily_cap`) via
    `count_applications_packaged_today`/`is_application_packaged`.
    `config.autoapply.dry_run` (default `true`) runs the full pipeline
-   (classify, tailor, package) but skips the notification and the tracking
-   write, for safe testing. See
+   (classify, tailor, package) but skips only the Telegram notification, for
+   safe testing - it still writes the `applications` tracking row (with
+   `dry_run=true`), because `is_application_packaged`/
+   `count_applications_packaged_today` don't distinguish dry-run from live rows:
+   without that write, the same still-open offer got re-tailored (and
+   re-billed against the Groq quota) every day dry-run stayed on. One
+   consequence: once an offer is dry-run-packaged it stays deduped even after
+   `dry_run` flips to `false` - it will never retroactively fire a live
+   notification for that offer, only newly-qualifying ones do.
+   `main.py`'s call into `run_autoapply` is wrapped in `try/except` (mirroring
+   `run_tier_with_retry`'s failure notification): a tailoring/notify failure
+   sends a Telegram "auto-apply FAILED" message and lets the tier's regular
+   digest still go out, instead of crashing the whole run. See
    `data/jds-autoapply-explore/report.md` in the firstmate home (not this
    repo - it's outside the jd-scraper worktree) for the full design
    rationale and the captain's approval; treat any change to auto-submit
@@ -80,6 +91,38 @@ what the README doesn't (or what has drifted from it).
   the tailoring engine (`src/tailor/generate.py`). Check `src/config.py`,
   `src/scorer.py`, and `tailor.py` for the actual env vars consumed rather
   than trusting the template.
+- The CV source content `tailor.py` tailors from (`CV_master.md`, `CV_css.md`)
+  is not part of this repo - it's personal content that lives outside git.
+  `tailor.py`'s `_DEFAULT_MASTER`/`_DEFAULT_CSS`/`_DEFAULT_ROOT` read
+  `CV_MASTER_PATH`/`CV_CSS_PATH`/`JD_OUTPUT_ROOT` env vars first, falling back
+  to a hardcoded path under one specific machine's home directory only if
+  unset - that fallback only resolves on the machine it was written for, so
+  every other host (a VPS included) must set these three env vars and have the
+  actual CV source files placed at those paths, or `run_autoapply`
+  (`src/autoapply/pipeline.py`) raises `FileNotFoundError` up front rather than
+  silently no-op'ing per-offer. Never commit the source files themselves.
+
+## Deploying to the VPS
+
+- Deploy is manual: SSH in, `git pull` on `main`, `pip install -r
+  requirements.txt`, restart nothing (the pipeline only runs via the daily
+  cron job, not a long-lived process). There is no CI/CD pipeline verifying
+  the VPS tracks `origin/main` - deploy drift (VPS behind `main` for days) has
+  happened more than once; re-check `git rev-parse HEAD` vs `origin/main`
+  whenever "it isn't working" comes up before assuming a code bug.
+- Playwright's Chromium (used by `src/tailor/render_pdf.py` for CV/cover-letter
+  PDF rendering) needs two separate provisioning steps beyond `pip install`,
+  neither of which is automated anywhere in this repo: `playwright install
+  chromium` (downloads the browser binary) and, on a bare Debian/Ubuntu box,
+  `playwright install-deps chromium` as root (installs the OS shared libraries
+  Chromium needs to actually launch - missing them fails headless launch with
+  `error while loading shared libraries: libnspr4.so...`, not a Python
+  exception). Re-run both after provisioning a new box.
+- The CV's reference CSS (`src/tailor/render_pdf.py`) names Tahoma/Georgia,
+  which aren't installed on a bare Debian box (`ttf-mscorefonts-installer` is
+  not in Debian's default repos, only `contrib`) - PDFs still render, just
+  with fontconfig's fallback substitution rather than the intended fonts. A
+  cosmetic fidelity gap, not a functional one; unresolved as of 2026-08.
 
 ## Tests
 

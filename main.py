@@ -88,21 +88,35 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     if config.autoapply.enabled:
         mode = "dry-run" if config.autoapply.dry_run else "live"
         print(f"[main] Auto-apply ({mode}): classifying and tailoring above-threshold offers...")
-        packaged = run_autoapply(
-            offers=scored,
-            threshold=config.scoring.threshold,
-            output_path=config.output_path,
-            tier=config.tier,
-            db_url=config.db_url,
-            cv_master_path=tailor_cli._DEFAULT_MASTER,
-            css_path=tailor_cli._DEFAULT_CSS,
-            groq_api_key=os.environ["GROQ_API_KEY"],
-            daily_cap=config.autoapply.daily_cap,
-            dry_run=config.autoapply.dry_run,
-            telegram_token=config.telegram_token,
-            telegram_chat_id=config.telegram_chat_id,
-        )
-        print(f"[main] Auto-apply packaged {len(packaged)} offer(s)")
+        try:
+            packaged = run_autoapply(
+                offers=scored,
+                threshold=config.scoring.threshold,
+                output_path=config.output_path,
+                tier=config.tier,
+                db_url=config.db_url,
+                cv_master_path=tailor_cli._DEFAULT_MASTER,
+                css_path=tailor_cli._DEFAULT_CSS,
+                groq_api_key=os.environ["GROQ_API_KEY"],
+                daily_cap=config.autoapply.daily_cap,
+                dry_run=config.autoapply.dry_run,
+                telegram_token=config.telegram_token,
+                telegram_chat_id=config.telegram_chat_id,
+            )
+            print(f"[main] Auto-apply packaged {len(packaged)} offer(s)")
+        except Exception as e:
+            # Never let an auto-apply failure (e.g. a missing CV source path, or a
+            # Telegram send failure on notify_package) take down the whole tier run -
+            # it degrades to a visible failure notice instead, same as _notify_failure.
+            print(f"[main] Auto-apply failed: {type(e).__name__}: {e}")
+            try:
+                send_message(
+                    f"Tier {config.tier} auto-apply FAILED: {type(e).__name__}: {e}",
+                    config.telegram_token,
+                    config.telegram_chat_id,
+                )
+            except Exception as notify_exc:
+                print(f"[main] Failed to send auto-apply failure notification: {notify_exc}")
 
     print("[main] Sending Telegram summary...")
     send_summary(
