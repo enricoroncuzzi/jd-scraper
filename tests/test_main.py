@@ -255,6 +255,75 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
     assert kwargs["telegram_chat_id"] == config.telegram_chat_id
 
 
+def test_handler_survives_autoapply_failure_and_still_sends_digest(monkeypatch):
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=False, daily_cap=3))
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    monkeypatch.setattr("main.fetch_offers", lambda **kw: [scored_offers[0]])
+    monkeypatch.setattr("main.filter_by_language", lambda x: x)
+    monkeypatch.setattr("main.filter_new", lambda x, p: x)
+    monkeypatch.setattr("main.score_offers", lambda **kw: (
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    mock_send_summary = MagicMock()
+    monkeypatch.setattr("main.send_summary", mock_send_summary)
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main.init_db", lambda *a: None)
+    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "main.run_autoapply",
+        MagicMock(side_effect=FileNotFoundError("CV master source not found at '/bad/path'")),
+    )
+    mock_send_message = MagicMock()
+    monkeypatch.setattr("main.send_message", mock_send_message)
+
+    import main
+    main.handler({}, None)  # must not raise
+
+    mock_send_message.assert_called_once()
+    text = mock_send_message.call_args.args[0]
+    assert "auto-apply FAILED" in text
+    assert "CV master source not found" in text
+    mock_send_summary.assert_called_once()  # the regular digest still goes out
+
+
+def test_handler_survives_autoapply_failure_notification_also_failing(monkeypatch, capsys):
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=False, daily_cap=3))
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq-key")
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    monkeypatch.setattr("main.fetch_offers", lambda **kw: [scored_offers[0]])
+    monkeypatch.setattr("main.filter_by_language", lambda x: x)
+    monkeypatch.setattr("main.filter_new", lambda x, p: x)
+    monkeypatch.setattr("main.score_offers", lambda **kw: (
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.send_summary", lambda **kw: None)
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main.init_db", lambda *a: None)
+    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
+    monkeypatch.setattr("main.run_autoapply", MagicMock(side_effect=RuntimeError("telegram POST failed")))
+    monkeypatch.setattr("main.send_message", MagicMock(side_effect=RuntimeError("network down")))
+
+    import main
+    main.handler({}, None)  # must not raise even when the failure notice itself can't send
+
+    assert "Failed to send auto-apply failure notification" in capsys.readouterr().out
+
+
 def test_run_tier_with_retry_retries_transient_failure_then_succeeds(monkeypatch):
     call_count = {"n": 0}
 

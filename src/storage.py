@@ -156,8 +156,10 @@ def save_application_channel(db_url: str, link: str, channel: str) -> None:
 
 
 def is_application_packaged(db_url: str, link: str) -> bool:
-    """True if this offer link has already been packaged (non-dry-run) in a past run —
-    the application-time dedup gate, distinct from src/dedup.py's scrape-time dedup."""
+    """True if this offer link has already been packaged in a past run, dry-run or
+    not — the application-time dedup gate, distinct from src/dedup.py's scrape-time
+    dedup. Dry-run packages count too, so a still-open offer isn't re-tailored every
+    day auto-apply stays in dry-run mode."""
     if db_url is None:
         return False
     try:
@@ -165,7 +167,7 @@ def is_application_packaged(db_url: str, link: str) -> bool:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT 1 FROM applications WHERE link_hash = %s AND dry_run = FALSE",
+                    "SELECT 1 FROM applications WHERE link_hash = %s",
                     (_link_hash(link),),
                 )
                 return cur.fetchone() is not None
@@ -204,6 +206,9 @@ def save_application(
 
 
 def count_applications_packaged_today(db_url: str) -> int:
+    """Counts packages regardless of dry_run so the daily cap actually limits
+    tailoring calls (and their Groq cost) while dry-run stays on, not just once
+    notifications go live."""
     if db_url is None:
         return 0
     try:
@@ -211,8 +216,7 @@ def count_applications_packaged_today(db_url: str) -> int:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT COUNT(*) FROM applications "
-                    "WHERE dry_run = FALSE AND packaged_at::date = CURRENT_DATE"
+                    "SELECT COUNT(*) FROM applications WHERE packaged_at::date = CURRENT_DATE"
                 )
                 return cur.fetchone()[0]
         finally:

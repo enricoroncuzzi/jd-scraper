@@ -30,11 +30,23 @@ def run_autoapply(
     `daily_cap` per day. Draft-and-notify only: this reuses tailor.py's existing
     tailoring/validation/PDF pipeline as-is and never submits an application anywhere.
     In dry-run mode the full pipeline (classify, tailor, package) runs, but no
-    notification is sent and nothing is marked "packaged" in the tracking table."""
+    Telegram notification is sent (the tracking table is still written, gating
+    dedup and the daily cap the same as a live run)."""
     today = date.today().isoformat()
     candidates = [o for o in offers if o.score >= threshold]
     if not candidates:
         return []
+
+    if not os.path.exists(cv_master_path):
+        raise FileNotFoundError(
+            f"CV master source not found at {cv_master_path!r} - set CV_MASTER_PATH "
+            "(or deploy the CV source to this path) before auto-apply can tailor anything"
+        )
+    if css_path and not os.path.exists(css_path):
+        raise FileNotFoundError(
+            f"CV CSS source not found at {css_path!r} - set CV_CSS_PATH "
+            "(or deploy the CV source to this path) before auto-apply can tailor anything"
+        )
 
     already_today = storage.count_applications_packaged_today(db_url)
     budget = max(daily_cap - already_today, 0)
@@ -60,11 +72,13 @@ def run_autoapply(
         write_manifest(directory, offer, channel, dry_run)
         budget -= 1
 
+        # Record the package (dry-run or not) so re-runs on the same still-open offer
+        # don't re-tailor it every day - only the notification is dry-run-gated.
+        storage.save_application(db_url, offer.link, offer.title, offer.company, channel, dry_run=dry_run)
         if dry_run:
-            print(f"[autoapply] dry-run: packaged {offer.company} without notifying or recording")
+            print(f"[autoapply] dry-run: packaged {offer.company} without notifying")
         else:
             notify_package(offer, channel, directory, telegram_token, telegram_chat_id)
-            storage.save_application(db_url, offer.link, offer.title, offer.company, channel, dry_run=False)
 
         results.append({"offer": offer, "channel": channel, "directory": directory, "dry_run": dry_run})
 

@@ -1,3 +1,4 @@
+import pytest
 from unittest.mock import MagicMock
 from src.models import ScoredOffer
 from src.autoapply.pipeline import run_autoapply
@@ -8,6 +9,15 @@ def _offer(id, score, link=None, title="AI Engineer", company="Acme"):
         id=id, title=title, company=company, link=link or f"https://li.com/{id}",
         score=score, comment="c", summary="s",
     )
+
+
+@pytest.fixture
+def cv_paths(tmp_path):
+    master = tmp_path / "CV_master.md"
+    master.write_text("cv")
+    css = tmp_path / "CV_css.md"
+    css.write_text("css")
+    return str(master), str(css)
 
 
 def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False, count_today=0):
@@ -55,12 +65,12 @@ def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False, c
     return calls
 
 
-def test_run_autoapply_skips_offers_below_threshold(monkeypatch):
+def test_run_autoapply_skips_offers_below_threshold(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch)
     offers = [_offer(1, score=5)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -68,12 +78,12 @@ def test_run_autoapply_skips_offers_below_threshold(monkeypatch):
     assert calls["classify"] == []
 
 
-def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch):
+def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch)
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -84,31 +94,33 @@ def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch):
     assert calls["save_application"] == [("https://li.com/1", "external_ats", False)]
 
 
-def test_run_autoapply_dry_run_skips_notify_and_tracking(monkeypatch):
+def test_run_autoapply_dry_run_skips_notify_but_still_tracks(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch)
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=5, dry_run=True,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert len(results) == 1
     assert results[0]["dry_run"] is True
     assert calls["notify"] == []
-    assert calls["save_application"] == []
+    # dry-run still writes the tracking row (dry_run=True) so the same offer isn't
+    # re-tailored every day it stays above threshold - only the notification is skipped
+    assert calls["save_application"] == [("https://li.com/1", "external_ats", True)]
     # dry-run still runs the full pipeline: classify + tailor + package
     assert calls["classify"] == ["https://li.com/1"]
     assert len(calls["tailor_run"]) == 1
     assert len(calls["write_manifest"]) == 1
 
 
-def test_run_autoapply_respects_already_packaged_dedup(monkeypatch):
+def test_run_autoapply_respects_already_packaged_dedup(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch, already_packaged=True)
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -117,12 +129,12 @@ def test_run_autoapply_respects_already_packaged_dedup(monkeypatch):
     assert calls["notify"] == []
 
 
-def test_run_autoapply_stops_at_daily_cap(monkeypatch):
+def test_run_autoapply_stops_at_daily_cap(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch, count_today=0)
     offers = [_offer(1, score=9), _offer(2, score=9), _offer(3, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=2, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -130,12 +142,12 @@ def test_run_autoapply_stops_at_daily_cap(monkeypatch):
     assert len(calls["tailor_run"]) == 2
 
 
-def test_run_autoapply_cap_accounts_for_already_packaged_today(monkeypatch):
+def test_run_autoapply_cap_accounts_for_already_packaged_today(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch, count_today=2)
     offers = [_offer(1, score=9), _offer(2, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=2, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -143,7 +155,7 @@ def test_run_autoapply_cap_accounts_for_already_packaged_today(monkeypatch):
     assert calls["tailor_run"] == []
 
 
-def test_run_autoapply_continues_past_tailoring_failure(monkeypatch):
+def test_run_autoapply_continues_past_tailoring_failure(monkeypatch, cv_paths):
     calls = _patch_common(monkeypatch)
 
     def boom(*a, **k):
@@ -153,7 +165,7 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch):
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -161,7 +173,7 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch):
     assert calls["notify"] == []
 
 
-def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch):
+def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch, cv_paths):
     called = {"count": False}
     monkeypatch.setattr(
         "src.autoapply.pipeline.storage.count_applications_packaged_today",
@@ -169,9 +181,47 @@ def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch
     )
     results = run_autoapply(
         [], threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path="m", css_path="c", groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
     assert called["count"] is False
+
+
+def test_run_autoapply_raises_when_cv_master_path_missing(monkeypatch, tmp_path, cv_paths):
+    _patch_common(monkeypatch)
+    offers = [_offer(1, score=9)]
+    missing = str(tmp_path / "does-not-exist.md")
+    with pytest.raises(FileNotFoundError, match="CV_MASTER_PATH"):
+        run_autoapply(
+            offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
+            cv_master_path=missing, css_path=cv_paths[1], groq_api_key="k",
+            daily_cap=5, dry_run=False,
+            telegram_token="tok", telegram_chat_id="chat1",
+        )
+
+
+def test_run_autoapply_raises_when_css_path_missing(monkeypatch, tmp_path, cv_paths):
+    _patch_common(monkeypatch)
+    offers = [_offer(1, score=9)]
+    missing = str(tmp_path / "does-not-exist.md")
+    with pytest.raises(FileNotFoundError, match="CV_CSS_PATH"):
+        run_autoapply(
+            offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
+            cv_master_path=cv_paths[0], css_path=missing, groq_api_key="k",
+            daily_cap=5, dry_run=False,
+            telegram_token="tok", telegram_chat_id="chat1",
+        )
+
+
+def test_run_autoapply_below_threshold_short_circuits_before_path_check(monkeypatch, tmp_path):
+    _patch_common(monkeypatch)
+    offers = [_offer(1, score=5)]
+    results = run_autoapply(
+        offers, threshold=8, output_path="/out", tier=1, db_url=None,
+        cv_master_path=str(tmp_path / "does-not-exist.md"), css_path="", groq_api_key="k",
+        daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
+    )
+    assert results == []

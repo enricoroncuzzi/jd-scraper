@@ -137,6 +137,8 @@ def test_is_application_packaged_true_when_row_found():
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
         result = is_application_packaged("postgresql://test", "https://li.com/1")
     assert result is True
+    sql = mock_cur.execute.call_args[0][0]
+    assert "dry_run" not in sql
 
 
 def test_is_application_packaged_false_when_no_row():
@@ -180,6 +182,8 @@ def test_count_applications_packaged_today_returns_count():
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
         result = count_applications_packaged_today("postgresql://test")
     assert result == 3
+    sql = mock_cur.execute.call_args[0][0]
+    assert "dry_run" not in sql
 
 
 def test_count_applications_packaged_today_zero_when_db_url_is_none():
