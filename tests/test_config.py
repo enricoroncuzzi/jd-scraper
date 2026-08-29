@@ -25,6 +25,10 @@ def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123456")
     monkeypatch.setenv("OUTPUT_PATH", "/output")
     monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
+    # load_config() calls load_dotenv(), which picks up a real ambient .env if one
+    # exists on the machine running the suite - delenv so "no DB configured" holds
+    # regardless of what's actually in that .env.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
     config = load_config(str(config_file))
 
