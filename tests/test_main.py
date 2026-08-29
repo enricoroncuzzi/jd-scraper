@@ -1,4 +1,6 @@
 from unittest.mock import MagicMock, patch
+import openai
+import pytest
 from src.models import JobOffer, ScoredOffer
 from src.config import AppConfig, SearchConfig, ScoringConfig, TelegramConfig, AutoApplyConfig
 
@@ -251,3 +253,101 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
     assert kwargs["groq_api_key"] == "test-groq-key"
     assert kwargs["telegram_token"] == config.telegram_token
     assert kwargs["telegram_chat_id"] == config.telegram_chat_id
+
+
+def test_run_tier_with_retry_retries_transient_failure_then_succeeds(monkeypatch):
+    call_count = {"n": 0}
+
+    def flaky_handler(event, context, config_path="config/config.json"):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise RuntimeError("LinkedIn search returned 503 after 20 retries")
+
+    sleeps = []
+    monkeypatch.setattr("main.handler", flaky_handler)
+    mock_notify = MagicMock()
+    monkeypatch.setattr("main._notify_failure", mock_notify)
+
+    import main
+    main.run_tier_with_retry("config/config_tier1.json", sleep=sleeps.append)
+
+    assert call_count["n"] == 3
+    assert sleeps == [60, 120]  # increasing delay, default base 60s
+    mock_notify.assert_not_called()
+
+
+def test_run_tier_with_retry_gives_up_and_notifies_after_max_attempts(monkeypatch):
+    def always_fails(event, context, config_path="config/config.json"):
+        raise ValueError("504 gateway timeout")
+
+    monkeypatch.setattr("main.handler", always_fails)
+    mock_notify = MagicMock()
+    monkeypatch.setattr("main._notify_failure", mock_notify)
+
+    import main
+    with pytest.raises(ValueError):
+        main.run_tier_with_retry("config/config_tier1.json", sleep=lambda s: None)
+
+    mock_notify.assert_called_once()
+    args = mock_notify.call_args.args
+    assert args[0] == "config/config_tier1.json"
+    assert isinstance(args[1], ValueError)
+    assert args[3] is True  # retryable: exhausted attempts, not quota
+
+
+def test_run_tier_with_retry_does_not_retry_quota_exhaustion(monkeypatch):
+    call_count = {"n": 0}
+    reset_ms = int((__import__("time").time() + 3600) * 1000)
+
+    def quota_fails(event, context, config_path="config/config.json"):
+        call_count["n"] += 1
+        raise openai.RateLimitError(
+            "rate limited",
+            response=MagicMock(status_code=429, headers={"x-ratelimit-reset": str(reset_ms)}),
+            body={"code": 429, "metadata": {"headers": {"X-RateLimit-Reset": str(reset_ms)}}},
+        )
+
+    monkeypatch.setattr("main.handler", quota_fails)
+    mock_notify = MagicMock()
+    monkeypatch.setattr("main._notify_failure", mock_notify)
+
+    def fail_if_called(_):
+        raise AssertionError("should not sleep/retry on quota exhaustion")
+
+    import main
+    with pytest.raises(openai.RateLimitError):
+        main.run_tier_with_retry("config/config_tier1.json", sleep=fail_if_called)
+
+    assert call_count["n"] == 1  # no retry loop for quota exhaustion
+    mock_notify.assert_called_once()
+    args = mock_notify.call_args.args
+    assert args[3] is False  # retryable=False (quota)
+
+
+def test_notify_failure_sends_telegram_message(monkeypatch):
+    config = _mock_config()
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    mock_send = MagicMock()
+    monkeypatch.setattr("main.send_message", mock_send)
+
+    import main
+    main._notify_failure("config/config_tier1.json", RuntimeError("boom"), attempts=4, retryable=True)
+
+    mock_send.assert_called_once()
+    text, token, chat_id = mock_send.call_args.args
+    assert "Tier 1" in text
+    assert "FAILED" in text
+    assert "boom" in text
+    assert token == config.telegram_token
+    assert chat_id == config.telegram_chat_id
+
+
+def test_notify_failure_survives_telegram_send_error(monkeypatch, capsys):
+    config = _mock_config()
+    monkeypatch.setattr("main.load_config", lambda *a, **kw: config)
+    monkeypatch.setattr("main.send_message", MagicMock(side_effect=RuntimeError("network down")))
+
+    import main
+    main._notify_failure("config/config_tier1.json", RuntimeError("boom"), attempts=1, retryable=False)
+
+    assert "Failed to send failure notification" in capsys.readouterr().out
