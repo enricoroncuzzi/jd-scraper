@@ -1,6 +1,7 @@
 import sys
 import json
 import os
+import time
 from datetime import datetime
 from src.config import load_config
 from src.scraper import fetch_offers
@@ -8,9 +9,10 @@ from src.language_filter import filter_by_language
 from src.dedup import filter_new, mark_seen
 from src.scorer import score_offers
 from src.writer import write_notes, write_digest
-from src.telegram import send_summary
+from src.telegram import send_summary, send_message
 from src.storage import init_db, save_run, save_offers
 from src.autoapply.pipeline import run_autoapply
+from src.retry import run_with_backoff
 import tailor as tailor_cli
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
@@ -115,6 +117,41 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     print("[main] Done.")
 
 
+def _notify_failure(config_path: str, exc: Exception, attempts: int, retryable: bool) -> None:
+    try:
+        config = load_config(config_path)
+    except Exception as config_exc:
+        print(f"[main] Could not load config to send failure notification: {config_exc}")
+        return
+    reason = "quota exhausted, not retried" if not retryable else f"failed after {attempts} attempt(s)"
+    text = f"Tier {config.tier} run FAILED ({reason})\n{type(exc).__name__}: {exc}"
+    try:
+        send_message(text, config.telegram_token, config.telegram_chat_id)
+    except Exception as notify_exc:
+        print(f"[main] Failed to send failure notification: {notify_exc}")
+
+
+def run_tier_with_retry(config_path: str, sleep=time.sleep) -> None:
+    """Run one tier via handler(), retrying transient failures (an uncaught
+    scraper/scorer exception) with exponential backoff. Never retries quota
+    exhaustion (see src/retry.py). A final give-up is reported to the captain
+    via Telegram, not just left as a cron log line, then re-raised so the
+    process still exits non-zero."""
+
+    def attempt():
+        handler({}, None, config_path=config_path)
+
+    def on_retry(exc: Exception, attempt_num: int, delay: float) -> None:
+        print(f"[main] Tier run failed (attempt {attempt_num}): {exc}. Retrying in {delay:.0f}s...")
+
+    def on_give_up(exc: Exception, attempts: int, retryable: bool) -> None:
+        reason = "quota exhausted" if not retryable else f"exhausted {attempts} attempt(s)"
+        print(f"[main] Tier run giving up ({reason}): {exc}")
+        _notify_failure(config_path, exc, attempts, retryable)
+
+    run_with_backoff(attempt, sleep=sleep, on_retry=on_retry, on_give_up=on_give_up)
+
+
 if __name__ == "__main__":
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config/config.json"
-    handler({}, None, config_path=config_path)
+    run_tier_with_retry(config_path)

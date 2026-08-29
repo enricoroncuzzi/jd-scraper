@@ -12,7 +12,14 @@ what the README doesn't (or what has drifted from it).
    `_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`),
    Postgres (Neon) storage, then an Obsidian digest + Telegram summary.
    `orchestrator.py` runs the 4 tier configs in `config/config_tier{1..4}.json`
-   sequentially via `main.py`. Scoring migrated from Cerebras to OpenRouter in
+   sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
+   `run_tier_with_retry`) retries an uncaught transient failure (scraper/scorer
+   exception) with quota-aware exponential backoff via `src/retry.py`'s
+   `run_with_backoff` - it never retries OpenRouter daily-quota exhaustion
+   (reuses `src/scorer.py`'s `_is_quota_exceeded`, see below), and a final
+   give-up sends a Telegram failure notification
+   (`main.py`'s `_notify_failure`) so it isn't just a cron log line. Scoring
+   migrated from Cerebras to OpenRouter in
    2026-08 after Cerebras killed its permanent free tier; OpenRouter's $0 tier
    caps at 50 requests/day account-wide (not per-model, not per-key - the
    whole account), and its 429 error body has no Cerebras-style string code to
