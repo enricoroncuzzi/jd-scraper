@@ -62,10 +62,18 @@ _OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 # OpenRouter itself retries the request against the next model in this list before
 # ever returning an error to us. Order picked from empirical latency/reliability
 # testing against this repo's real scoring prompt (see PR description for numbers).
+# All entries verified to support tool-calling ("tools" in supported_parameters
+# on OpenRouter's /api/v1/models) as of 2026-09-01, since scoring uses
+# with_structured_output(method="function_calling") below.
+# nvidia/nemotron-3-ultra-550b-a55b:free is kept last-resort-only: ~56s observed
+# latency makes it a poor early fallback for a batch-scoring pipeline.
 _OPENROUTER_FALLBACK_MODELS = [
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "poolside/laguna-xs-2.1:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "cohere/north-mini-code:free",
     "z-ai/glm-5.2:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
 ]
 
 # OpenRouter's 429 body has no Cerebras-style string "code" to tell a same-day quota
@@ -74,6 +82,33 @@ _OPENROUTER_FALLBACK_MODELS = [
 # per-minute/upstream throttle resets within seconds, a daily free-tier cap resets
 # at the next UTC day boundary (hours away). Empirically verified against a live key.
 _QUOTA_RESET_THRESHOLD_SECONDS = 90
+
+
+# OpenRouter sometimes returns an upstream 5xx/timeout as an HTTP 200 with a
+# JSON error body instead of an actual 5xx status (confirmed via the 2026-09-01
+# outage traceback and reproduced against a mocked transport). Because the
+# status is 200, the openai SDK never raises openai.InternalServerError -
+# langchain_openai's _create_chat_result sees the "error" key in the parsed
+# body and raises a plain ValueError instead. Inspect the body to tell that
+# case apart from an unrelated ValueError (e.g. a genuinely malformed
+# response) so only the retryable case gets the batch-retry treatment.
+_RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+_RETRYABLE_MESSAGE_KEYWORDS = ("timeout", "timed out", "gateway", "unavailable")
+
+
+def _is_retryable_upstream_value_error(e: ValueError) -> bool:
+    if not e.args:
+        return False
+    body = e.args[0]
+    if isinstance(body, dict):
+        code = body.get("code")
+        if isinstance(code, int) and code in _RETRYABLE_STATUS_CODES:
+            return True
+        message = str(body.get("message", ""))
+    else:
+        message = str(body)
+    message = message.lower()
+    return any(keyword in message for keyword in _RETRYABLE_MESSAGE_KEYWORDS)
 
 
 def _is_quota_exceeded(e: openai.RateLimitError) -> bool:
@@ -139,6 +174,24 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
             wait = min(10 * (2 ** attempt), 300)  # 10s → 20 → 40 → 80 → 160 → 300s cap
             print(f"[scorer] Rate limited, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
             time.sleep(wait)
+        except (openai.InternalServerError, openai.APIConnectionError) as e:
+            # openai.InternalServerError covers real 5xx statuses (including
+            # timeout-shaped ones OpenRouter surfaces as an actual HTTP 5xx);
+            # openai.APIConnectionError also covers openai.APITimeoutError
+            # (its subclass) for genuine network-level timeouts.
+            if attempt == max_retries - 1:
+                raise
+            wait = min(10 * (2 ** attempt), 300)
+            print(f"[scorer] Upstream error ({type(e).__name__}), retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(wait)
+        except ValueError as e:
+            if not _is_retryable_upstream_value_error(e):
+                raise
+            if attempt == max_retries - 1:
+                raise
+            wait = min(10 * (2 ** attempt), 300)
+            print(f"[scorer] Upstream error (5xx via 200 error body), retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(wait)
 
 
 def score_offers(
@@ -167,6 +220,14 @@ def score_offers(
                 print(f"[scorer] Daily token quota exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
             else:
                 print(f"[scorer] Rate limit retries exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
+            break
+        except (openai.InternalServerError, openai.APIConnectionError):
+            print(f"[scorer] Upstream error retries exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
+            break
+        except ValueError as e:
+            if not _is_retryable_upstream_value_error(e):
+                raise  # not a retryable upstream error — an unexpected bug, propagate as before
+            print(f"[scorer] Upstream error retries exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
             break
 
     scoring_by_id = {s.id: s for s in all_scoring}

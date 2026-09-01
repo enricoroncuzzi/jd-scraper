@@ -2,7 +2,13 @@ import time
 from unittest.mock import MagicMock
 import openai
 from src.models import JobOffer, ScoredOffer
-from src.scorer import score_offers, _ScoringItem, _ScoringOutput, _is_quota_exceeded
+from src.scorer import (
+    score_offers,
+    _ScoringItem,
+    _ScoringOutput,
+    _is_quota_exceeded,
+    _is_retryable_upstream_value_error,
+)
 
 
 def _make_offers():
@@ -112,6 +118,150 @@ def test_scorer_retries_on_rate_limit(monkeypatch):
 
     assert len(result) == 1
     assert mock_chain.invoke.call_count == 3
+
+
+def test_scorer_retries_on_internal_server_error(monkeypatch):
+    # A real HTTP 5xx from OpenRouter surfaces via the openai SDK as
+    # openai.InternalServerError - confirm the batch retries instead of
+    # propagating (which would trigger a full tier restart upstream).
+    offers = [JobOffer(id=0, title="R", company="c", link="l", description="d")]
+    scoring = [_ScoringItem(id=0, score=5, comment="ok", summary="s")]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise openai.InternalServerError(
+                "Gateway Timeout",
+                response=MagicMock(status_code=504, headers={}),
+                body={"code": 504, "message": "Gateway Timeout"},
+            )
+        return _ScoringOutput(offers=scoring)
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == 1
+    assert mock_chain.invoke.call_count == 3
+
+
+def test_scorer_retries_on_api_connection_error(monkeypatch):
+    offers = [JobOffer(id=0, title="R", company="c", link="l", description="d")]
+    scoring = [_ScoringItem(id=0, score=5, comment="ok", summary="s")]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise openai.APIConnectionError(message="Connection timed out", request=MagicMock())
+        return _ScoringOutput(offers=scoring)
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == 1
+    assert mock_chain.invoke.call_count == 3
+
+
+def test_scorer_retries_on_openrouter_200_error_body_504(monkeypatch):
+    # OpenRouter's actual observed shape for an upstream 504: HTTP 200 with a
+    # JSON error body, which langchain_openai surfaces as a plain ValueError
+    # (openai.InternalServerError never fires since the status is 200).
+    offers = [JobOffer(id=0, title="R", company="c", link="l", description="d")]
+    scoring = [_ScoringItem(id=0, score=5, comment="ok", summary="s")]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise ValueError({"code": 504, "message": "Gateway Timeout: upstream took too long"})
+        return _ScoringOutput(offers=scoring)
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == 1
+    assert mock_chain.invoke.call_count == 3
+
+
+def test_scorer_propagates_non_retryable_value_error(monkeypatch):
+    # A ValueError unrelated to an upstream 5xx (e.g. a genuine bug/malformed
+    # response) must NOT be swallowed as a retryable upstream error.
+    offers = [JobOffer(id=0, title="R", company="c", link="l", description="d")]
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = ValueError({"code": "bad_request", "message": "Invalid schema"})
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    try:
+        score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+        assert False, "expected ValueError to propagate"
+    except ValueError:
+        pass
+
+    assert mock_chain.invoke.call_count == 1  # not retried
+
+
+def test_scorer_returns_partial_results_on_upstream_error_retries_exhausted(monkeypatch):
+    from src.scorer import BATCH_SIZE
+    offers = [
+        JobOffer(id=i, title=f"Role {i}", company="c", link=f"l{i}", description="d")
+        for i in range(BATCH_SIZE * 2)
+    ]
+    first_batch_scoring = [_ScoringItem(id=i, score=5, comment="ok", summary="s") for i in range(BATCH_SIZE)]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _ScoringOutput(offers=first_batch_scoring)
+        raise openai.InternalServerError(
+            "Service Unavailable",
+            response=MagicMock(status_code=503, headers={}),
+            body={"code": 503},
+        )
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == BATCH_SIZE  # only first batch saved, no tier-level propagation
+
+
+def test_is_retryable_upstream_value_error_true_for_5xx_code():
+    e = ValueError({"code": 504, "message": "Gateway Timeout"})
+    assert _is_retryable_upstream_value_error(e) is True
+
+
+def test_is_retryable_upstream_value_error_true_for_timeout_keyword():
+    e = ValueError({"code": "unknown", "message": "upstream request timed out"})
+    assert _is_retryable_upstream_value_error(e) is True
+
+
+def test_is_retryable_upstream_value_error_false_for_unrelated_error():
+    e = ValueError({"code": "bad_request", "message": "Invalid schema for tool call"})
+    assert _is_retryable_upstream_value_error(e) is False
+
+
+def test_is_retryable_upstream_value_error_false_for_empty_args():
+    e = ValueError()
+    assert _is_retryable_upstream_value_error(e) is False
 
 
 def test_scorer_returns_partial_results_on_quota_exceeded(monkeypatch):
