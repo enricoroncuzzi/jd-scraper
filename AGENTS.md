@@ -25,7 +25,16 @@ what the README doesn't (or what has drifted from it).
    whole account), and its 429 error body has no Cerebras-style string code to
    tell a same-day cap exhaustion apart from a transient per-minute/upstream
    throttle - see `_is_quota_exceeded` in `src/scorer.py` for the actual
-   distinguishing signal (how far away `X-RateLimit-Reset` is).
+   distinguishing signal (how far away `X-RateLimit-Reset` is). `_invoke_batch`'s
+   retry loop also catches 5xx/timeout (`openai.InternalServerError`/
+   `APIConnectionError`) at the batch level, not just 429s: an uncaught 5xx used
+   to promote to a full tier restart via `run_tier_with_retry` instead of a
+   batch-level retry (confirmed root cause of the 2026-09-01 outage). OpenRouter
+   sometimes surfaces an upstream 5xx as HTTP 200 with a JSON error body rather
+   than an actual 5xx status, which `langchain_openai` turns into a plain
+   `ValueError` instead of `openai.InternalServerError` - see
+   `_is_retryable_upstream_value_error` in `src/scorer.py` for how that case is
+   told apart from an unrelated `ValueError` (a real bug) before retrying.
 2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
    CV/cover-letter/recruiter message per job posting. The CV body is never
    rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders
