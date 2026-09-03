@@ -44,7 +44,7 @@ The scraper runs on a VPS via cron; the tailoring runs locally, one click from t
 
 ### 1 · Scraper + scoring + corpus  *(in production)*
 - **4-tier scraper** (Italy/Spain → Western EU → UK/CH → Eastern EU), config-driven per tier.
-- **LLM scoring** via OpenRouter (free-tier models, with a native fallback array across 5 alternates) with **structured Pydantic output** — not string-parsing.
+- **LLM scoring** via OpenRouter (free-tier models, with a native fallback array across 3 alternates, one per provider) with **structured Pydantic output** — not string-parsing.
 - Per-tier **dedup**, language filtering, **exponential-backoff retries**, and **partial-save on quota exhaustion** (a daily run never loses completed work).
 - **Neon Postgres corpus** (full descriptions + scores) — the data foundation for the retrieval/eval work on the roadmap.
 - Deployed on a **Netcup VPS** via a sequential-tier cron orchestrator — unattended.

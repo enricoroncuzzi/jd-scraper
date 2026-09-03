@@ -8,6 +8,7 @@ from src.scorer import (
     _ScoringOutput,
     _is_quota_exceeded,
     _is_retryable_upstream_value_error,
+    _OPENROUTER_FALLBACK_MODELS,
 )
 
 
@@ -371,3 +372,11 @@ def test_score_offers_preserves_offer_order(monkeypatch):
     result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
 
     assert [r.id for r in result] == [0, 1, 2]
+
+
+def test_openrouter_fallback_models_within_array_size_cap():
+    # OpenRouter rejects extra_body["models"] with a 400 ("'models' array must
+    # have 3 items or fewer") above this size. A 6-entry list landed in
+    # 2026-09-01's diversification and broke every scoring request for 2 days
+    # before being caught - this guards against that regression recurring.
+    assert len(_OPENROUTER_FALLBACK_MODELS) <= 3
