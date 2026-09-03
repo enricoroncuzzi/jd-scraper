@@ -60,20 +60,18 @@ _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_MODEL = "nvidia/nemotron-3-nano-30b-a3b:free"
 # OpenRouter's native fallback mechanism: if the primary model is busy/rate-limited,
 # OpenRouter itself retries the request against the next model in this list before
-# ever returning an error to us. Order picked from empirical latency/reliability
-# testing against this repo's real scoring prompt (see PR description for numbers).
-# All entries verified to support tool-calling ("tools" in supported_parameters
-# on OpenRouter's /api/v1/models) as of 2026-09-01, since scoring uses
-# with_structured_output(method="function_calling") below.
-# nvidia/nemotron-3-ultra-550b-a55b:free is kept last-resort-only: ~56s observed
-# latency makes it a poor early fallback for a batch-scoring pipeline.
+# ever returning an error to us. OpenRouter rejects extra_body["models"] with a 400
+# ("'models' array must have 3 items or fewer") above 3 entries - a 6-entry list
+# landed in 2026-09-01's diversification (#9) and broke every scoring request for
+# 2 days before being caught; keep this at 3 items, one per provider, so a repeat
+# of the 2026-09-01 all-NVIDIA-and-Z.ai-down outage still has two other providers
+# to fall back to. All entries verified to support tool-calling ("tools" in
+# supported_parameters on OpenRouter's /api/v1/models) as of 2026-09-03, since
+# scoring uses with_structured_output(method="function_calling") below.
 _OPENROUTER_FALLBACK_MODELS = [
     "nvidia/nemotron-3-super-120b-a12b:free",
-    "poolside/laguna-xs-2.1:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "cohere/north-mini-code:free",
+    "google/gemma-4-26b-a4b-it:free",
     "z-ai/glm-5.2:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
 ]
 
 # OpenRouter's 429 body has no Cerebras-style string "code" to tell a same-day quota
