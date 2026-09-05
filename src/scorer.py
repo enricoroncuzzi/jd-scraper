@@ -73,7 +73,7 @@ _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # another small/fast free-tier model verified for both tool-calling ("tools") and
 # response_format support in supported_parameters on /api/v1/models, matching the
 # old nano model's role as a lightweight primary distinct from the fallback providers.
-_OPENROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
+_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 # OpenRouter's native fallback mechanism: if the primary model is busy/rate-limited,
 # OpenRouter itself retries the request against the next model in this list before
 # ever returning an error to us. OpenRouter rejects extra_body["models"] with a 400
@@ -85,9 +85,9 @@ _OPENROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
 # supported_parameters on OpenRouter's /api/v1/models) as of 2026-09-03, since
 # scoring uses with_structured_output(method="function_calling") below.
 _OPENROUTER_FALLBACK_MODELS = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
     "google/gemma-4-26b-a4b-it:free",
     "z-ai/glm-5.2:free",
+    "liquid/lfm-2.5-2.6b:free",
 ]
 
 # OpenRouter's 429 body has no Cerebras-style string "code" to tell a same-day quota

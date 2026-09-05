@@ -1,4 +1,5 @@
 /obs-jds
+/docs
 
 # secrets and local config
 .env
