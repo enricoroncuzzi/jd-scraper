@@ -111,7 +111,7 @@ what the README doesn't (or what has drifted from it).
   `src/scorer.py`'s scoring calls. `GROQ_API_KEY` is consumed by three
   paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
   (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
-  (`src/remote_verifier.py`, via `main.py:60`). Its absence does not fail the
+  (`src/remote_verifier.py`, via `main.py`'s call into `verify_offers`). Its absence does not fail the
   run loudly - `verify_offers` degrades to marking every offer unconfirmed,
   which then silently blocks auto-apply for tiers with `remote_check.enabled`
   (the candidate filter in `src/autoapply/pipeline.py` excludes unconfirmed

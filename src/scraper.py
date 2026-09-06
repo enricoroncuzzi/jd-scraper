@@ -101,8 +101,10 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
             wait = _wait_with_jitter(_SEARCH_BASE_WAIT * (2 ** min(attempt, 4)), _SEARCH_WAIT_CAP)
             print(f"[scraper] HTTP {response.status_code}, retrying in {wait:.0f}s (attempt {attempt + 1}/{_SEARCH_MAX_RETRIES})...")
             time.sleep(wait)
-        else:
+        elif response.status_code == 400:
             raise _EndOfResults(f"LinkedIn search returned {response.status_code}")
+        else:
+            raise RuntimeError(f"LinkedIn search returned {response.status_code}")
 
     return response
 

@@ -570,7 +570,7 @@ def test_no_page_cap_report_when_the_last_page_was_under_full(monkeypatch, capsy
 
 
 def test_hard_error_ending_pagination_is_reported(monkeypatch, capsys):
-    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 403}
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 400}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -582,6 +582,21 @@ def test_hard_error_ending_pagination_is_reported(monkeypatch, capsys):
     assert "Hard error on page 1" in out
     assert "keeping 1 offers already fetched" in out
     assert len(offers) == 1
+
+
+def test_pagination_propagates_a_403_instead_of_ending_results(monkeypatch):
+    # A 403 means the guest endpoint is blocking this IP, which plausibly
+    # compromises the whole remaining crawl, not just this one query - it
+    # must reach run_tier_with_retry as a real error rather than being
+    # silently absorbed as end-of-results after a truncated offer list.
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 403}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    with pytest.raises(RuntimeError, match="403"):
+        fetch_offers(["AI Engineer"], "Europe", "r86400")
 
 
 def test_no_hard_error_report_when_pagination_ends_naturally(monkeypatch, capsys):
