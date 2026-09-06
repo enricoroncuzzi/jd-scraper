@@ -61,7 +61,8 @@ def test_prompt_cover_letter_rules(tmp_path):
     low = build_prompt(_jd(), _canon(tmp_path)).lower()
     assert "100 words" in low
     assert "never use a dash" in low
-    assert "based in italy" in low  # fixed close is stated as fixed
+    assert "close is fixed" in low  # the model is told not to write one
+    assert "do not write a close" in low
 
 
 def test_prompt_includes_all_bullets_and_hr_direction(tmp_path):
@@ -71,10 +72,33 @@ def test_prompt_includes_all_bullets_and_hr_direction(tmp_path):
     assert "hr_message" in low
 
 
-def test_cover_letter_close_does_not_offer_hybrid(tmp_path):
+_WORK_ARRANGEMENT_WORDS = ("remote", "hybrid", "on-site", "onsite", "in-office")
+
+
+def test_the_fixed_close_states_location_without_a_work_arrangement_claim():
+    from src.tailor.render_pdf import compose_cover_letter
+
+    body = compose_cover_letter(
+        company="Acme",
+        hook="I follow how Acme builds travel tools.",
+        bridge="At Hey Movo I built a coordinator agent using the Model Context Protocol.",
+        proof_text="Built the agentic layer with planner and critic loops.",
+    )
+    close = [p.strip() for p in body.split("\n\n") if p.strip()][-1]
+
+    assert "based in Italy" in close
+    for word in _WORK_ARRANGEMENT_WORDS:
+        assert word not in close.lower()
+
+
+def test_the_prompt_does_not_ask_the_model_to_assert_or_suppress_arrangement(tmp_path):
     prompt = build_prompt(_jd(), _canon(tmp_path))
-    assert "hybrid" not in prompt.lower()
-    assert "Italy" in prompt
+    close_rule = prompt.split("The cover-letter close is fixed")[1]
+
+    for word in _WORK_ARRANGEMENT_WORDS:
+        assert word not in close_rule.lower()
+    assert "relocation" not in close_rule.lower()
+    assert "availability" not in close_rule.lower()
 
 
 def test_selection_schema_shape():

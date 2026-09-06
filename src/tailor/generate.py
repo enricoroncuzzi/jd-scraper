@@ -3,8 +3,8 @@ from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import CanonicalCV
 
 FIXED_CLOSE = (
-    "I am based in Italy and working fully remotely. I would be glad to discuss "
-    "how my background fits your team."
+    "I am based in Italy. I would be glad to discuss how my background fits "
+    "your team."
 )
 
 
@@ -91,9 +91,8 @@ def build_prompt(jd: JobDescription, canonical: CanonicalCV) -> str:
         "dash, en dash, or hyphen as punctuation); use commas and periods. Banned words: excited, "
         "passionate, leverage, cutting-edge, delve, seamless, fast-paced, thrilled, furthermore, "
         "moreover, resonates, 'align with your mission', 'I am writing to'. Plain declarative "
-        "sentences, one idea each. The cover-letter close is fixed and added for you (based in "
-        "Italy, working fully remotely), so do NOT write a close and do NOT mention Spain, "
-        "relocation, or availability anywhere."
+        "sentences, one idea each. The cover-letter close is fixed and added for you, so do "
+        "NOT write a close and do NOT mention Spain anywhere."
     )
 
 
