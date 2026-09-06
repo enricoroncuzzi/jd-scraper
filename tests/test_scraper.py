@@ -449,6 +449,41 @@ def test_pagination_treats_a_hard_error_after_page_0_as_end_of_results(monkeypat
     assert calls["search_starts"] == [0, 25]
 
 
+def test_pagination_raises_when_retries_are_exhausted_after_page_0(monkeypatch):
+    pages = {
+        0: _search_html([(1, "AI Engineer", "Berlin, Germany")]),
+        25: 429,
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    with pytest.raises(RuntimeError, match="429"):
+        fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+
+def test_pagination_raises_when_network_errors_exhaust_retries_after_page_0(monkeypatch):
+    import requests as _requests
+
+    base_mock_get, calls = _paging_mock_get(
+        {0: _search_html([(1, "AI Engineer", "Berlin, Germany")])}
+    )
+
+    def mock_get(url, **kwargs):
+        if "seeMoreJobPostings" in url and kwargs.get("params", {}).get("start", 0) == 25:
+            calls["search_starts"].append(25)
+            raise _requests.ConnectionError("boom")
+        return base_mock_get(url, **kwargs)
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    with pytest.raises(RuntimeError, match="network error"):
+        fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+
 def test_pagination_still_raises_on_a_hard_error_on_page_0(monkeypatch):
     pages = {0: 400}
     mock_get, calls = _paging_mock_get(pages)

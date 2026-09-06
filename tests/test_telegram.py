@@ -132,3 +132,58 @@ def test_degraded_verification_is_announced(monkeypatch):
     send_summary([_scored(9, verdict="unconfirmed")], 8, "Hey!", "t", "1",
                  verification_enabled=True, verification_degraded=True)
     assert "verification did not run" in sent["text"].lower()
+
+
+def _long_offer(id, verdict):
+    return ScoredOffer(
+        id=id,
+        title="Senior Staff Machine Learning Engineer, Foundation Models and Applied Research " * 1,
+        company="A Very Long European Technology Company Holding GmbH",
+        location="Remote - European Union / EEA (Italy, Spain, Germany, Netherlands)",
+        link=f"https://www.linkedin.com/jobs/view/{4000000000 + id}",
+        score=9,
+        comment="ok",
+        summary=(
+            "Strong match on LLM tooling, RAG pipelines and production deployment experience, "
+            "with a fully remote contract and an explicit statement that candidates based in "
+            "Italy are eligible to apply for this position."
+        ),
+        remote_verdict=verdict,
+    )
+
+
+def test_both_sections_full_stays_within_telegram_limit(monkeypatch):
+    sent = _capture(monkeypatch)
+    offers = [_long_offer(i, "confirmed") for i in range(30)]
+    offers += [_long_offer(100 + i, "unconfirmed") for i in range(30)]
+
+    send_summary(offers, 8, "Hey Enrico!", "t", "1", verification_enabled=True)
+
+    assert len(sent["text"]) <= 4096
+
+
+def test_unconfirmed_section_shares_the_detail_budget_with_confirmed(monkeypatch):
+    sent = _capture(monkeypatch)
+    offers = [_scored(9, verdict="confirmed", title=f"Confirmed {i}") for i in range(5)]
+    offers += [_scored(9, verdict="unconfirmed", title=f"Unsure {i}") for i in range(3)]
+
+    send_summary(offers, 8, "Hey!", "t", "1", verification_enabled=True)
+
+    text = sent["text"]
+    assert "Remote not confirmed (3)" in text
+    for i in range(3):
+        assert f"Unsure {i}" not in text
+    assert "+3 more above threshold" in text
+
+
+def test_unconfirmed_offers_get_the_leftover_detail_budget(monkeypatch):
+    sent = _capture(monkeypatch)
+    offers = [_scored(9, verdict="confirmed", title=f"Confirmed {i}") for i in range(3)]
+    offers += [_scored(9, verdict="unconfirmed", title=f"Unsure {i}") for i in range(4)]
+
+    send_summary(offers, 8, "Hey!", "t", "1", verification_enabled=True)
+
+    text = sent["text"]
+    assert "Unsure 0" in text
+    assert "Unsure 1" in text
+    assert "+2 more above threshold" in text

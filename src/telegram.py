@@ -43,13 +43,14 @@ def _offer_block(o: ScoredOffer) -> list[str]:
     ]
 
 
-def _append_section(lines: list[str], header: str, ranked: list[ScoredOffer]) -> None:
-    shown, rest = ranked[:_TOP_N], ranked[_TOP_N:]
+def _append_section(lines: list[str], header: str, ranked: list[ScoredOffer], budget: int) -> int:
+    shown, rest = ranked[:budget], ranked[budget:]
     lines.append(f"{header}\n")
     for o in shown:
         lines.extend(_offer_block(o))
     if rest:
         lines.append(f"_+{len(rest)} more above threshold - check vault for full list._\n")
+    return budget - len(shown)
 
 
 def _format_message(
@@ -71,14 +72,22 @@ def _format_message(
     if high:
         ranked = sorted(high, key=lambda x: x.score, reverse=True)
         if not verification_enabled:
-            _append_section(lines, f"*High-score offers ({len(high)}):*", ranked)
+            _append_section(lines, f"*High-score offers ({len(high)}):*", ranked, _TOP_N)
         else:
             confirmed = [o for o in ranked if o.remote_verdict == "confirmed"]
             unconfirmed = [o for o in ranked if o.remote_verdict != "confirmed"]
+            # One detailed-block budget shared by both sections, so the message
+            # cannot double in size when verification is on. Confirmed offers
+            # hold the budget first; unconfirmed get what is left.
+            budget = _TOP_N
             if confirmed:
-                _append_section(lines, f"*Confirmed full-remote ({len(confirmed)}):*", confirmed)
+                budget = _append_section(
+                    lines, f"*Confirmed full-remote ({len(confirmed)}):*", confirmed, budget
+                )
             if unconfirmed:
-                _append_section(lines, f"*Remote not confirmed ({len(unconfirmed)}):*", unconfirmed)
+                _append_section(
+                    lines, f"*Remote not confirmed ({len(unconfirmed)}):*", unconfirmed, budget
+                )
 
     if low:
         lines.append(f"Low-score: {len(low)} offers below threshold. Check vault for notes.")

@@ -33,6 +33,10 @@ _PAGE_SIZE = 25
 _MAX_PAGES_PER_QUERY = 8
 
 
+class _EndOfResults(RuntimeError):
+    """A page LinkedIn refuses outright, which past page 0 means no more results."""
+
+
 def _wait_with_jitter(base_seconds: float, cap: float) -> float:
     jittered = base_seconds * random.uniform(0.75, 1.25)
     return min(jittered, cap)
@@ -98,7 +102,7 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
             print(f"[scraper] HTTP {response.status_code}, retrying in {wait:.0f}s (attempt {attempt + 1}/{_SEARCH_MAX_RETRIES})...")
             time.sleep(wait)
         else:
-            raise RuntimeError(f"LinkedIn search returned {response.status_code}")
+            raise _EndOfResults(f"LinkedIn search returned {response.status_code}")
 
     return response
 
@@ -137,7 +141,7 @@ def _fetch_for_query(
     for page in range(_MAX_PAGES_PER_QUERY):
         try:
             response = _fetch_search_page(role, location, time_range, work_mode, page * _PAGE_SIZE)
-        except RuntimeError:
+        except _EndOfResults:
             if page == 0:
                 raise
             # LinkedIn sometimes answers a start offset past the end of the
@@ -145,6 +149,8 @@ def _fetch_for_query(
             # page. Treat that as end-of-results on any page after the
             # first, rather than discarding every offer this query already
             # fetched and forcing a full tier restart from page 0.
+            # Retry-ladder exhaustion raises a plain RuntimeError instead and
+            # keeps propagating, so a real outage still reaches the tier retry.
             break
         cards = _parse_cards(response.text)
         if not cards:
