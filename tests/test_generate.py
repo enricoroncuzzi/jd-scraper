@@ -71,6 +71,12 @@ def test_prompt_includes_all_bullets_and_hr_direction(tmp_path):
     assert "hr_message" in low
 
 
+def test_cover_letter_close_does_not_offer_hybrid(tmp_path):
+    prompt = build_prompt(_jd(), _canon(tmp_path))
+    assert "hybrid" not in prompt.lower()
+    assert "Italy" in prompt
+
+
 def test_selection_schema_shape():
     s = Selection(
         included_bullet_ids=["exp.0.b0"],

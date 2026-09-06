@@ -6,13 +6,25 @@ what the README doesn't (or what has drifted from it).
 
 ## Subsystems
 
-1. **Scraper -> scoring -> corpus** (`main.py`, `orchestrator.py`, `src/`): a
-   4-tier LinkedIn scraper, language filter, dedup, LLM scoring (OpenRouter,
-   free-tier models with a native model fallback array - see
-   `_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`),
-   Postgres (Neon) storage, then an Obsidian digest + Telegram summary.
-   `orchestrator.py` runs the 4 tier configs in `config/config_tier{1..4}.json`
-   sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
+1. **Scraper -> verifier -> scoring -> corpus** (`main.py`, `orchestrator.py`,
+   `src/`): a 4-tier LinkedIn scraper (paginated per query up to a page cap,
+   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py`), language filter, dedup,
+   remote verification, LLM scoring (OpenRouter, free-tier models with a
+   native model fallback array - see `_OPENROUTER_MODEL`/
+   `_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`), Postgres (Neon) storage,
+   then a per-tier `digest.md` + `rejected.md` audit file in Obsidian, plus a
+   Telegram summary. The 4 tiers (`config/config_tier{1..4}.json`) are not a
+   uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
+   Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
+   scope filter), tier 4 is United Kingdom full-remote - see each tier config's
+   `search`/`remote_check` block for the exact filters. Remote verification
+   (`src/remote_verifier.py::verify_offers`) runs after scraping/dedup but
+   before scoring, on Groq (a separate key/quota from the OpenRouter scorer)
+   rather than OpenRouter, and rules each offer confirmed/rejected/unconfirmed;
+   it is a filter, not a gate - every failure mode (missing key, empty
+   description, a batch that won't complete) resolves to unconfirmed rather
+   than silently dropping a real job. `orchestrator.py` runs the 4 tier
+   configs sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
    `run_tier_with_retry`) retries an uncaught transient failure (scraper/scorer
    exception) with quota-aware exponential backoff via `src/retry.py`'s
    `run_with_backoff` - it never retries OpenRouter daily-quota exhaustion

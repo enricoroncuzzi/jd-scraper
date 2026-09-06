@@ -3,7 +3,7 @@ from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import CanonicalCV
 
 FIXED_CLOSE = (
-    "I am based in Italy and open to remote or hybrid arrangements. I would be glad to discuss "
+    "I am based in Italy and working fully remotely. I would be glad to discuss "
     "how my background fits your team."
 )
 
@@ -92,7 +92,7 @@ def build_prompt(jd: JobDescription, canonical: CanonicalCV) -> str:
         "passionate, leverage, cutting-edge, delve, seamless, fast-paced, thrilled, furthermore, "
         "moreover, resonates, 'align with your mission', 'I am writing to'. Plain declarative "
         "sentences, one idea each. The cover-letter close is fixed and added for you (based in "
-        "Italy, open to remote or hybrid), so do NOT write a close and do NOT mention Spain, "
+        "Italy, working fully remotely), so do NOT write a close and do NOT mention Spain, "
         "relocation, or availability anywhere."
     )
 
