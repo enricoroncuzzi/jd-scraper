@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 import openai
 import pytest
@@ -32,6 +33,51 @@ def _mock_config(db_url="postgresql://test", autoapply=None):
     )
 
 
+def _config_with(tmp_path, monkeypatch=None, tier=1, remote_check=None):
+    """Write a real config JSON file on disk and stub the env vars load_config
+    needs, so a test can exercise main.handler's actual load_config() call
+    instead of monkeypatching main.load_config directly."""
+    import os as _os
+
+    env = {
+        "LLM_API_KEY": "test-llm-key",
+        "TELEGRAM_TOKEN": "test-telegram-token",
+        "TELEGRAM_CHAT_ID": "test-chat-id",
+        "OUTPUT_PATH": str(tmp_path / "output"),
+        "DEDUP_LOG_PATH": str(tmp_path / "seen.txt"),
+        "GROQ_API_KEY": "test-groq-key",
+    }
+    for key, value in env.items():
+        if monkeypatch is not None:
+            monkeypatch.setenv(key, value)
+        else:
+            _os.environ[key] = value
+
+    data = {
+        "tier": tier,
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote"],
+            "countries": ["Italy"],
+        },
+        "scoring": {
+            "threshold": 8,
+            "exclude_keywords": [],
+            "priority_keywords": [],
+            "candidate_profile": "test profile",
+        },
+        "telegram": {"greeting": "Hey!"},
+    }
+    if remote_check is not None:
+        data["remote_check"] = {"enabled": remote_check}
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(data))
+    return config_path
+
+
 def test_handler_orchestrates_full_pipeline(monkeypatch):
     raw_offers = [JobOffer(id=0, title="AI Eng", company="Acme", link="https://li.com/0")]
     language_filtered = raw_offers
@@ -51,6 +97,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_save_offers = MagicMock()
     mock_write_notes = MagicMock()
     mock_write_digest = MagicMock()
+    mock_write_rejected = MagicMock()
     mock_send = MagicMock()
     mock_mark = MagicMock()
     mock_load_config = MagicMock(return_value=config)
@@ -65,6 +112,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     monkeypatch.setattr("main.save_offers", mock_save_offers)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
     monkeypatch.setattr("main.write_digest", mock_write_digest)
+    monkeypatch.setattr("main.write_rejected", mock_write_rejected)
     monkeypatch.setattr("main.send_summary", mock_send)
     monkeypatch.setattr("main.mark_seen", mock_mark)
 
@@ -78,6 +126,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
         time_range="r86400",
         work_modes=["remote", "hybrid"],
         countries=["Italy", "Spain"],
+        allowed_countries=None,
     )
     mock_lang_filter.assert_called_once_with(raw_offers)
     mock_filter.assert_called_once_with(language_filtered, "/data/seen.txt")
@@ -90,7 +139,8 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     )
     mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
     mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
-    mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1)
+    mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1,
+                                               verification_enabled=config.remote_check.enabled)
     mock_send.assert_called_once()
     mock_mark.assert_called_once_with(new_offers, "/data/seen.txt")
 
@@ -122,6 +172,7 @@ def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     monkeypatch.setattr("main.save_run", mock_save_run)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
     monkeypatch.setattr("main.write_digest", mock_write_digest)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", mock_send)
     monkeypatch.setattr("main.mark_seen", mock_mark)
 
@@ -170,6 +221,7 @@ def test_handler_logs_description_quality_summary(monkeypatch, tmp_path, capsys)
     ))
     monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
     monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
     monkeypatch.setattr("main.init_db", lambda *a: None)
@@ -202,6 +254,7 @@ def test_handler_skips_autoapply_when_disabled(monkeypatch):
     ))
     monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
     monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
     monkeypatch.setattr("main.init_db", lambda *a: None)
@@ -232,6 +285,7 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
     ))
     monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
     monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
     monkeypatch.setattr("main.init_db", lambda *a: None)
@@ -271,6 +325,7 @@ def test_handler_survives_autoapply_failure_and_still_sends_digest(monkeypatch):
     ))
     monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
     monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     mock_send_summary = MagicMock()
     monkeypatch.setattr("main.send_summary", mock_send_summary)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
@@ -310,6 +365,7 @@ def test_handler_survives_autoapply_failure_notification_also_failing(monkeypatc
     ))
     monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
     monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
     monkeypatch.setattr("main.init_db", lambda *a: None)
@@ -420,3 +476,77 @@ def test_notify_failure_survives_telegram_send_error(monkeypatch, capsys):
     main._notify_failure("config/config_tier1.json", RuntimeError("boom"), attempts=1, retryable=False)
 
     assert "Failed to send failure notification" in capsys.readouterr().out
+
+
+def _stub_common_pipeline(monkeypatch):
+    monkeypatch.setattr("main.write_notes", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
+    monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
+    monkeypatch.setattr("main.send_summary", lambda **kw: None)
+    monkeypatch.setattr("main.init_db", lambda *a: None)
+    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
+    monkeypatch.setattr("main.run_autoapply", lambda **kw: [])
+
+
+def test_rejected_offers_are_dropped_before_scoring_but_still_marked_seen(monkeypatch, tmp_path):
+    from src.models import JobOffer
+    fetched = [
+        JobOffer(id=1, title="Good", company="A", link="https://x/1", description="d"),
+        JobOffer(id=2, title="Bad", company="B", link="https://x/2", description="d"),
+    ]
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+        offers[0].remote_verdict = "confirmed"
+        offers[1].remote_verdict = "rejected"
+        return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    scored_input = {}
+
+    def fake_score(offers, **kwargs):
+        scored_input["ids"] = [o.id for o in offers]
+        return [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    marked = {}
+    import main
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: fetched)
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
+    monkeypatch.setattr("main.verify_offers", fake_verify)
+    monkeypatch.setattr("main.score_offers", fake_score)
+    monkeypatch.setattr("main.mark_seen", lambda offers, path: marked.update(ids=[o.id for o in offers]))
+    _stub_common_pipeline(monkeypatch)
+
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
+
+    assert scored_input["ids"] == [1]
+    assert sorted(marked["ids"]) == [1, 2]
+
+
+def test_verification_is_skipped_when_disabled(monkeypatch, tmp_path):
+    import main
+    called = {"verify": False}
+    monkeypatch.setattr("main.fetch_offers", lambda **kw: [
+        JobOffer(id=1, title="Good", company="A", link="https://x/1", description="d"),
+    ])
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
+    monkeypatch.setattr("main.verify_offers",
+                        lambda *a, **k: called.update(verify=True) or ([], {}))
+    monkeypatch.setattr("main.score_offers", lambda **kw: (
+        [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    _stub_common_pipeline(monkeypatch)
+
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=False)))
+    assert called["verify"] is False
+
+
+def test_tier3_passes_the_scope_filter_to_the_scraper(monkeypatch, tmp_path):
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+    import main
+    seen = {}
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: seen.update(kwargs) or [])
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, tier=3)))
+    assert seen["allowed_countries"] == TIER3_ALLOWED_COUNTRIES
