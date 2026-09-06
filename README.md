@@ -12,10 +12,10 @@ Job hunting for AI/ML roles is two problems at once: a **data problem** (finding
 
 1. **Scrape** - a 4-tier sweep of LinkedIn, paginated per query up to a fixed page cap: tier 1 (Italy, full remote), tier 2 (Switzerland / San Marino, any work mode), tier 3 (EU/EEA, full remote), tier 4 (United Kingdom, full remote).
 2. **Verify** - a Groq-backed stage (`GROQ_API_KEY`) reads each description and rules the role confirmed, rejected, or unconfirmed for genuine remote eligibility; it runs before scoring and, on any failure or ambiguity, fails toward unconfirmed rather than discarding a real job.
-3. **Score** — every remaining posting rated 1–10 for fit against my profile by an LLM, with a one-line rationale.
-4. **Store** — each scored offer persisted to a Postgres corpus (4,000+ offers and growing).
+3. **Score** - every remaining posting rated 1-10 for fit against my profile by an LLM, with a one-line rationale.
+4. **Store** - each scored offer persisted to a Postgres corpus (4,000+ offers and growing).
 5. **Digest** - a ranked `digest.md` lands in my notes per tier, alongside a `rejected.md` audit file listing what verification screened out and why (plus a Telegram summary).
-6. **Tailor** — click a 🎯 link next to any offer → a CV, cover letter, and recruiter message (3 PDFs) in ~40 s.
+6. **Tailor** - click a 🎯 link next to any offer -> a CV, cover letter, and recruiter message (3 PDFs) in ~40 s.
 
 ```
  LinkedIn (4 tiers, paginated up to a page cap)
