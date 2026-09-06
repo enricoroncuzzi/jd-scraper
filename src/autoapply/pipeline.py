@@ -33,7 +33,13 @@ def run_autoapply(
     Telegram notification is sent (the tracking table is still written, gating
     dedup and the daily cap the same as a live run)."""
     today = date.today().isoformat()
-    candidates = [o for o in offers if o.score >= threshold]
+    # Unconfirmed offers never spend the daily cap: the captain reads those from
+    # the digest and decides by hand. not_checked covers tier 2, which accepts
+    # every work mode and runs no verification.
+    candidates = [
+        o for o in offers
+        if o.score >= threshold and o.remote_verdict in ("confirmed", "not_checked")
+    ]
     if not candidates:
         return []
 
