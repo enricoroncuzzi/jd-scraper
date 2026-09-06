@@ -171,7 +171,7 @@ def _fetch_for_query(
             # LinkedIn repeats the last page instead of returning an empty one
             # once a query is exhausted, so a page with nothing new ends it.
             break
-        last_page_was_full = len(new_cards) == _PAGE_SIZE
+        last_page_was_full = len(cards) == _PAGE_SIZE
 
         for card in new_cards:
             seen_links.add(card["link"])

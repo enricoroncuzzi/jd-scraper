@@ -558,6 +558,27 @@ def test_page_cap_hit_is_reported_when_the_last_page_was_full(monkeypatch, capsy
     assert "Hit the page cap" in capsys.readouterr().out
 
 
+def test_page_cap_hit_is_reported_when_the_last_full_page_overlaps_the_previous(monkeypatch, capsys):
+    # LinkedIn's offset window shifts while a crawl runs, so a genuinely full
+    # final page can repeat a couple of cards from the page before it. That
+    # overlap must not mask the cap-hit report.
+    from src.scraper import _MAX_PAGES_PER_QUERY, _PAGE_SIZE
+    pages = _capped_pages(_PAGE_SIZE)
+    last_start = _PAGE_SIZE * (_MAX_PAGES_PER_QUERY - 1)
+    prev_start = last_start - _PAGE_SIZE
+    pages[last_start] = _search_html(
+        [(prev_start + n, "AI Engineer", "Berlin, Germany") for n in range(2)]
+        + [(last_start + n, "AI Engineer", "Berlin, Germany") for n in range(_PAGE_SIZE - 2)]
+    )
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" in capsys.readouterr().out
+
+
 def test_no_page_cap_report_when_the_last_page_was_under_full(monkeypatch, capsys):
     from src.scraper import _PAGE_SIZE
     mock_get, calls = _paging_mock_get(_capped_pages(_PAGE_SIZE - 14))

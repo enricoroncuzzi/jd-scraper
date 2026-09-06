@@ -106,8 +106,9 @@ what the README doesn't (or what has drifted from it).
   (one per tier); `config/config.example.json` is the template for the
   gitignored `config/config.json`.
 - Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
-  expected keys. `LLM_API_KEY` is read generically (`src/config.py:58`, not
-  provider-specific by name) and currently holds an OpenRouter key consumed by
+  expected keys. `LLM_API_KEY` is read generically (the `llm_api_key`
+  assignment in `src/config.py`'s `load_config`, not provider-specific by
+  name) and currently holds an OpenRouter key consumed by
   `src/scorer.py`'s scoring calls. `GROQ_API_KEY` is consumed by three
   paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
   (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
