@@ -49,11 +49,15 @@ def init_db(db_url: str) -> None:
                         comment            TEXT,
                         summary            TEXT,
                         tier               INTEGER,
-                        run_at             TIMESTAMPTZ
+                        run_at             TIMESTAMPTZ,
+                        remote_verdict     VARCHAR(12),
+                        remote_reason      TEXT
                     )
                 """)
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS description_status VARCHAR(10) NOT NULL DEFAULT 'ok'""")
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS application_channel VARCHAR(20)""")
+                cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_verdict VARCHAR(12)""")
+                cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_reason TEXT""")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS applications (
                         id           SERIAL PRIMARY KEY,
@@ -121,13 +125,15 @@ def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) 
                         """
                         INSERT INTO offers
                             (run_id, link, title, company, location, work_mode,
-                             description, description_status, score, comment, summary, tier, run_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             description, description_status, score, comment, summary, tier, run_at,
+                             remote_verdict, remote_reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             run_id, offer.link, offer.title, offer.company, offer.location,
                             offer.work_mode, offer.description, offer.description_status,
                             offer.score, offer.comment, offer.summary, tier, now,
+                            offer.remote_verdict, offer.remote_reason,
                         ),
                     )
             conn.commit()
