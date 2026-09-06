@@ -82,6 +82,7 @@ def test_missing_api_key_degrades_the_whole_stage(monkeypatch):
     assert calls["count"] == 0
     assert all(o.remote_verdict == "unconfirmed" for o in verified)
     assert usage["total_tokens"] == 0
+    assert usage["degraded"] is True
 
 
 def test_offer_missing_from_the_response_becomes_unconfirmed(monkeypatch):

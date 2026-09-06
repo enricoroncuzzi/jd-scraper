@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import date
 from src.models import ScoredOffer
@@ -235,4 +236,18 @@ def test_note_frontmatter_carries_the_verdict(tmp_path):
     text = next(scraped.iterdir()).read_text()
 
     assert "remote_verdict: confirmed" in text
-    assert "remote_reason: Remote anywhere in the EU." in text
+    assert f'remote_reason: {json.dumps("Remote anywhere in the EU.")}' in text
+
+
+def test_note_frontmatter_escapes_remote_reason_for_yaml_safety(tmp_path):
+    reason = 'Says "remote: EU only" in the description.'
+    offer = _scored_v(9, "confirmed", reason=reason)
+    write_notes([offer], str(tmp_path), 8, tier=1)
+    scraped = tmp_path / date.today().isoformat() / "tier1" / "scraped"
+    text = next(scraped.iterdir()).read_text()
+
+    expected_line = f"remote_reason: {json.dumps(reason)}"
+    assert expected_line in text
+    # The raw, unescaped colon-and-quote text must never appear unquoted -
+    # only inside the JSON-escaped form checked above.
+    assert f"remote_reason: {reason}" not in text

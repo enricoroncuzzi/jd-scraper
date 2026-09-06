@@ -33,12 +33,10 @@ def _mock_config(db_url="postgresql://test", autoapply=None):
     )
 
 
-def _config_with(tmp_path, monkeypatch=None, tier=1, remote_check=None):
+def _config_with(tmp_path, monkeypatch, tier=1, remote_check=None):
     """Write a real config JSON file on disk and stub the env vars load_config
     needs, so a test can exercise main.handler's actual load_config() call
     instead of monkeypatching main.load_config directly."""
-    import os as _os
-
     env = {
         "LLM_API_KEY": "test-llm-key",
         "TELEGRAM_TOKEN": "test-telegram-token",
@@ -48,10 +46,7 @@ def _config_with(tmp_path, monkeypatch=None, tier=1, remote_check=None):
         "GROQ_API_KEY": "test-groq-key",
     }
     for key, value in env.items():
-        if monkeypatch is not None:
-            monkeypatch.setenv(key, value)
-        else:
-            _os.environ[key] = value
+        monkeypatch.setenv(key, value)
 
     data = {
         "tier": tier,
@@ -139,6 +134,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     )
     mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
     mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
+    mock_write_rejected.assert_called_once()
     mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1,
                                                verification_enabled=config.remote_check.enabled)
     mock_send.assert_called_once()

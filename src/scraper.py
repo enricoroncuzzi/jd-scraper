@@ -135,7 +135,17 @@ def _fetch_for_query(
     next_id = start_id
 
     for page in range(_MAX_PAGES_PER_QUERY):
-        response = _fetch_search_page(role, location, time_range, work_mode, page * _PAGE_SIZE)
+        try:
+            response = _fetch_search_page(role, location, time_range, work_mode, page * _PAGE_SIZE)
+        except RuntimeError:
+            if page == 0:
+                raise
+            # LinkedIn sometimes answers a start offset past the end of the
+            # result set with a hard error (e.g. 400) instead of an empty
+            # page. Treat that as end-of-results on any page after the
+            # first, rather than discarding every offer this query already
+            # fetched and forcing a full tier restart from page 0.
+            break
         cards = _parse_cards(response.text)
         if not cards:
             break

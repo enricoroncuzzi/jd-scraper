@@ -108,10 +108,15 @@ what the README doesn't (or what has drifted from it).
 - Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
   expected keys. `LLM_API_KEY` is read generically (`src/config.py:58`, not
   provider-specific by name) and currently holds an OpenRouter key consumed by
-  `src/scorer.py`'s scoring calls; `GROQ_API_KEY` is unrelated, used only by
-  the tailoring engine (`src/tailor/generate.py`). Check `src/config.py`,
-  `src/scorer.py`, and `tailor.py` for the actual env vars consumed rather
-  than trusting the template.
+  `src/scorer.py`'s scoring calls. `GROQ_API_KEY` is consumed by three
+  paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
+  (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
+  (`src/remote_verifier.py`, via `main.py:60`). Its absence does not fail the
+  run loudly - `verify_offers` degrades to marking every offer unconfirmed,
+  which then silently blocks auto-apply for tiers with `remote_check.enabled`
+  (the candidate filter in `src/autoapply/pipeline.py` excludes unconfirmed
+  offers). Check `src/config.py`, `src/scorer.py`, `main.py`, and `tailor.py`
+  for the actual env vars consumed rather than trusting the template.
 - The CV source content `tailor.py` tailors from (`CV_master.md`, `CV_css.md`)
   is not part of this repo - it's personal content that lives outside git.
   `tailor.py`'s `_DEFAULT_MASTER`/`_DEFAULT_CSS`/`_DEFAULT_ROOT` read

@@ -1,7 +1,8 @@
+import json
 import os
 import re
 from datetime import date
-from src.models import ScoredOffer
+from src.models import JobOffer, ScoredOffer
 
 
 def _note_filename(offer: ScoredOffer) -> str:
@@ -43,7 +44,7 @@ def write_digest(
 
 
 def write_rejected(
-    offers: list[ScoredOffer],
+    offers: list[JobOffer],
     output_path: str,
     tier: int,
     verification_enabled: bool,
@@ -90,7 +91,7 @@ def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
         f"tier: {tier}\n"
         f"work_mode: {offer.work_mode}\n"
         f"remote_verdict: {offer.remote_verdict}\n"
-        f"remote_reason: {offer.remote_reason}\n"
+        f"remote_reason: {json.dumps(offer.remote_reason)}\n"
         f"score: {offer.score}\n"
         f"company: {offer.company}\n"
         f"location: {offer.location}\n"

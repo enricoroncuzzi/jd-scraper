@@ -363,17 +363,25 @@ def _search_html(cards):
 
 
 def _paging_mock_get(pages, description_html=DESCRIPTION_HTML):
-    """pages: dict mapping the `start` param to that page's search HTML."""
+    """pages: dict mapping the `start` param to that page's search HTML, or
+    (for a page that should return a hard HTTP error instead of a normal
+    response) an int status code."""
     calls = {"search_starts": [], "description_urls": []}
 
     def mock_get(url, **kwargs):
         response = MagicMock()
-        response.status_code = 200
         if "seeMoreJobPostings" in url:
             start = kwargs.get("params", {}).get("start", 0)
             calls["search_starts"].append(start)
-            response.text = pages.get(start, EMPTY_PAGE_HTML)
+            page = pages.get(start, EMPTY_PAGE_HTML)
+            if isinstance(page, int):
+                response.status_code = page
+                response.text = ""
+            else:
+                response.status_code = 200
+                response.text = page
         else:
+            response.status_code = 200
             calls["description_urls"].append(url)
             response.text = description_html
         return response
@@ -423,6 +431,33 @@ def test_pagination_honours_the_page_cap(monkeypatch):
 
     from src.scraper import _MAX_PAGES_PER_QUERY
     assert len(calls["search_starts"]) == _MAX_PAGES_PER_QUERY
+
+
+def test_pagination_treats_a_hard_error_after_page_0_as_end_of_results(monkeypatch):
+    pages = {
+        0: _search_html([(1, "AI Engineer", "Berlin, Germany"), (2, "ML Engineer", "Paris, France")]),
+        25: 400,
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 2
+    assert calls["search_starts"] == [0, 25]
+
+
+def test_pagination_still_raises_on_a_hard_error_on_page_0(monkeypatch):
+    pages = {0: 400}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    with pytest.raises(RuntimeError, match="400"):
+        fetch_offers(["AI Engineer"], "Europe", "r86400")
 
 
 def test_scope_filter_discards_out_of_scope_cards(monkeypatch):
