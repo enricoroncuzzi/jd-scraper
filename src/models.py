@@ -11,6 +11,8 @@ class JobOffer(BaseModel):
     description: str = ""
     description_status: Literal["ok", "partial", "failed"] = "ok"
     work_mode: str = ""
+    remote_verdict: Literal["confirmed", "rejected", "unconfirmed", "not_checked"] = "not_checked"
+    remote_reason: str = ""
 
 
 class ScoredOffer(JobOffer):

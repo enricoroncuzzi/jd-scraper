@@ -60,3 +60,18 @@ def test_job_offer_description_status_accepts_valid_values():
 def test_scored_offer_inherits_description_status():
     offer = ScoredOffer(id=1, title="t", company="c", link="l", score=7, description_status="partial")
     assert offer.description_status == "partial"
+
+
+def test_job_offer_defaults_to_not_checked():
+    offer = JobOffer(id=1, title="AI Engineer", company="Acme", link="https://x/1")
+    assert offer.remote_verdict == "not_checked"
+    assert offer.remote_reason == ""
+
+
+def test_scored_offer_carries_verdict():
+    offer = ScoredOffer(
+        id=1, title="AI Engineer", company="Acme", link="https://x/1", score=9,
+        remote_verdict="confirmed", remote_reason="States remote anywhere in the EU.",
+    )
+    assert offer.remote_verdict == "confirmed"
+    assert offer.remote_reason == "States remote anywhere in the EU."
