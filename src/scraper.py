@@ -34,7 +34,7 @@ _MAX_PAGES_PER_QUERY = 8
 
 
 class _EndOfResults(RuntimeError):
-    """A page LinkedIn refuses outright, which past page 0 means no more results."""
+    """HTTP 400: a start offset past the end, which past page 0 means no more results."""
 
 
 def _wait_with_jitter(base_seconds: float, cap: float) -> float:
@@ -152,13 +152,15 @@ def _fetch_for_query(
         except _EndOfResults:
             if page == 0:
                 raise
-            # LinkedIn sometimes answers a start offset past the end of the
-            # result set with a hard error (e.g. 400) instead of an empty
-            # page. Treat that as end-of-results on any page after the
-            # first, rather than discarding every offer this query already
-            # fetched and forcing a full tier restart from page 0.
-            # Retry-ladder exhaustion raises a plain RuntimeError instead and
-            # keeps propagating, so a real outage still reaches the tier retry.
+            # LinkedIn answers a start offset past the end of the result set
+            # with HTTP 400 instead of an empty page, and only that status
+            # raises _EndOfResults. Treat it as end-of-results on any page
+            # after the first, rather than discarding every offer this query
+            # already fetched and forcing a full tier restart from page 0.
+            # Every other non-retriable status (403, 404, ...) and retry-ladder
+            # exhaustion raise a plain RuntimeError instead and keep
+            # propagating, so a block or a real outage still reaches the tier
+            # retry rather than silently truncating the query.
             print(f"[scraper] Hard error on page {page} ({role}/{location}/{work_mode}) "
                   f"- ending pagination here, keeping {len(offers)} offers already fetched.")
             break
