@@ -73,7 +73,16 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                    verification_enabled=config.remote_check.enabled)
 
     if not survivors:
-        print("[main] No offers left to score.")
+        print("[main] No offers left to score - all rejected by verification.")
+        try:
+            send_message(
+                f"{config.telegram.greeting}\n\nTier {config.tier}: {len(rejected)} offer(s) found, "
+                f"all {len(rejected)} rejected as not full-remote.",
+                config.telegram_token,
+                config.telegram_chat_id,
+            )
+        except Exception as notify_exc:
+            print(f"[main] Failed to send all-rejected notification: {notify_exc}")
         mark_seen(new_offers, config.dedup_log_path)
         return
 

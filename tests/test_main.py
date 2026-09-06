@@ -185,17 +185,25 @@ def test_handler_skips_pipeline_when_no_new_offers(monkeypatch):
     mock_lang_filter = MagicMock(side_effect=lambda offers: offers)
     mock_filter = MagicMock(return_value=[])
     mock_score = MagicMock()
+    mock_send_message = MagicMock()
+    mock_send_summary = MagicMock()
 
     monkeypatch.setattr("main.load_config", mock_load_config)
     monkeypatch.setattr("main.fetch_offers", mock_fetch)
     monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
     monkeypatch.setattr("main.filter_new", mock_filter)
     monkeypatch.setattr("main.score_offers", mock_score)
+    monkeypatch.setattr("main.send_message", mock_send_message)
+    monkeypatch.setattr("main.send_summary", mock_send_summary)
 
     import main
     main.handler({}, None)
 
     mock_score.assert_not_called()
+    # Genuinely-empty case (nothing found at all): stays a silent early return,
+    # distinct from the all-rejected-by-verification case which now notifies.
+    mock_send_message.assert_not_called()
+    mock_send_summary.assert_not_called()
 
 
 def test_handler_logs_description_quality_summary(monkeypatch, tmp_path, capsys):
@@ -516,6 +524,41 @@ def test_rejected_offers_are_dropped_before_scoring_but_still_marked_seen(monkey
     main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
 
     assert scored_input["ids"] == [1]
+    assert sorted(marked["ids"]) == [1, 2]
+
+
+def test_all_offers_rejected_by_verification_notifies_and_still_marks_seen(monkeypatch, tmp_path):
+    from src.models import JobOffer
+    fetched = [
+        JobOffer(id=1, title="Bad1", company="A", link="https://x/1", description="d"),
+        JobOffer(id=2, title="Bad2", company="B", link="https://x/2", description="d"),
+    ]
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+        for o in offers:
+            o.remote_verdict = "rejected"
+        return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    mock_score = MagicMock()
+    marked = {}
+    mock_send_message = MagicMock()
+    import main
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: fetched)
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
+    monkeypatch.setattr("main.verify_offers", fake_verify)
+    monkeypatch.setattr("main.score_offers", mock_score)
+    monkeypatch.setattr("main.mark_seen", lambda offers, path: marked.update(ids=[o.id for o in offers]))
+    monkeypatch.setattr("main.send_message", mock_send_message)
+    _stub_common_pipeline(monkeypatch)
+
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
+
+    mock_score.assert_not_called()
+    mock_send_message.assert_called_once()
+    text = mock_send_message.call_args.args[0]
+    assert "2" in text
+    assert "rejected" in text
     assert sorted(marked["ids"]) == [1, 2]
 
 
