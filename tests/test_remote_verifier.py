@@ -195,3 +195,30 @@ def test_client_construction_failure_with_nothing_to_check_is_not_degraded(monke
 
     assert verified[0].remote_verdict == "unconfirmed"
     assert usage["degraded"] is False
+
+
+def test_mixed_case_verdicts_are_normalized(monkeypatch):
+    _mock_groq(monkeypatch, [{"offers": [
+        {"id": 1, "verdict": "Confirmed", "reason": "States remote anywhere in the EU."},
+        {"id": 2, "verdict": " REJECTED ", "reason": "Requires two days per week on site."},
+        {"id": 3, "verdict": "Unconfirmed", "reason": "Says remote without naming a country."},
+    ]}])
+
+    verified, _ = verify_offers([_offer(1), _offer(2), _offer(3)], True, "key")
+
+    by_id = {o.id: o for o in verified}
+    assert by_id[1].remote_verdict == "confirmed"
+    assert by_id[2].remote_verdict == "rejected"
+    assert by_id[3].remote_verdict == "unconfirmed"
+    assert by_id[1].remote_reason == "States remote anywhere in the EU."
+
+
+def test_an_unknown_verdict_word_still_falls_back_to_unconfirmed(monkeypatch):
+    _mock_groq(monkeypatch, [{"offers": [
+        {"id": 1, "verdict": "maybe", "reason": "Who knows."},
+    ]}])
+
+    verified, _ = verify_offers([_offer(1)], True, "key")
+
+    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_reason == _DEGRADED_REASON

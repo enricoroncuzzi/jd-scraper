@@ -24,6 +24,11 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     config = load_config(config_path)
 
     print(f"[main] Tier {config.tier} - fetching offers...")
+    # The scope filter is bound to the literal tier number 3, not config-driven
+    # like every other per-tier knob. Renumbering tiers or adding a fifth tier
+    # will silently detach this filter (or attach it to the wrong tier) with no
+    # error - the only symptom is out-of-scope roles quietly appearing in the
+    # digest. A config-driven binding is filed as separate follow-up work.
     allowed_countries = TIER3_ALLOWED_COUNTRIES if config.tier == 3 else None
     raw_offers = fetch_offers(
         roles=config.search.roles,

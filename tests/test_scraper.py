@@ -627,3 +627,48 @@ def test_no_page_cap_report_when_end_of_results_ends_pagination(monkeypatch, cap
     fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert "Hit the page cap" not in capsys.readouterr().out
+
+
+def _event_log_mock_get(pages, log):
+    """Wraps _paging_mock_get so search requests land in a shared event log
+    alongside sleeps, letting a test assert their relative order."""
+    inner, calls = _paging_mock_get(pages)
+
+    def mock_get(url, **kwargs):
+        log.append("search" if "seeMoreJobPostings" in url else "description")
+        return inner(url, **kwargs)
+
+    return mock_get, calls
+
+
+def test_search_pages_are_paced_but_the_first_request_is_not_delayed(monkeypatch):
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+    log = []
+    # Every card is out of EU/EEA scope, so no description fetch (and no card
+    # loop sleep) happens - the page sleep is the only pacing left.
+    pages = {
+        0: _search_html([(1, "AI Engineer", "London, United Kingdom")]),
+        25: _search_html([(2, "AI Engineer", "Zurich, Switzerland")]),
+        50: EMPTY_PAGE_HTML,
+    }
+    mock_get, calls = _event_log_mock_get(pages, log)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: log.append("sleep"))
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400",
+                          allowed_countries=TIER3_ALLOWED_COUNTRIES)
+
+    assert offers == []
+    assert "description" not in log
+    assert log == ["search", "sleep", "search", "sleep", "search"]
+
+
+def test_a_single_page_query_never_sleeps_before_its_only_request(monkeypatch):
+    log = []
+    mock_get, calls = _event_log_mock_get({0: EMPTY_PAGE_HTML}, log)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: log.append("sleep"))
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert log == ["search"]

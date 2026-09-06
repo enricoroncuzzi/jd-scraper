@@ -18,7 +18,7 @@ bad API minute can never silently discard a real job.
 import json
 import time
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from src.models import JobOffer
 
@@ -49,6 +49,14 @@ class _VerdictItem(BaseModel):
     id: int
     verdict: str
     reason: str = ""
+
+    @field_validator("verdict")
+    @classmethod
+    def _canonical(cls, value: str) -> str:
+        # The model is asked for lowercase but drifts to "Confirmed"; everything
+        # downstream matches on the canonical lowercase form, so fold it here at
+        # the boundary rather than at each comparison.
+        return value.strip().lower()
 
 
 class _VerdictOutput(BaseModel):

@@ -140,6 +140,11 @@ def _fetch_for_query(
     last_page_was_full = False
 
     for page in range(_MAX_PAGES_PER_QUERY):
+        if page:
+            # A page whose cards are all out of scope fetches no descriptions,
+            # so without this the loop can fire every search request back to
+            # back. Same pacing the card loop already applies.
+            time.sleep(random.uniform(1.5, 3.0))
         try:
             response = _fetch_search_page(role, location, time_range, work_mode, page * _PAGE_SIZE)
         except _EndOfResults:
