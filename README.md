@@ -42,7 +42,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 ## By the numbers
 
-| | | verified via |
+| Metric | Value | Verified via |
 |---|---|---|
 | Automated tests | **293** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
