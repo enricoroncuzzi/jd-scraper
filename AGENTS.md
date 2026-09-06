@@ -6,13 +6,25 @@ what the README doesn't (or what has drifted from it).
 
 ## Subsystems
 
-1. **Scraper -> scoring -> corpus** (`main.py`, `orchestrator.py`, `src/`): a
-   4-tier LinkedIn scraper, language filter, dedup, LLM scoring (OpenRouter,
-   free-tier models with a native model fallback array - see
-   `_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`),
-   Postgres (Neon) storage, then an Obsidian digest + Telegram summary.
-   `orchestrator.py` runs the 4 tier configs in `config/config_tier{1..4}.json`
-   sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
+1. **Scraper -> verifier -> scoring -> corpus** (`main.py`, `orchestrator.py`,
+   `src/`): a 4-tier LinkedIn scraper (paginated per query up to a page cap,
+   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py`), language filter, dedup,
+   remote verification, LLM scoring (OpenRouter, free-tier models with a
+   native model fallback array - see `_OPENROUTER_MODEL`/
+   `_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`), Postgres (Neon) storage,
+   then a per-tier `digest.md` + `rejected.md` audit file in Obsidian, plus a
+   Telegram summary. The 4 tiers (`config/config_tier{1..4}.json`) are not a
+   uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
+   Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
+   scope filter), tier 4 is United Kingdom full-remote - see each tier config's
+   `search`/`remote_check` block for the exact filters. Remote verification
+   (`src/remote_verifier.py::verify_offers`) runs after scraping/dedup but
+   before scoring, on Groq (a separate key/quota from the OpenRouter scorer)
+   rather than OpenRouter, and rules each offer confirmed/rejected/unconfirmed;
+   it is a filter, not a gate - every failure mode (missing key, empty
+   description, a batch that won't complete) resolves to unconfirmed rather
+   than silently dropping a real job. `orchestrator.py` runs the 4 tier
+   configs sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
    `run_tier_with_retry`) retries an uncaught transient failure (scraper/scorer
    exception) with quota-aware exponential backoff via `src/retry.py`'s
    `run_with_backoff` - it never retries OpenRouter daily-quota exhaustion
@@ -94,12 +106,18 @@ what the README doesn't (or what has drifted from it).
   (one per tier); `config/config.example.json` is the template for the
   gitignored `config/config.json`.
 - Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
-  expected keys. `LLM_API_KEY` is read generically (`src/config.py:58`, not
-  provider-specific by name) and currently holds an OpenRouter key consumed by
-  `src/scorer.py`'s scoring calls; `GROQ_API_KEY` is unrelated, used only by
-  the tailoring engine (`src/tailor/generate.py`). Check `src/config.py`,
-  `src/scorer.py`, and `tailor.py` for the actual env vars consumed rather
-  than trusting the template.
+  expected keys. `LLM_API_KEY` is read generically (the `llm_api_key`
+  assignment in `src/config.py`'s `load_config`, not provider-specific by
+  name) and currently holds an OpenRouter key consumed by
+  `src/scorer.py`'s scoring calls. `GROQ_API_KEY` is consumed by three
+  paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
+  (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
+  (`src/remote_verifier.py`, via `main.py`'s call into `verify_offers`). Its absence does not fail the
+  run loudly - `verify_offers` degrades to marking every offer unconfirmed,
+  which then silently blocks auto-apply for tiers with `remote_check.enabled`
+  (the candidate filter in `src/autoapply/pipeline.py` excludes unconfirmed
+  offers). Check `src/config.py`, `src/scorer.py`, `main.py`, and `tailor.py`
+  for the actual env vars consumed rather than trusting the template.
 - The CV source content `tailor.py` tailors from (`CV_master.md`, `CV_css.md`)
   is not part of this repo - it's personal content that lives outside git.
   `tailor.py`'s `_DEFAULT_MASTER`/`_DEFAULT_CSS`/`_DEFAULT_ROOT` read

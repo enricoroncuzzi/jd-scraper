@@ -19,7 +19,7 @@ def test_init_db_creates_runs_and_offers_tables():
     mock_conn, mock_cur = _mock_conn_cur()
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
         init_db("postgresql://test")
-    assert mock_cur.execute.call_count == 5
+    assert mock_cur.execute.call_count == 7
     sqls = [call[0][0] for call in mock_cur.execute.call_args_list]
     assert any("CREATE TABLE IF NOT EXISTS runs" in s for s in sqls)
     assert any("CREATE TABLE IF NOT EXISTS offers" in s for s in sqls)
@@ -28,6 +28,15 @@ def test_init_db_creates_runs_and_offers_tables():
     assert any("CREATE TABLE IF NOT EXISTS applications" in s for s in sqls)
     mock_conn.commit.assert_called_once()
     mock_conn.close.assert_called_once()
+
+
+def test_init_db_adds_the_verdict_columns():
+    mock_conn, mock_cur = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        init_db("postgresql://test")
+    sqls = [call[0][0] for call in mock_cur.execute.call_args_list]
+    assert any("ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_verdict VARCHAR(12)" in s for s in sqls)
+    assert any("ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_reason TEXT" in s for s in sqls)
 
 
 def test_save_run_inserts_row_and_returns_id():
@@ -77,6 +86,23 @@ def test_save_offers_includes_description_status_in_insert():
     sql, params = mock_cur.execute.call_args[0]
     assert "description_status" in sql
     assert "failed" in params
+
+
+def test_save_offers_persists_the_verdict():
+    offers = [
+        ScoredOffer(id=0, title="AI Engineer", company="Acme", location="Remote",
+                    link="https://li.com/0", description="full description text",
+                    description_status="ok", work_mode="remote", score=9, comment="great", summary="LLM role",
+                    remote_verdict="confirmed", remote_reason="job page states fully remote"),
+    ]
+    mock_conn, mock_cur = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        save_offers("postgresql://test", offers, run_id=1, tier=1)
+    sql, params = mock_cur.execute.call_args[0]
+    assert "remote_verdict" in sql
+    assert "remote_reason" in sql
+    assert "confirmed" in params
+    assert "job page states fully remote" in params
 
 
 def test_save_offers_does_nothing_on_empty_list():

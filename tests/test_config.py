@@ -230,3 +230,50 @@ def test_load_config_reads_autoapply_section(tmp_path, monkeypatch):
     assert config.autoapply.enabled is True
     assert config.autoapply.dry_run is False
     assert config.autoapply.daily_cap == 3
+
+
+def _write_config(tmp_path, extra=None):
+    data = {
+        "search": {
+            "roles": ["AI Engineer"],
+            "location": "Europe",
+            "time_range": "r86400",
+            "work_mode": ["remote"],
+        },
+        "scoring": {
+            "threshold": 8,
+            "exclude_keywords": ["VP"],
+            "priority_keywords": ["LLM"],
+            "candidate_profile": "test profile",
+        },
+        "telegram": {"greeting": "Hey!"},
+    }
+    data.update(extra or {})
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(data))
+    return path
+
+
+def _set_env(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
+    monkeypatch.setattr("src.config.load_dotenv", lambda: None)
+
+
+def test_remote_check_defaults_to_disabled_when_absent(tmp_path, monkeypatch):
+    _set_env(monkeypatch)
+    config = load_config(str(_write_config(tmp_path)))
+    assert config.remote_check.enabled is False
+    assert config.remote_check.require_italy_eligibility is True
+
+
+def test_remote_check_loads_from_json(tmp_path, monkeypatch):
+    _set_env(monkeypatch)
+    path = _write_config(tmp_path, {
+        "remote_check": {"enabled": True, "require_italy_eligibility": False}
+    })
+    config = load_config(str(path))
+    assert config.remote_check.enabled is True
+    assert config.remote_check.require_italy_eligibility is False

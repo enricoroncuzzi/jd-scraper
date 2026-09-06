@@ -4,10 +4,10 @@ from src.models import ScoredOffer
 from src.autoapply.pipeline import run_autoapply
 
 
-def _offer(id, score, link=None, title="AI Engineer", company="Acme"):
+def _offer(id, score, link=None, title="AI Engineer", company="Acme", remote_verdict="not_checked"):
     return ScoredOffer(
         id=id, title=title, company=company, link=link or f"https://li.com/{id}",
-        score=score, comment="c", summary="s",
+        score=score, comment="c", summary="s", remote_verdict=remote_verdict,
     )
 
 
@@ -225,3 +225,22 @@ def test_run_autoapply_below_threshold_short_circuits_before_path_check(monkeypa
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
+
+
+def test_only_confirmed_and_not_checked_offers_are_packaged(monkeypatch, cv_paths):
+    calls = _patch_common(monkeypatch)
+    offers = [
+        _offer(1, score=9, title="Confirmed Role", remote_verdict="confirmed"),
+        _offer(2, score=9, title="Unsure Role", link="https://li.com/2", remote_verdict="unconfirmed"),
+        _offer(3, score=9, title="Unchecked Role", link="https://li.com/3", remote_verdict="not_checked"),
+    ]
+    results = run_autoapply(
+        offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
+    )
+    titles = [r["offer"].title for r in results]
+    assert "Confirmed Role" in titles
+    assert "Unchecked Role" in titles
+    assert "Unsure Role" not in titles
