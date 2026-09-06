@@ -184,6 +184,12 @@ def _fetch_for_query(
                 work_mode=work_mode or "",
             ))
             next_id += 1
+    else:
+        # No natural end-of-results, so this query was cut off by the cap. The
+        # cap stays where it is until production shows real page depth, and
+        # that observation needs this line to exist.
+        print(f"[scraper] Hit the page cap ({_MAX_PAGES_PER_QUERY} pages) for "
+              f"{role}/{location}/{work_mode} - there may be more results beyond this.")
 
     return offers
 

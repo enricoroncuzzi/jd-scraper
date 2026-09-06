@@ -589,3 +589,64 @@ def test_tier3_passes_the_scope_filter_to_the_scraper(monkeypatch, tmp_path):
     monkeypatch.setattr("main.fetch_offers", lambda **kwargs: seen.update(kwargs) or [])
     main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, tier=3)))
     assert seen["allowed_countries"] == TIER3_ALLOWED_COUNTRIES
+
+
+def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
+    from src.models import JobOffer
+    fetched = [
+        JobOffer(id=1, title="Bad1", company="A", link="https://x/1", description="d"),
+        JobOffer(id=2, title="Bad2", company="B", link="https://x/2", description="d"),
+    ]
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+        for o in offers:
+            o.remote_verdict = "rejected"
+        return offers, {"prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100}
+
+    import main
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: fetched)
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
+    monkeypatch.setattr("main.verify_offers", fake_verify)
+    monkeypatch.setattr("main.score_offers", MagicMock())
+    monkeypatch.setattr("main.mark_seen", lambda offers, path: None)
+    monkeypatch.setattr("main.send_message", MagicMock())
+    _stub_common_pipeline(monkeypatch)
+    monkeypatch.setattr("main.save_run", mock_save_run)
+    if db_url:
+        monkeypatch.setenv("DATABASE_URL", db_url)
+    else:
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
+
+
+def test_all_rejected_run_is_still_recorded_in_storage(monkeypatch, tmp_path):
+    mock_save_run = MagicMock(return_value=7)
+
+    _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url="postgresql://test")
+
+    mock_save_run.assert_called_once()
+    kwargs = mock_save_run.call_args.kwargs
+    assert kwargs["tier"] == 1
+    assert kwargs["offers_fetched"] == 2
+    assert kwargs["offers_new"] == 2
+    assert kwargs["total_tokens"] == 100
+    assert kwargs["prompt_tokens"] == 70
+    assert kwargs["completion_tokens"] == 30
+
+
+def test_all_rejected_run_skips_storage_when_db_url_is_none(monkeypatch, tmp_path):
+    mock_save_run = MagicMock()
+
+    _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url=None)
+
+    mock_save_run.assert_not_called()
+
+
+def test_all_rejected_run_survives_a_storage_failure(monkeypatch, tmp_path, capsys):
+    mock_save_run = MagicMock(side_effect=RuntimeError("neon down"))
+
+    _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url="postgresql://test")
+
+    assert "[storage] Failed" in capsys.readouterr().out

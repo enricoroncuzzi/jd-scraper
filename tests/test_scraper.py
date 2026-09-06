@@ -532,3 +532,52 @@ def test_scope_filter_spends_no_description_fetch_on_a_discarded_card(monkeypatc
 
     assert len(calls["description_urls"]) == 1
     assert "1" in calls["description_urls"][0]
+
+
+def test_page_cap_hit_is_reported(monkeypatch, capsys):
+    from src.scraper import _MAX_PAGES_PER_QUERY
+    pages = {
+        start: _search_html([(start + n, "AI Engineer", "Berlin, Germany") for n in range(3)])
+        for start in range(0, 25 * _MAX_PAGES_PER_QUERY, 25)
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" in capsys.readouterr().out
+
+
+def test_no_page_cap_report_when_an_empty_page_ends_pagination(monkeypatch, capsys):
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: EMPTY_PAGE_HTML}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" not in capsys.readouterr().out
+
+
+def test_no_page_cap_report_when_a_repeated_page_ends_pagination(monkeypatch, capsys):
+    page = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    mock_get, calls = _paging_mock_get({0: page, 25: page})
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" not in capsys.readouterr().out
+
+
+def test_no_page_cap_report_when_end_of_results_ends_pagination(monkeypatch, capsys):
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 400}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" not in capsys.readouterr().out

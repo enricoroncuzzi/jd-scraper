@@ -140,3 +140,29 @@ def test_empty_input_makes_no_call(monkeypatch):
     assert verified == []
     assert calls["count"] == 0
     assert usage["total_tokens"] == 0
+
+
+def test_content_free_fallback_description_short_circuits_without_a_call(monkeypatch):
+    calls = _mock_groq(monkeypatch, [{"offers": []}])
+
+    # What src/scraper.py falls back to when a job page is unreadable.
+    offer = _offer(1, description="AI Engineer at Acme", status="partial")
+    verified, usage = verify_offers([offer], True, "key")
+
+    assert calls["count"] == 0
+    assert verified[0].remote_verdict == "unconfirmed"
+    assert "description" in verified[0].remote_reason.lower()
+    assert usage["total_tokens"] == 0
+
+
+def test_a_real_partial_description_is_still_verified(monkeypatch):
+    calls = _mock_groq(monkeypatch, [{"offers": [
+        {"id": 1, "verdict": "rejected", "reason": "Requires three days on site."},
+    ]}])
+
+    offer = _offer(1, description="AI Engineer at Acme, three days a week on site.",
+                   status="partial")
+    verified, _ = verify_offers([offer], True, "key")
+
+    assert calls["count"] == 1
+    assert verified[0].remote_verdict == "rejected"

@@ -52,6 +52,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
 
     verification_degraded = False
     rejected: list = []
+    verify_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     if config.remote_check.enabled:
         print(f"[main] Verifying full-remote status of {len(new_offers)} offers...")
         new_offers, verify_usage = verify_offers(
@@ -83,6 +84,20 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             )
         except Exception as notify_exc:
             print(f"[main] Failed to send all-rejected notification: {notify_exc}")
+        if config.db_url:
+            try:
+                init_db(config.db_url)
+                save_run(
+                    config.db_url,
+                    tier=config.tier,
+                    offers_fetched=len(raw_offers),
+                    offers_new=len(new_offers),
+                    prompt_tokens=verify_usage["prompt_tokens"],
+                    completion_tokens=verify_usage["completion_tokens"],
+                    total_tokens=verify_usage["total_tokens"],
+                )
+            except Exception as e:
+                print(f"[storage] Failed: {e}")
         mark_seen(new_offers, config.dedup_log_path)
         return
 
