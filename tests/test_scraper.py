@@ -534,19 +534,65 @@ def test_scope_filter_spends_no_description_fetch_on_a_discarded_card(monkeypatc
     assert "1" in calls["description_urls"][0]
 
 
-def test_page_cap_hit_is_reported(monkeypatch, capsys):
-    from src.scraper import _MAX_PAGES_PER_QUERY
-    pages = {
-        start: _search_html([(start + n, "AI Engineer", "Berlin, Germany") for n in range(3)])
-        for start in range(0, 25 * _MAX_PAGES_PER_QUERY, 25)
+def _capped_pages(last_page_cards):
+    """Every page full except the last, which holds `last_page_cards` cards."""
+    from src.scraper import _MAX_PAGES_PER_QUERY, _PAGE_SIZE
+    last_start = _PAGE_SIZE * (_MAX_PAGES_PER_QUERY - 1)
+    return {
+        start: _search_html([
+            (start + n, "AI Engineer", "Berlin, Germany")
+            for n in range(last_page_cards if start == last_start else _PAGE_SIZE)
+        ])
+        for start in range(0, _PAGE_SIZE * _MAX_PAGES_PER_QUERY, _PAGE_SIZE)
     }
-    mock_get, calls = _paging_mock_get(pages)
+
+
+def test_page_cap_hit_is_reported_when_the_last_page_was_full(monkeypatch, capsys):
+    from src.scraper import _PAGE_SIZE
+    mock_get, calls = _paging_mock_get(_capped_pages(_PAGE_SIZE))
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
 
     fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert "Hit the page cap" in capsys.readouterr().out
+
+
+def test_no_page_cap_report_when_the_last_page_was_under_full(monkeypatch, capsys):
+    from src.scraper import _PAGE_SIZE
+    mock_get, calls = _paging_mock_get(_capped_pages(_PAGE_SIZE - 14))
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" not in capsys.readouterr().out
+
+
+def test_hard_error_ending_pagination_is_reported(monkeypatch, capsys):
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 403}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    out = capsys.readouterr().out
+    assert "Hard error on page 1" in out
+    assert "keeping 1 offers already fetched" in out
+    assert len(offers) == 1
+
+
+def test_no_hard_error_report_when_pagination_ends_naturally(monkeypatch, capsys):
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: EMPTY_PAGE_HTML}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hard error on page" not in capsys.readouterr().out
 
 
 def test_no_page_cap_report_when_an_empty_page_ends_pagination(monkeypatch, capsys):

@@ -158,7 +158,17 @@ def verify_offers(
         else:
             checkable.append(offer)
 
-    client = _client(groq_api_key)
+    try:
+        client = _client(groq_api_key)
+    except Exception as e:
+        print(f"[verifier] Could not build the Groq client ({type(e).__name__}: {e}) "
+              f"- marking every offer unconfirmed.")
+        for offer in checkable:
+            offer.remote_verdict = "unconfirmed"
+            offer.remote_reason = _DEGRADED_REASON
+        usage["degraded"] = bool(checkable)
+        return offers, usage
+
     total_batches = (len(checkable) - 1) // BATCH_SIZE + 1 if checkable else 0
     failed_batches = 0
 

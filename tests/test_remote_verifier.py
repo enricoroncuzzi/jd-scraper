@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.models import JobOffer
-from src.remote_verifier import verify_offers
+from src.remote_verifier import _DEGRADED_REASON, verify_offers
 
 
 def _offer(offer_id, description="We are fully remote across the EU.", status="ok"):
@@ -166,3 +166,32 @@ def test_a_real_partial_description_is_still_verified(monkeypatch):
 
     assert calls["count"] == 1
     assert verified[0].remote_verdict == "rejected"
+
+
+def test_client_construction_failure_degrades_instead_of_raising(monkeypatch):
+    calls = _mock_groq(monkeypatch, [{"offers": []}])
+
+    def boom(key):
+        raise ImportError("No module named 'groq'")
+
+    monkeypatch.setattr("src.remote_verifier._client", boom)
+
+    verified, usage = verify_offers([_offer(1), _offer(2)], True, "key")
+
+    assert calls["count"] == 0
+    assert [o.remote_verdict for o in verified] == ["unconfirmed", "unconfirmed"]
+    assert all(o.remote_reason == _DEGRADED_REASON for o in verified)
+    assert usage["degraded"] is True
+    assert usage["total_tokens"] == 0
+
+
+def test_client_construction_failure_with_nothing_to_check_is_not_degraded(monkeypatch):
+    def boom(key):
+        raise ImportError("No module named 'groq'")
+
+    monkeypatch.setattr("src.remote_verifier._client", boom)
+
+    verified, usage = verify_offers([_offer(1, description="", status="failed")], True, "key")
+
+    assert verified[0].remote_verdict == "unconfirmed"
+    assert usage["degraded"] is False

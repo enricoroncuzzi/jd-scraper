@@ -137,6 +137,7 @@ def _fetch_for_query(
     offers: list[JobOffer] = []
     seen_links: set[str] = set()
     next_id = start_id
+    last_page_was_full = False
 
     for page in range(_MAX_PAGES_PER_QUERY):
         try:
@@ -151,6 +152,8 @@ def _fetch_for_query(
             # fetched and forcing a full tier restart from page 0.
             # Retry-ladder exhaustion raises a plain RuntimeError instead and
             # keeps propagating, so a real outage still reaches the tier retry.
+            print(f"[scraper] Hard error on page {page} ({role}/{location}/{work_mode}) "
+                  f"- ending pagination here, keeping {len(offers)} offers already fetched.")
             break
         cards = _parse_cards(response.text)
         if not cards:
@@ -161,6 +164,7 @@ def _fetch_for_query(
             # LinkedIn repeats the last page instead of returning an empty one
             # once a query is exhausted, so a page with nothing new ends it.
             break
+        last_page_was_full = len(new_cards) == _PAGE_SIZE
 
         for card in new_cards:
             seen_links.add(card["link"])
@@ -185,11 +189,14 @@ def _fetch_for_query(
             ))
             next_id += 1
     else:
-        # No natural end-of-results, so this query was cut off by the cap. The
-        # cap stays where it is until production shows real page depth, and
-        # that observation needs this line to exist.
-        print(f"[scraper] Hit the page cap ({_MAX_PAGES_PER_QUERY} pages) for "
-              f"{role}/{location}/{work_mode} - there may be more results beyond this.")
+        # An under-full final page exhausted the result set on its own, so only
+        # a full last page leaves it ambiguous whether the cap truncated this
+        # query. The cap stays where it is until production shows real page
+        # depth, and that observation needs this line to be free of false
+        # positives.
+        if last_page_was_full:
+            print(f"[scraper] Hit the page cap ({_MAX_PAGES_PER_QUERY} pages) for "
+                  f"{role}/{location}/{work_mode} - there may be more results beyond this.")
 
     return offers
 
