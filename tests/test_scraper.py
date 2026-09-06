@@ -184,17 +184,22 @@ def test_fetch_offers_skips_cards_without_title_or_link(monkeypatch):
 
 
 def test_fetch_offers_multiple_roles_merged(monkeypatch):
+    # Keyed by role and by `start` (not by call order) so pagination's extra
+    # terminating request per role doesn't disturb which HTML each role sees.
     call_count = {"n": 0}
 
     def mock_get(url, **kwargs):
         resp = MagicMock()
         if "seeMoreJobPostings" in url:
             resp.status_code = 200
-            if call_count["n"] == 0:
+            params = kwargs.get("params", {})
+            call_count["n"] += 1
+            if params.get("start", 0) > 0:
+                resp.text = EMPTY_PAGE_HTML
+            elif params["keywords"] == "AI Engineer":
                 resp.text = SEARCH_HTML.replace("1234567890", "111")
             else:
                 resp.text = SEARCH_HTML.replace("1234567890", "222").replace("AI Engineer", "ML Engineer")
-            call_count["n"] += 1
         else:
             resp.status_code = 200
             resp.text = DESCRIPTION_HTML
@@ -206,7 +211,9 @@ def test_fetch_offers_multiple_roles_merged(monkeypatch):
 
     offers = fetch_offers(["AI Engineer", "ML Engineer"], "Europe", "r86400")
     assert len(offers) == 2
-    assert call_count["n"] == 2
+    # 2 search requests per role: one page with a card, one empty page that
+    # ends pagination.
+    assert call_count["n"] == 4
 
 
 def test_fetch_offers_deduplicates_across_roles(monkeypatch):
@@ -336,3 +343,122 @@ def test_fetch_offers_deduplicates_across_countries(monkeypatch):
 
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400", countries=["Italy", "Spain"])
     assert len(offers) == 1
+
+
+def _search_html(cards):
+    """cards: list of (job_id, title, location) tuples."""
+    items = "".join(
+        f"""
+  <li>
+    <div class="base-search-card">
+      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/{job_id}?ref=x">{title}</a>
+      <h3 class="base-search-card__title">{title}</h3>
+      <h4 class="base-search-card__subtitle"><a href="#">Some Company</a></h4>
+      <span class="job-search-card__location">{location}</span>
+    </div>
+  </li>"""
+        for job_id, title, location in cards
+    )
+    return f"<ul>{items}</ul>"
+
+
+def _paging_mock_get(pages, description_html=DESCRIPTION_HTML):
+    """pages: dict mapping the `start` param to that page's search HTML."""
+    calls = {"search_starts": [], "description_urls": []}
+
+    def mock_get(url, **kwargs):
+        response = MagicMock()
+        response.status_code = 200
+        if "seeMoreJobPostings" in url:
+            start = kwargs.get("params", {}).get("start", 0)
+            calls["search_starts"].append(start)
+            response.text = pages.get(start, EMPTY_PAGE_HTML)
+        else:
+            calls["description_urls"].append(url)
+            response.text = description_html
+        return response
+
+    return mock_get, calls
+
+
+def test_pagination_walks_pages_until_empty(monkeypatch):
+    pages = {
+        0: _search_html([(1, "AI Engineer", "Berlin, Germany"), (2, "ML Engineer", "Paris, France")]),
+        25: _search_html([(3, "Data Scientist", "Madrid, Spain")]),
+        50: EMPTY_PAGE_HTML,
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 3
+    assert calls["search_starts"][:3] == [0, 25, 50]
+
+
+def test_pagination_stops_when_a_page_adds_no_new_links(monkeypatch):
+    page = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    pages = {0: page, 25: page, 50: page}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 1
+    assert calls["search_starts"] == [0, 25]
+
+
+def test_pagination_honours_the_page_cap(monkeypatch):
+    pages = {
+        start: _search_html([(start + 1, "AI Engineer", "Berlin, Germany")])
+        for start in range(0, 25 * 40, 25)
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    from src.scraper import _MAX_PAGES_PER_QUERY
+    assert len(calls["search_starts"]) == _MAX_PAGES_PER_QUERY
+
+
+def test_scope_filter_discards_out_of_scope_cards(monkeypatch):
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+
+    pages = {0: _search_html([
+        (1, "In Scope", "Berlin, Germany"),
+        (2, "Out Of Scope", "Milan, Italy"),
+    ])}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    offers = fetch_offers(
+        ["AI Engineer"], "Europe", "r86400",
+        allowed_countries=TIER3_ALLOWED_COUNTRIES,
+    )
+
+    assert [o.title for o in offers] == ["In Scope"]
+
+
+def test_scope_filter_spends_no_description_fetch_on_a_discarded_card(monkeypatch):
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+
+    pages = {0: _search_html([
+        (1, "In Scope", "Berlin, Germany"),
+        (2, "Out Of Scope", "Milan, Italy"),
+    ])}
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(
+        ["AI Engineer"], "Europe", "r86400",
+        allowed_countries=TIER3_ALLOWED_COUNTRIES,
+    )
+
+    assert len(calls["description_urls"]) == 1
+    assert "1" in calls["description_urls"][0]

@@ -3,6 +3,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from src.models import JobOffer
+from src.tier_scope import is_in_scope
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 HEADERS = {
@@ -15,8 +16,8 @@ HEADERS = {
 
 _WORK_MODE_MAP = {"remote": "2", "hybrid": "3"}
 
-# Retry config — no hard time constraint, so be patient with LinkedIn rate limits.
-# Schedule: 60s → 120 → 240 → 480 → 900 → 900 → ... (±25% jitter each step)
+# Retry config - no hard time constraint, so be patient with LinkedIn rate limits.
+# Schedule: 60s -> 120 -> 240 -> 480 -> 900 -> 900 -> ... (+/-25% jitter each step)
 _SEARCH_MAX_RETRIES = 20
 _SEARCH_BASE_WAIT = 60   # seconds
 _SEARCH_WAIT_CAP = 900   # 15 min max per wait
@@ -24,6 +25,12 @@ _SEARCH_WAIT_CAP = 900   # 15 min max per wait
 _DESC_MAX_RETRIES = 8
 _DESC_BASE_WAIT = 30
 _DESC_WAIT_CAP = 300
+
+_PAGE_SIZE = 25
+# Deliberately conservative. The captain asked to revisit this against real
+# observed page counts after the first production run of the reshaped tiers -
+# raising it multiplies requests per query and therefore rate-limit exposure.
+_MAX_PAGES_PER_QUERY = 8
 
 
 def _wait_with_jitter(base_seconds: float, cap: float) -> float:
@@ -37,6 +44,7 @@ def fetch_offers(
     time_range: str,
     work_modes: list[str] = None,
     countries: list[str] = None,
+    allowed_countries: frozenset[str] | None = None,
 ) -> list[JobOffer]:
     work_modes = work_modes or []
     modes = work_modes if work_modes else [None]
@@ -49,24 +57,22 @@ def fetch_offers(
     for loc in locations:
         for role in roles:
             for mode in modes:
-                offers = _fetch_for_query(role, loc, time_range, mode, start_id=offer_id)
+                offers = _fetch_for_query(
+                    role, loc, time_range, mode,
+                    start_id=offer_id,
+                    allowed_countries=allowed_countries,
+                )
                 for offer in offers:
                     if offer.link not in seen_links:
                         seen_links.add(offer.link)
                         all_offers.append(offer)
-                        offer_id += 1
+                offer_id += len(offers)
 
     return all_offers
 
 
-def _fetch_for_query(
-    role: str,
-    location: str,
-    time_range: str,
-    work_mode: str | None,
-    start_id: int = 0,
-) -> list[JobOffer]:
-    params = {"keywords": role, "location": location, "f_TPR": time_range, "start": 0}
+def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str | None, start: int):
+    params = {"keywords": role, "location": location, "f_TPR": time_range, "start": start}
     if work_mode and work_mode in _WORK_MODE_MAP:
         params["f_WT"] = _WORK_MODE_MAP[work_mode]
 
@@ -94,37 +100,74 @@ def _fetch_for_query(
         else:
             raise RuntimeError(f"LinkedIn search returned {response.status_code}")
 
-    soup = BeautifulSoup(response.text, "html.parser")
-    cards = soup.find_all("li")
+    return response
 
-    offers: list[JobOffer] = []
-    for i, card in enumerate(cards):
+
+def _parse_cards(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    cards = []
+    for card in soup.find_all("li"):
         title_el = card.find("h3", class_="base-search-card__title")
         company_el = card.find("h4", class_="base-search-card__subtitle")
         location_el = card.find("span", class_="job-search-card__location")
         link_el = card.find("a", class_="base-card__full-link")
-
         if not title_el or not link_el:
             continue
+        cards.append({
+            "title": title_el.get_text(strip=True),
+            "company": company_el.get_text(strip=True) if company_el else "N/A",
+            "location": location_el.get_text(strip=True) if location_el else "N/A",
+            "link": link_el["href"].split("?")[0],
+        })
+    return cards
 
-        title = title_el.get_text(strip=True)
-        company = company_el.get_text(strip=True) if company_el else "N/A"
-        loc = location_el.get_text(strip=True) if location_el else "N/A"
-        link = link_el["href"].split("?")[0]
 
-        description, description_status = _fetch_description(link, title, company)
-        time.sleep(random.uniform(1.5, 3.0))
+def _fetch_for_query(
+    role: str,
+    location: str,
+    time_range: str,
+    work_mode: str | None,
+    start_id: int = 0,
+    allowed_countries: frozenset[str] | None = None,
+) -> list[JobOffer]:
+    offers: list[JobOffer] = []
+    seen_links: set[str] = set()
+    next_id = start_id
 
-        offers.append(JobOffer(
-            id=start_id + i,
-            title=title,
-            company=company,
-            location=loc,
-            link=link,
-            description=description,
-            description_status=description_status,
-            work_mode=work_mode or "",
-        ))
+    for page in range(_MAX_PAGES_PER_QUERY):
+        response = _fetch_search_page(role, location, time_range, work_mode, page * _PAGE_SIZE)
+        cards = _parse_cards(response.text)
+        if not cards:
+            break
+
+        new_cards = [c for c in cards if c["link"] not in seen_links]
+        if not new_cards:
+            # LinkedIn repeats the last page instead of returning an empty one
+            # once a query is exhausted, so a page with nothing new ends it.
+            break
+
+        for card in new_cards:
+            seen_links.add(card["link"])
+            # Scope is decided BEFORE the description fetch: that fetch is an
+            # extra request plus a multi-second sleep, and a discarded card
+            # must never cost one.
+            if not is_in_scope(card["location"], allowed_countries):
+                continue
+            description, description_status = _fetch_description(
+                card["link"], card["title"], card["company"]
+            )
+            time.sleep(random.uniform(1.5, 3.0))
+            offers.append(JobOffer(
+                id=next_id,
+                title=card["title"],
+                company=card["company"],
+                location=card["location"],
+                link=card["link"],
+                description=description,
+                description_status=description_status,
+                work_mode=work_mode or "",
+            ))
+            next_id += 1
 
     return offers
 
@@ -173,7 +216,7 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             print(f"[scraper] description HTTP {response.status_code}, retrying in {wait:.0f}s...")
             time.sleep(wait)
         else:
-            # non-retriable (403, 404, etc.) — use title+company fallback
+            # non-retriable (403, 404, etc.) - use title+company fallback
             return fallback, "partial"
 
     return "", "failed"
