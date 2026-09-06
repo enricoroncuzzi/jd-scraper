@@ -3,8 +3,9 @@
     "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
     "location": "Europe",
     "time_range": "r86400",
-    "work_mode": ["remote", "hybrid"]
+    "work_mode": ["remote"]
   },
+  "remote_check": { "enabled": true, "require_italy_eligibility": true },
   "scoring": {
     "threshold": 8,
     "exclude_keywords": [
@@ -18,7 +19,7 @@
       "MLflow", "LoRA", "PEFT", "fine-tuning",
       "MoE", "multimodal", "remote"
     ],
-    "candidate_profile": "Describe yourself here: your background, key skills, and what kind of role you are targeting."
+    "candidate_profile": "Describe yourself here: your background, key skills, and what kind of role you are targeting. Looking for fully remote roles as ML/AI Engineer, Software Engineer (AI focus), or similar, workable from Italy. Junior level, strong hands-on shipping record."
   },
   "telegram": {
     "greeting": "Hey!"

@@ -41,6 +41,16 @@ class AutoApplyConfig:
 
 
 @dataclass
+class RemoteCheckConfig:
+    # Verification confirms an offer is genuinely full-remote before it is
+    # scored. require_italy_eligibility additionally demands that someone
+    # living in Italy can hold it - unnecessary for tier 1, where a genuinely
+    # full-remote role advertised in Italy is reachable from Italy already.
+    enabled: bool = False
+    require_italy_eligibility: bool = True
+
+
+@dataclass
 class AppConfig:
     search: SearchConfig
     scoring: ScoringConfig
@@ -53,10 +63,13 @@ class AppConfig:
     dedup_log_path: str
     db_url: str | None = None
     autoapply: AutoApplyConfig = None
+    remote_check: RemoteCheckConfig = None
 
     def __post_init__(self):
         if self.autoapply is None:
             self.autoapply = AutoApplyConfig()
+        if self.remote_check is None:
+            self.remote_check = RemoteCheckConfig()
 
 
 def load_config(config_path: str = "config/config.json") -> AppConfig:
@@ -75,4 +88,5 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         dedup_log_path=data["dedup_log_path"] if "dedup_log_path" in data else os.environ["DEDUP_LOG_PATH"],
         db_url=os.environ.get("DATABASE_URL"),
         autoapply=AutoApplyConfig(**data.get("autoapply", {})),
+        remote_check=RemoteCheckConfig(**data.get("remote_check", {})),
     )
