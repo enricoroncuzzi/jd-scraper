@@ -177,10 +177,14 @@ what the README doesn't (or what has drifted from it).
 Run with `.venv/bin/python -m pytest tests/`. `tests/conftest.py` already puts
 the repo root on `sys.path` — don't add a second conftest for that purpose.
 
-## No CI
+## CI
 
-There is no CI configured (no `.github/workflows/`). Verification is manual:
-run the pytest suite above before considering a change done.
+`.github/workflows/tests.yml` runs the pytest suite on every pull request
+(and on push to `main`) - one job, Python 3.14 (matching `.venv`), no
+matrix, no secrets. The suite must pass with no API keys set (Groq/
+OpenRouter calls are mocked in tests); if a test ever needs a live key,
+that's a test-design problem, not something to fix by adding a secret to
+the workflow.
 
 ## Historical planning docs
 
