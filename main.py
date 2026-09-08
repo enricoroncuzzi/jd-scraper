@@ -18,7 +18,7 @@ from src.retry import run_with_backoff
 import tailor as tailor_cli
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
-# Groq's free-tier cap (src/remote_verifier.py's docstring) - account-wide,
+# Groq's free-tier cap (see src/remote_verifier.py's BATCH_SIZE comment) - account-wide,
 # not per-key. Printed each run against a running daily total so a human
 # reading cron.log can see the budget being approached before a tier dies
 # partway through, rather than only after a 429 already truncated a run.

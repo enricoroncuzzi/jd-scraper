@@ -2,7 +2,7 @@
 
 > A production pipeline that scrapes AI/ML job postings across four EU/UK regions daily, verifies remote eligibility and scores fit with structured LLM output, stores everything in a Postgres corpus, and tailors a CV, cover letter, and recruiter message per posting on demand, without inventing a single claim that isn't on the real CV.
 
-Built solo, test-driven (293 tests), running unattended in production.
+Built solo, test-driven (305 tests), running unattended in production.
 
 ## The interesting part: grounded generation, enforced in code
 
@@ -35,7 +35,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 ## Engineering notes
 
-- **Test-driven throughout**: 293 tests (`.venv/bin/python -m pytest tests/`), every module built red to green.
+- **Test-driven throughout**: 305 tests (`.venv/bin/python -m pytest tests/`), every module built red to green.
 - **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and CV-section generation, no string-parsed output.
 - **Resilience by design**: quota-aware exponential backoff (`src/retry.py`) and batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying.
 - **Anti-hallucination in code, not just the prompt**: the "every claim traces to the source CV" guarantee is a runtime check, not an instruction the model can ignore.
@@ -44,10 +44,10 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 | Metric | Value | Verified via |
 |---|---|---|
-| Automated tests | **293** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
+| Automated tests | **305** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
 | Max pages per query | **8** | `_MAX_PAGES_PER_QUERY` in `src/scraper.py` |
-| Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~2,600** | `wc -l` |
+| Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~3,000** | `wc -l` |
 | Manual steps in the daily run | **0** | cron-driven, see `AGENTS.md` |
 
 ## Roadmap

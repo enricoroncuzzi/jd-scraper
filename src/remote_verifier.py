@@ -94,7 +94,7 @@ def _join_spans(description: str, spans: list[tuple[int, int]]) -> str:
 def _extract_policy_excerpt(description: str, budget: int = _MAX_DESC_CHARS) -> str:
     """Return the passages of `description` likely to state its work-location
     policy, capped at `budget` chars including the joiners. Falls back to a flat
-    prefix when no policy keyword is found - see _MAX_DESC_CHARS docstring for
+    prefix when no policy keyword is found - see the _MAX_DESC_CHARS comment for
     why that's safe.
 
     When the windows do not all fit, the context radius shrinks uniformly rather
