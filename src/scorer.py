@@ -68,11 +68,13 @@ Return all {count} offers. Each must have: id (same as input), score (1-10), com
 
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# nvidia/nemotron-3-nano-30b-a3b:free was delisted from OpenRouter as of 2026-09-03
-# (only a paid, non-":free" nvidia/nemotron-3-nano-30b-a3b remains) - replaced with
-# another small/fast free-tier model verified for both tool-calling ("tools") and
-# response_format support in supported_parameters on /api/v1/models, matching the
-# old nano model's role as a lightweight primary distinct from the fallback providers.
+# These pins are perishable: nvidia/nemotron-3-nano-30b-a3b:free, an earlier primary,
+# was delisted from OpenRouter as of 2026-09-03 (only a paid, non-":free"
+# nvidia/nemotron-3-nano-30b-a3b remains). The primary is now
+# nvidia/nemotron-3-super-120b-a12b:free and liquid/lfm-2.5-2.6b:free is a fallback
+# entry; both were verified as listed on /api/v1/models with tool-calling ("tools" in
+# supported_parameters), which scoring requires via
+# with_structured_output(method="function_calling") below.
 _OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 # OpenRouter's native fallback mechanism: if the primary model is busy/rate-limited,
 # OpenRouter itself retries the request against the next model in this list before
