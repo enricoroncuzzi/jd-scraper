@@ -1,4 +1,7 @@
+import json
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock
 import openai
 from src.models import JobOffer, ScoredOffer
@@ -432,3 +435,85 @@ def test_openrouter_fallback_models_within_array_size_cap():
     # 2026-09-01's diversification and broke every scoring request for 2 days
     # before being caught - this guards against that regression recurring.
     assert len(_OPENROUTER_FALLBACK_MODELS) <= 3
+
+
+def _serve_one_openrouter_scoring_request(captured: list) -> tuple[str, threading.Thread]:
+    """Minimal stand-in for OpenRouter's /chat/completions, recording the wire request.
+
+    The model routing this change lands (primary + native fallback array) is only
+    observable in the JSON body the scorer actually sends, so the test asserts on
+    the captured request rather than on module constants.
+    """
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            captured.append(body)
+            tool_name = body["tools"][0]["function"]["name"]
+            payload = {
+                "id": "gen-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body["model"],
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps({"offers": [
+                                    {"id": 0, "score": 9, "comment": "strong fit", "summary": "AI role"},
+                                    {"id": 1, "score": 1, "comment": "Description unavailable — could not evaluate.", "summary": ""},
+                                ]}),
+                            },
+                        }],
+                    },
+                }],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            }
+            raw = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return f"http://127.0.0.1:{server.server_port}/api/v1", server
+
+
+def test_scoring_request_routes_nemotron_primary_with_liquid_in_fallbacks(monkeypatch):
+    captured: list[dict] = []
+    base_url, server = _serve_one_openrouter_scoring_request(captured)
+    monkeypatch.setattr("src.scorer._OPENROUTER_BASE_URL", base_url)
+    try:
+        scored, usage = score_offers(
+            offers=_make_offers(), profile="AI engineer",
+            priority_keywords=["LLM"], exclude_keywords=["Java"], llm_api_key="k",
+        )
+    finally:
+        server.shutdown()
+
+    assert [(s.id, s.score) for s in scored] == [(0, 9), (1, 1)]
+    assert usage["total_tokens"] == 120
+
+    request = captured[0]
+    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    fallbacks = request["models"]
+    assert "liquid/lfm-2.5-2.6b:free" in fallbacks
+    assert request["model"] not in fallbacks
+    # OpenRouter 400s on a "models" array above 3 items (a 6-entry list broke
+    # every scoring request for two days in 2026-09-01's diversification).
+    assert len(fallbacks) <= 3
+    # Every routed model must support tool-calling: scoring forces a tool call.
+    assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]

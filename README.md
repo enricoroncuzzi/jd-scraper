@@ -16,7 +16,7 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 
 1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to 8 pages each (`_MAX_PAGES_PER_QUERY`, `src/scraper.py`): tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote (via a scope filter in `src/tier_scope.py` that excludes whatever the other three tiers already cover), tier 4 United Kingdom full-remote.
 2. **Verify** - `src/remote_verifier.py` runs an LLM (via Groq) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description) resolves to unconfirmed instead of silently dropping a real job.
-3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`liquid/lfm-2.5-2.6b:free`, with a 3-model native fallback array), returning structured Pydantic output with a one-line rationale.
+3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a 3-model native fallback array that includes `liquid/lfm-2.5-2.6b:free`), returning structured Pydantic output with a one-line rationale.
 4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included.
 5. **Digest** - a ranked `digest.md` per tier lands in Obsidian, alongside a `rejected.md` audit trail of what verification screened out and why, plus a Telegram summary.
 6. **Tailor** - one click on any offer in the digest runs the CV tailoring engine end to end.
