@@ -650,3 +650,55 @@ def test_all_rejected_run_survives_a_storage_failure(monkeypatch, tmp_path, caps
     _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url="postgresql://test")
 
     assert "[storage] Failed" in capsys.readouterr().out
+
+
+def test_groq_verification_tokens_today_sums_only_todays_verification_entries(monkeypatch, tmp_path):
+    import main
+    from datetime import datetime, timedelta
+
+    usage_log = tmp_path / "usage_log.jsonl"
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(usage_log))
+
+    today = datetime.now().isoformat(timespec="seconds")
+    yesterday = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    usage_log.write_text("\n".join(json.dumps(entry) for entry in [
+        {"timestamp": today, "stage": "verification", "total_tokens": 1000},
+        {"timestamp": today, "stage": "verification", "total_tokens": 2500},
+        {"timestamp": today, "stage": "scoring", "total_tokens": 9999},  # different stage, excluded
+        {"timestamp": yesterday, "stage": "verification", "total_tokens": 7777},  # different day, excluded
+    ]) + "\n")
+
+    assert main._groq_verification_tokens_today() == 3500
+
+
+def test_groq_verification_tokens_today_is_zero_when_log_missing(monkeypatch, tmp_path):
+    import main
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "does_not_exist.jsonl"))
+    assert main._groq_verification_tokens_today() == 0
+
+
+def test_handler_logs_verification_token_usage_against_daily_limit(monkeypatch, tmp_path, capsys):
+    import main
+    fetched = [JobOffer(id=1, title="Good", company="A", link="https://x/1", description="d")]
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+        offers[0].remote_verdict = "confirmed"
+        return offers, {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50}
+
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: fetched)
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
+    monkeypatch.setattr("main.verify_offers", fake_verify)
+    monkeypatch.setattr("main.score_offers", lambda **kwargs: (
+        [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+    _stub_common_pipeline(monkeypatch)
+
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
+
+    out = capsys.readouterr().out
+    assert "Verification token usage" in out
+    assert "total: 50" in out
+    assert f"Groq verification total today: 50/{main._GROQ_DAILY_TOKEN_LIMIT}" in out

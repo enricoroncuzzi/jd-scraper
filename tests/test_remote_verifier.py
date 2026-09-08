@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.models import JobOffer
-from src.remote_verifier import _DEGRADED_REASON, verify_offers
+from src.remote_verifier import _DEGRADED_REASON, _MAX_DESC_CHARS, _extract_policy_excerpt, verify_offers
 
 
 def _offer(offer_id, description="We are fully remote across the EU.", status="ok"):
@@ -222,3 +222,49 @@ def test_an_unknown_verdict_word_still_falls_back_to_unconfirmed(monkeypatch):
 
     assert verified[0].remote_verdict == "unconfirmed"
     assert verified[0].remote_reason == _DEGRADED_REASON
+
+
+def test_extract_policy_excerpt_keeps_a_late_signal_within_budget():
+    # Real shape from 2026-09-08 production data: a decisive on-site
+    # statement appearing thousands of chars past where a flat prefix
+    # truncation (formerly 5000 chars) would have cut the description off.
+    filler = "General role description text. " * 250  # ~8250 chars
+    signal = "Work Environment: this role is based onsite in our Torrance office."
+    description = filler + signal + (" More filler." * 20)
+
+    excerpt = _extract_policy_excerpt(description)
+
+    assert "based onsite in our Torrance office" in excerpt
+    assert len(excerpt) <= _MAX_DESC_CHARS
+
+
+def test_extract_policy_excerpt_falls_back_to_prefix_when_no_keyword_found():
+    description = "A generic role description with no stated work-location policy. " * 40
+    excerpt = _extract_policy_excerpt(description)
+    assert excerpt == description[:_MAX_DESC_CHARS]
+
+
+def test_extract_policy_excerpt_keeps_intro_context_alongside_a_late_signal():
+    intro = "We are Acme Corp, a fast-growing startup building great products."
+    filler = "Team culture and mission text. " * 200
+    signal = "Note: this position requires hybrid work with 3 days in the office."
+    description = intro + filler + signal
+
+    excerpt = _extract_policy_excerpt(description)
+
+    assert "Acme Corp" in excerpt
+    assert "hybrid work with 3 days in the office" in excerpt
+
+
+def test_extract_policy_excerpt_merges_overlapping_keyword_windows():
+    # Two nearby keyword hits ("remote" and "office") should not duplicate
+    # the shared text between them.
+    description = "x" * 50 + "fully remote, no office required" + "y" * 50
+    excerpt = _extract_policy_excerpt(description)
+    assert excerpt.count("fully remote, no office required") == 1
+
+
+def test_batch_size_is_larger_than_the_scorers_to_amortize_prompt_overhead():
+    from src.remote_verifier import BATCH_SIZE
+    from src.scorer import BATCH_SIZE as SCORER_BATCH_SIZE
+    assert BATCH_SIZE > SCORER_BATCH_SIZE

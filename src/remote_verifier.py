@@ -22,10 +22,86 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from src.models import JobOffer
 
-BATCH_SIZE = 5
-_MAX_DESC_CHARS = 5000
+# Larger than the scorer's BATCH_SIZE deliberately: this stage pays a fixed
+# per-batch prompt overhead (rules + JSON schema instructions), and Groq's
+# 200,000-token/day free allowance forces amortizing that over more offers,
+# not fewer. Blunt whole-description truncation (formerly 5000 chars) at
+# post-reshape volume (~517 new offers/day across 4 tiers) cost ~510,000
+# tokens/day - 2.5x the allowance - and dies partway through the first tier,
+# falling every later offer back to "unconfirmed". See _extract_policy_excerpt.
+BATCH_SIZE = 8
+# Fallback length for a description with no detected remote/location keyword
+# (see _POLICY_KEYWORDS) - kept small because a passage that never names a
+# work-location term is, by _build_prompt's own instructions, going to yield
+# "unconfirmed" regardless of how much of it the model sees.
+_MAX_DESC_CHARS = 1000
 _MAX_RETRIES = 4
 _GROQ_MODEL = "openai/gpt-oss-20b"
+
+# The remote/hybrid/on-site policy sentence is not reliably near the top of a
+# posting - measured against real 2026-09-08 production descriptions, over
+# half the offers that mention a work-location term first mention it past
+# char 1000, and some real postings ("...This role is based onsite in our
+# <city> office...") state it only past char 7000, well beyond even the
+# previous 5000-char truncation. A flat character cutoff either burns budget
+# on irrelevant prose or silently drops the one sentence the verdict hinges
+# on. _extract_policy_excerpt anchors on the keyword itself instead, so the
+# input is small AND the signal survives wherever it falls in the posting.
+_POLICY_KEYWORDS = (
+    "remote", "remoto", "hybrid", "ibrid", "on-site", "onsite", "in sede",
+    "in ufficio", "office", "presenza", "presenziale", "smart working",
+    "full-remote", "full remote", "work from", "wfh", "sede di lavoro",
+    "modalità di lavoro", "in person", "trasferta", "in loco",
+)
+# Chars of context kept on each side of a detected keyword, and always kept
+# from the very start of the description (job-intro context, e.g. a
+# one-line "fully remote across the EU" summary before the full text).
+_EXCERPT_WINDOW = 180
+_EXCERPT_INTRO_CHARS = 200
+
+
+def _extract_policy_excerpt(description: str, budget: int = _MAX_DESC_CHARS) -> str:
+    """Return the passages of `description` likely to state its work-location
+    policy, capped at `budget` chars. Falls back to a flat prefix when no
+    policy keyword is found - see _MAX_DESC_CHARS docstring for why that's safe.
+    """
+    lower = description.lower()
+    spans = []
+    for keyword in _POLICY_KEYWORDS:
+        start = 0
+        while True:
+            idx = lower.find(keyword, start)
+            if idx == -1:
+                break
+            spans.append((max(0, idx - _EXCERPT_WINDOW), min(len(description), idx + len(keyword) + _EXCERPT_WINDOW)))
+            start = idx + len(keyword)
+    if not spans:
+        return description[:budget]
+
+    spans.sort()
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+        else:
+            merged.append((start, end))
+    if merged[0][0] > 0:
+        merged.insert(0, (0, min(_EXCERPT_INTRO_CHARS, merged[0][0])))
+
+    pieces = []
+    total = 0
+    for start, end in merged:
+        piece = description[start:end]
+        if total + len(piece) > budget:
+            piece = piece[: max(0, budget - total)]
+        if piece:
+            pieces.append(piece)
+            total += len(piece)
+        if total >= budget:
+            break
+    return " [...] ".join(pieces)
+
 
 _NO_DESCRIPTION_REASON = "Description unavailable, could not verify."
 _DEGRADED_REASON = "Verification unavailable, treated as unconfirmed."
@@ -73,7 +149,7 @@ def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str
     rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
-        f"Location: {o.location}\nDescription: {o.description[:_MAX_DESC_CHARS]}"
+        f"Location: {o.location}\nDescription: {_extract_policy_excerpt(o.description)}"
         for o in batch
     )
     return (
