@@ -21,6 +21,17 @@ class _ScoringOutput(BaseModel):
     offers: list[_ScoringItem]
 
 
+class _EmptyStructuredOutput(Exception):
+    """Raised when the model responds without the forced tool call.
+
+    langchain_openai's with_structured_output(method="function_calling")
+    returns None (rather than raising) when the model doesn't emit the
+    forced tool call. Treated as a retryable batch failure below - an
+    unhandled AttributeError on result.offers used to escape _invoke_batch
+    entirely and trigger a full tier restart via run_tier_with_retry.
+    """
+
+
 class _TokenCounter(BaseCallbackHandler):
     def __init__(self):
         self.prompt_tokens = 0
@@ -168,7 +179,15 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
     for attempt in range(max_retries):
         try:
             result: _ScoringOutput = chain.invoke(payload, config={"callbacks": [counter]})
+            if result is None:
+                raise _EmptyStructuredOutput()
             return result.offers
+        except _EmptyStructuredOutput:
+            if attempt == max_retries - 1:
+                raise
+            wait = min(10 * (2 ** attempt), 300)
+            print(f"[scorer] Model returned no structured output, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(wait)
         except openai.RateLimitError as e:
             if _is_quota_exceeded(e):
                 raise  # daily quota — no point retrying, propagate immediately
@@ -218,6 +237,9 @@ def score_offers(
         print(f"[scorer] Scoring batch {batch_num}/{total_batches} ({len(batch)} offers)...")
         try:
             all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords, counter))
+        except _EmptyStructuredOutput:
+            print(f"[scorer] Model returned no structured output, retries exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
+            break
         except openai.RateLimitError as e:
             if _is_quota_exceeded(e):
                 print(f"[scorer] Daily token quota exhausted at batch {batch_num}/{total_batches}. Saving {len(all_scoring)} scored offers.")
