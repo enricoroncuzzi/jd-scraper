@@ -197,6 +197,58 @@ def test_scorer_retries_on_openrouter_200_error_body_504(monkeypatch):
     assert mock_chain.invoke.call_count == 3
 
 
+def test_scorer_retries_when_structured_output_is_none(monkeypatch):
+    # langchain_openai's with_structured_output(method="function_calling")
+    # returns None (not an exception) when the model responds without the
+    # forced tool call. Confirm this is retried at the batch level instead of
+    # raising an AttributeError that would escape score_offers and trigger a
+    # full tier restart upstream.
+    offers = [JobOffer(id=0, title="R", company="c", link="l", description="d")]
+    scoring = [_ScoringItem(id=0, score=5, comment="ok", summary="s")]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None
+        return _ScoringOutput(offers=scoring)
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == 1
+    assert mock_chain.invoke.call_count == 2
+
+
+def test_scorer_returns_partial_results_when_structured_output_retries_exhausted(monkeypatch):
+    from src.scorer import BATCH_SIZE
+    offers = [
+        JobOffer(id=i, title=f"Role {i}", company="c", link=f"l{i}", description="d")
+        for i in range(BATCH_SIZE * 2)
+    ]
+    first_batch_scoring = [_ScoringItem(id=i, score=5, comment="ok", summary="s") for i in range(BATCH_SIZE)]
+
+    call_count = {"n": 0}
+    def invoke_side_effect(payload, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _ScoringOutput(offers=first_batch_scoring)
+        return None
+
+    mock_chain = MagicMock()
+    mock_chain.invoke.side_effect = invoke_side_effect
+    monkeypatch.setattr("src.scorer._build_chain", lambda _: mock_chain)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    result, _ = score_offers(offers=offers, profile="p", priority_keywords=[], exclude_keywords=[], llm_api_key="k")
+
+    assert len(result) == BATCH_SIZE  # only first batch saved, no tier-level propagation
+
+
 def test_scorer_propagates_non_retryable_value_error(monkeypatch):
     # A ValueError unrelated to an upstream 5xx (e.g. a genuine bug/malformed
     # response) must NOT be swallowed as a retryable upstream error.

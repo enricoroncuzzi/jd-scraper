@@ -47,6 +47,27 @@ what the README doesn't (or what has drifted from it).
    `ValueError` instead of `openai.InternalServerError` - see
    `_is_retryable_upstream_value_error` in `src/scorer.py` for how that case is
    told apart from an unrelated `ValueError` (a real bug) before retrying.
+   `with_structured_output(method="function_calling")` also returns `None`
+   (not an exception) when the model skips the forced tool call - `_invoke_batch`
+   treats that (`_EmptyStructuredOutput`) as a retryable batch failure with the
+   same backoff shape as the other branches; before 2026-09, this escaped as an
+   uncaught `AttributeError` and triggered a full tier restart via
+   `run_tier_with_retry` instead of a batch retry (confirmed root cause of
+   repeated tier restarts around 2026-09-06 to 2026-09-08). Remote verification
+   (`src/remote_verifier.py`) sends Groq a keyword-anchored excerpt of each
+   description (`_extract_policy_excerpt`), not a flat character prefix - a
+   flat cutoff both overspent Groq's 200,000-token/day account-wide cap at
+   post-reshape volume and silently missed the remote/hybrid/on-site sentence
+   on postings where it appears late (measured on real postings, worse than
+   the cutoff itself in some cases). `BATCH_SIZE` there (8) is intentionally
+   larger than the scorer's (5) to amortize the fixed per-batch prompt
+   overhead now that per-offer cost is much smaller; `_MAX_DESC_CHARS` is both
+   the no-keyword-found fallback prefix length and the per-offer excerpt budget
+   cap (joiners included), so changing it moves the whole stage's daily token
+   spend. When the keyword windows don't fit the budget, the context radius
+   shrinks uniformly instead of the excerpt being filled in document order -
+   otherwise early remote-flavoured boilerplate crowds out a decisive late
+   on-site sentence.
 2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
    CV/cover-letter/recruiter message per job posting. The CV body is never
    rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders

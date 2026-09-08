@@ -18,6 +18,11 @@ from src.retry import run_with_backoff
 import tailor as tailor_cli
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
+# Groq's free-tier cap (see src/remote_verifier.py's BATCH_SIZE comment) - account-wide,
+# not per-key. Printed each run against a running daily total so a human
+# reading cron.log can see the budget being approached before a tier dies
+# partway through, rather than only after a 429 already truncated a run.
+_GROQ_DAILY_TOKEN_LIMIT = 200_000
 
 
 def handler(event: dict, context, config_path: str = "config/config.json") -> None:
@@ -67,6 +72,10 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         )
         verification_degraded = verify_usage.pop("degraded", False)
         _log_usage(config.tier, "verification", len(new_offers), verify_usage)
+        groq_today = _groq_verification_tokens_today()
+        print(f"[main] Verification token usage - prompt: {verify_usage['prompt_tokens']}, "
+              f"completion: {verify_usage['completion_tokens']}, total: {verify_usage['total_tokens']} "
+              f"| Groq verification total today: {groq_today}/{_GROQ_DAILY_TOKEN_LIMIT}")
         rejected = [o for o in new_offers if o.remote_verdict == "rejected"]
         survivors = [o for o in new_offers if o.remote_verdict != "rejected"]
         confirmed = sum(1 for o in survivors if o.remote_verdict == "confirmed")
@@ -197,6 +206,22 @@ def _log_usage(tier: int, stage: str, offer_count: int, usage: dict) -> None:
             "offers_scored": offer_count,
             **usage,
         }) + "\n")
+
+
+def _groq_verification_tokens_today() -> int:
+    if not os.path.exists(_USAGE_LOG_PATH):
+        return 0
+    today = datetime.now().date().isoformat()
+    total = 0
+    with open(_USAGE_LOG_PATH) as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("stage") == "verification" and entry.get("timestamp", "").startswith(today):
+                total += entry.get("total_tokens", 0)
+    return total
 
 
 def _notify_failure(config_path: str, exc: Exception, attempts: int, retryable: bool) -> None:
