@@ -30,10 +30,12 @@ from src.models import JobOffer
 # tokens/day - 2.5x the allowance - and dies partway through the first tier,
 # falling every later offer back to "unconfirmed". See _extract_policy_excerpt.
 BATCH_SIZE = 8
-# Fallback length for a description with no detected remote/location keyword
-# (see _POLICY_KEYWORDS) - kept small because a passage that never names a
-# work-location term is, by _build_prompt's own instructions, going to yield
-# "unconfirmed" regardless of how much of it the model sees.
+# Per-offer excerpt budget AND the fallback prefix length for a description
+# with no detected remote/location keyword (see _POLICY_KEYWORDS) - kept small
+# because a passage that never names a work-location term is, by
+# _build_prompt's own instructions, going to yield "unconfirmed" regardless of
+# how much of it the model sees. Changing it moves the whole stage's daily
+# Groq token spend, not just the fallback.
 _MAX_DESC_CHARS = 1000
 _MAX_RETRIES = 4
 _GROQ_MODEL = "openai/gpt-oss-20b"
@@ -58,49 +60,75 @@ _POLICY_KEYWORDS = (
 # one-line "fully remote across the EU" summary before the full text).
 _EXCERPT_WINDOW = 180
 _EXCERPT_INTRO_CHARS = 200
+_EXCERPT_SEPARATOR = " [...] "
 
 
-def _extract_policy_excerpt(description: str, budget: int = _MAX_DESC_CHARS) -> str:
-    """Return the passages of `description` likely to state its work-location
-    policy, capped at `budget` chars. Falls back to a flat prefix when no
-    policy keyword is found - see _MAX_DESC_CHARS docstring for why that's safe.
-    """
-    lower = description.lower()
-    spans = []
+def _keyword_anchors(lower: str) -> list[tuple[int, int]]:
+    anchors = []
     for keyword in _POLICY_KEYWORDS:
         start = 0
         while True:
             idx = lower.find(keyword, start)
             if idx == -1:
                 break
-            spans.append((max(0, idx - _EXCERPT_WINDOW), min(len(description), idx + len(keyword) + _EXCERPT_WINDOW)))
+            anchors.append((idx, idx + len(keyword)))
             start = idx + len(keyword)
-    if not spans:
+    return sorted(anchors)
+
+
+def _merge_anchors(anchors: list[tuple[int, int]], radius: int, length: int) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in anchors:
+        span = (max(0, start - radius), min(length, end + radius))
+        if merged and span[0] <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], span[1]))
+        else:
+            merged.append(span)
+    return merged
+
+
+def _join_spans(description: str, spans: list[tuple[int, int]]) -> str:
+    return _EXCERPT_SEPARATOR.join(description[start:end] for start, end in spans)
+
+
+def _extract_policy_excerpt(description: str, budget: int = _MAX_DESC_CHARS) -> str:
+    """Return the passages of `description` likely to state its work-location
+    policy, capped at `budget` chars including the joiners. Falls back to a flat
+    prefix when no policy keyword is found - see _MAX_DESC_CHARS docstring for
+    why that's safe.
+
+    When the windows do not all fit, the context radius shrinks uniformly rather
+    than the excerpt being filled front-to-back: a decisive on-site sentence at
+    the end of a posting must not be crowded out by earlier remote-flavoured
+    boilerplate, which is the failure a flat prefix already had.
+    """
+    lower = description.lower()
+    anchors = _keyword_anchors(lower)
+    if not anchors:
         return description[:budget]
 
-    spans.sort()
-    merged = [spans[0]]
-    for start, end in spans[1:]:
-        last_start, last_end = merged[-1]
-        if start <= last_end:
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            merged.append((start, end))
-    if merged[0][0] > 0:
-        merged.insert(0, (0, min(_EXCERPT_INTRO_CHARS, merged[0][0])))
+    radius = _EXCERPT_WINDOW
+    while radius > 0:
+        spans = _merge_anchors(anchors, radius, len(description))
+        if spans[0][0] > 0:
+            spans.insert(0, (0, min(_EXCERPT_INTRO_CHARS, spans[0][0])))
+        text = _join_spans(description, spans)
+        if len(text) <= budget:
+            return text
+        radius //= 2
 
-    pieces = []
-    total = 0
-    for start, end in merged:
-        piece = description[start:end]
-        if total + len(piece) > budget:
-            piece = piece[: max(0, budget - total)]
-        if piece:
-            pieces.append(piece)
-            total += len(piece)
-        if total >= budget:
-            break
-    return " [...] ".join(pieces)
+    # Pathologically keyword-dense text: keep an evenly strided subset of the
+    # bare keyword hits (first and last always among them) so the survivors
+    # still span the whole posting.
+    spans = _merge_anchors(anchors, 0, len(description))
+    for step in range(1, len(spans) + 1):
+        selected = spans[::step]
+        if selected[-1] != spans[-1]:
+            selected.append(spans[-1])
+        text = _join_spans(description, selected)
+        if len(text) <= budget:
+            return text
+    return _join_spans(description, [spans[-1]])[:budget]
 
 
 _NO_DESCRIPTION_REASON = "Description unavailable, could not verify."

@@ -61,8 +61,13 @@ what the README doesn't (or what has drifted from it).
    on postings where it appears late (measured on real postings, worse than
    the cutoff itself in some cases). `BATCH_SIZE` there (8) is intentionally
    larger than the scorer's (5) to amortize the fixed per-batch prompt
-   overhead now that per-offer cost is much smaller; `_MAX_DESC_CHARS` is only
-   the no-keyword-found fallback length, not the per-offer budget.
+   overhead now that per-offer cost is much smaller; `_MAX_DESC_CHARS` is both
+   the no-keyword-found fallback prefix length and the per-offer excerpt budget
+   cap (joiners included), so changing it moves the whole stage's daily token
+   spend. When the keyword windows don't fit the budget, the context radius
+   shrinks uniformly instead of the excerpt being filled in document order -
+   otherwise early remote-flavoured boilerplate crowds out a decisive late
+   on-site sentence.
 2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
    CV/cover-letter/recruiter message per job posting. The CV body is never
    rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders

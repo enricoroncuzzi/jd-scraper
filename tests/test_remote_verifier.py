@@ -1,10 +1,17 @@
 import json
+import math
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.models import JobOffer
-from src.remote_verifier import _DEGRADED_REASON, _MAX_DESC_CHARS, _extract_policy_excerpt, verify_offers
+from src.remote_verifier import (
+    BATCH_SIZE,
+    _DEGRADED_REASON,
+    _MAX_DESC_CHARS,
+    _extract_policy_excerpt,
+    verify_offers,
+)
 
 
 def _offer(offer_id, description="We are fully remote across the EU.", status="ok"):
@@ -264,7 +271,42 @@ def test_extract_policy_excerpt_merges_overlapping_keyword_windows():
     assert excerpt.count("fully remote, no office required") == 1
 
 
-def test_batch_size_is_larger_than_the_scorers_to_amortize_prompt_overhead():
-    from src.remote_verifier import BATCH_SIZE
-    from src.scorer import BATCH_SIZE as SCORER_BATCH_SIZE
-    assert BATCH_SIZE > SCORER_BATCH_SIZE
+def test_extract_policy_excerpt_keeps_a_decisive_late_signal_among_many_hits():
+    # Four early remote/office-positive keyword windows followed by the
+    # sentence the verdict actually hinges on: filling the budget in document
+    # order would hand the model only the positive boilerplate.
+    description = (
+        "Intro about us. " + "a" * 400
+        + "We support remote collaboration tools." + "b" * 400
+        + "Our office culture is friendly." + "c" * 400
+        + "Remote-friendly benefits included." + "d" * 400
+        + "Work from anywhere occasionally." + "e" * 400
+        + "IMPORTANT: this role requires 4 days per week on-site in our Milan office."
+    )
+
+    excerpt = _extract_policy_excerpt(description)
+
+    assert "4 days per week on-site" in excerpt
+    assert len(excerpt) <= _MAX_DESC_CHARS
+
+
+def test_extract_policy_excerpt_never_exceeds_the_budget_including_joiners():
+    description = "".join(
+        f"Remote work paragraph {i}. " + "z" * 500 for i in range(12)
+    )
+
+    excerpt = _extract_policy_excerpt(description)
+
+    assert len(excerpt) <= _MAX_DESC_CHARS
+
+
+def test_offers_are_verified_in_batches_of_batch_size(monkeypatch):
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": i, "verdict": "confirmed", "reason": "Remote."} for i in range(1, 21)]}
+    ])
+
+    offers = [_offer(i) for i in range(1, 21)]
+    verified, _ = verify_offers(offers, True, "key")
+
+    assert calls["count"] == math.ceil(len(offers) / BATCH_SIZE)
+    assert all(o.remote_verdict == "confirmed" for o in verified)
