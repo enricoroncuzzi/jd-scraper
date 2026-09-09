@@ -28,9 +28,9 @@ what the README doesn't (or what has drifted from it).
    queue into scoring ahead of fresh offers, description and remote verdict
    intact so neither LinkedIn nor Groq is paid twice, and entries expire after
    `MAX_AGE_DAYS` (3); the deferred count is reported in both the digest and
-   the Telegram summary. Before that, an unconditional `mark_seen` destroyed
-   222 of 242 tier-4 offers on 2026-09-07 while the run logged "Done." with
-   exit code 0. The 4 tiers (`config/config_tier{1..4}.json`) are not a
+   the Telegram summary. Why that split is load-bearing (an unconditional
+   `mark_seen` is silently lossy, with exit code 0): see `src/retry_queue.py`'s
+   module docstring. The 4 tiers (`config/config_tier{1..4}.json`) are not a
    uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
    Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's
