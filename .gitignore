@@ -7,6 +7,8 @@ config/config.json
 
 # runtime data
 data/seen_*.txt
+data/unscored_*.jsonl
+data/unscored_*.jsonl.tmp
 data/usage_log.jsonl
 data/cron.log
 /output/

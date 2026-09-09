@@ -8,12 +8,29 @@ what the README doesn't (or what has drifted from it).
 
 1. **Scraper -> verifier -> scoring -> corpus** (`main.py`, `orchestrator.py`,
    `src/`): a 4-tier LinkedIn scraper (paginated per query up to a page cap,
-   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py`), language filter, dedup,
+   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py` - a *card* budget, not a
+   page-count one, because `_fetch_for_query` advances `start` by the number
+   of cards each response actually returned; the guest endpoint served 25
+   cards per request until 2026-09 and 10 now, and a constant 25 stride
+   silently skipped ~60% of every window, so never re-introduce a page-size
+   assumption here), language filter, dedup,
    remote verification, LLM scoring (OpenRouter, free-tier models with a
    native model fallback array - see `_OPENROUTER_MODEL`/
    `_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`), Postgres (Neon) storage,
    then a per-tier `digest.md` + `rejected.md` audit file in Obsidian, plus a
-   Telegram summary. The 4 tiers (`config/config_tier{1..4}.json`) are not a
+   Telegram summary. `src/dedup.py`'s log means "this offer was handled", not
+   "this offer was fetched": `main.py` marks seen only what verification
+   rejected plus what scoring actually scored, and whatever scoring never
+   reached (`score_offers` returns the offers it scored and stops when a batch
+   dies after all retries) goes to a per-tier JSONL retry queue -
+   `src/retry_queue.py`, `data/unscored_tier{N}.jsonl`, its path derived from
+   `dedup_log_path` as `AppConfig.retry_queue_path`. The next run feeds that
+   queue into scoring ahead of fresh offers, description and remote verdict
+   intact so neither LinkedIn nor Groq is paid twice, and entries expire after
+   `MAX_AGE_DAYS` (3); the deferred count is reported in both the digest and
+   the Telegram summary. Why that split is load-bearing (an unconditional
+   `mark_seen` is silently lossy, with exit code 0): see `src/retry_queue.py`'s
+   module docstring. The 4 tiers (`config/config_tier{1..4}.json`) are not a
    uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
    Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's
@@ -30,7 +47,17 @@ what the README doesn't (or what has drifted from it).
    `run_with_backoff` - it never retries OpenRouter daily-quota exhaustion
    (reuses `src/scorer.py`'s `_is_quota_exceeded`, see below), and a final
    give-up sends a Telegram failure notification
-   (`main.py`'s `_notify_failure`) so it isn't just a cron log line. Scoring
+   (`main.py`'s `_notify_failure`) so it isn't just a cron log line. Because
+   that retry layer re-runs the *whole* tier, notification-only calls that
+   happen after the tier's work is finished are wrapped in `main.py` so they
+   cannot re-enter it: the auto-apply notification and, since 2026-09, the
+   Telegram `send_summary` call (an uncaught `requests.ConnectionError` there
+   used to re-scrape, re-verify and re-score four times over one flaky
+   Telegram minute). Calls that produce or persist the run's product
+   (`write_digest`, `mark_seen`, `save_deferred`) deliberately keep
+   propagating - `save_deferred` failing *before* `mark_seen` is what stops a
+   disk error from turning back into the silent loss the queue exists to
+   prevent. Scoring
    migrated from Cerebras to OpenRouter in
    2026-08 after Cerebras killed its permanent free tier; OpenRouter's $0 tier
    caps at 50 requests/day account-wide (not per-model, not per-key - the

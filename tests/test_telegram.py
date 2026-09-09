@@ -187,3 +187,48 @@ def test_unconfirmed_offers_get_the_leftover_detail_budget(monkeypatch):
     assert "Unsure 0" in text
     assert "Unsure 1" in text
     assert "+2 more above threshold" in text
+
+
+def test_summary_reports_offers_left_unscored(monkeypatch):
+    sent = _capture(monkeypatch)
+
+    send_summary([_scored(9)], 8, "Hey!", "t", "1", deferred_count=3)
+
+    text = sent["text"]
+    assert "3 offer(s)" in text
+    assert "queued" in text.lower()
+    assert "found today" not in text
+    assert "Role" in text  # the offers that did get scored are still there
+
+
+def test_summary_with_nothing_scored_does_not_claim_there_were_no_new_offers(monkeypatch):
+    # The 2026-09-07 tier-4 morning: 242 offers found, 20 scored, and a digest
+    # that read "No new offers after dedup filter." - a lie that hid the loss.
+    sent = _capture(monkeypatch)
+
+    send_summary([], 8, "Hey!", "t", "1", deferred_count=222)
+
+    text = sent["text"]
+    assert "No new offers after dedup filter" not in text
+    assert "222" in text
+    assert "queued" in text.lower()
+    assert "found today" not in text
+
+
+def test_summary_with_no_offers_and_nothing_deferred_keeps_the_dedup_wording(monkeypatch):
+    sent = _capture(monkeypatch)
+
+    send_summary([], 8, "Hey!", "t", "1")
+
+    assert "No new offers after dedup filter" in sent["text"]
+
+
+def test_a_full_digest_with_deferrals_still_fits_telegram_limit(monkeypatch):
+    sent = _capture(monkeypatch)
+    offers = [_long_offer(i, "confirmed") for i in range(30)]
+    offers += [_long_offer(100 + i, "unconfirmed") for i in range(30)]
+
+    send_summary(offers, 8, "Hey Enrico!", "t", "1", verification_enabled=True,
+                 deferred_count=222)
+
+    assert len(sent["text"]) <= 4096

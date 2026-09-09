@@ -392,8 +392,8 @@ def _paging_mock_get(pages, description_html=DESCRIPTION_HTML):
 def test_pagination_walks_pages_until_empty(monkeypatch):
     pages = {
         0: _search_html([(1, "AI Engineer", "Berlin, Germany"), (2, "ML Engineer", "Paris, France")]),
-        25: _search_html([(3, "Data Scientist", "Madrid, Spain")]),
-        50: EMPTY_PAGE_HTML,
+        2: _search_html([(3, "Data Scientist", "Madrid, Spain")]),
+        3: EMPTY_PAGE_HTML,
     }
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
@@ -402,12 +402,34 @@ def test_pagination_walks_pages_until_empty(monkeypatch):
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert len(offers) == 3
-    assert calls["search_starts"][:3] == [0, 25, 50]
+    assert calls["search_starts"][:3] == [0, 2, 3]
+
+
+def test_pagination_covers_every_position_the_endpoint_returns(monkeypatch):
+    # The guest endpoint returns 10 cards per request and honours `start` as a
+    # real offset. A constant stride larger than that (25, until 2026-09)
+    # skipped positions 10-24, 35-49, ... so ~60% of the results inside the
+    # page cap were never seen. Stepping by the cards actually returned must
+    # read every position instead.
+    pages = {
+        start: _search_html([(start + n, "AI Engineer", "Berlin, Germany") for n in range(10)])
+        for start in (0, 10, 20)
+    }
+    pages[30] = EMPTY_PAGE_HTML
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert calls["search_starts"] == [0, 10, 20, 30]
+    assert len(offers) == 30
+    assert {int(o.link.rsplit("/", 1)[1]) for o in offers} == set(range(30))
 
 
 def test_pagination_stops_when_a_page_adds_no_new_links(monkeypatch):
     page = _search_html([(1, "AI Engineer", "Berlin, Germany")])
-    pages = {0: page, 25: page, 50: page}
+    pages = {0: page, 1: page, 2: page}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -415,13 +437,13 @@ def test_pagination_stops_when_a_page_adds_no_new_links(monkeypatch):
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert len(offers) == 1
-    assert calls["search_starts"] == [0, 25]
+    assert calls["search_starts"] == [0, 1]
 
 
 def test_pagination_honours_the_page_cap(monkeypatch):
     pages = {
         start: _search_html([(start + 1, "AI Engineer", "Berlin, Germany")])
-        for start in range(0, 25 * 40, 25)
+        for start in range(40)
     }
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
@@ -436,7 +458,7 @@ def test_pagination_honours_the_page_cap(monkeypatch):
 def test_pagination_treats_a_hard_error_after_page_0_as_end_of_results(monkeypatch):
     pages = {
         0: _search_html([(1, "AI Engineer", "Berlin, Germany"), (2, "ML Engineer", "Paris, France")]),
-        25: 400,
+        2: 400,
     }
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
@@ -446,13 +468,13 @@ def test_pagination_treats_a_hard_error_after_page_0_as_end_of_results(monkeypat
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert len(offers) == 2
-    assert calls["search_starts"] == [0, 25]
+    assert calls["search_starts"] == [0, 2]
 
 
 def test_pagination_raises_when_retries_are_exhausted_after_page_0(monkeypatch):
     pages = {
         0: _search_html([(1, "AI Engineer", "Berlin, Germany")]),
-        25: 429,
+        1: 429,
     }
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
@@ -471,8 +493,8 @@ def test_pagination_raises_when_network_errors_exhaust_retries_after_page_0(monk
     )
 
     def mock_get(url, **kwargs):
-        if "seeMoreJobPostings" in url and kwargs.get("params", {}).get("start", 0) == 25:
-            calls["search_starts"].append(25)
+        if "seeMoreJobPostings" in url and kwargs.get("params", {}).get("start", 0) == 1:
+            calls["search_starts"].append(1)
             raise _requests.ConnectionError("boom")
         return base_mock_get(url, **kwargs)
 
@@ -534,22 +556,40 @@ def test_scope_filter_spends_no_description_fetch_on_a_discarded_card(monkeypatc
     assert "1" in calls["description_urls"][0]
 
 
-def _capped_pages(last_page_cards):
-    """Every page full except the last, which holds `last_page_cards` cards."""
-    from src.scraper import _MAX_PAGES_PER_QUERY, _PAGE_SIZE
-    last_start = _PAGE_SIZE * (_MAX_PAGES_PER_QUERY - 1)
+# The endpoint's cards-per-request today. Fixtures use it to build page
+# offsets; src/scraper.py must NOT assume it (it steps by what comes back).
+_ENDPOINT_PAGE_LEN = 10
+
+
+def _capped_pages(last_page_cards, page_len=_ENDPOINT_PAGE_LEN):
+    """Every page holds `page_len` cards except the last, which holds
+    `last_page_cards`. Keyed by the offsets a cards-returned stride requests."""
+    from src.scraper import _MAX_PAGES_PER_QUERY
+    starts = [page_len * n for n in range(_MAX_PAGES_PER_QUERY)]
     return {
         start: _search_html([
             (start + n, "AI Engineer", "Berlin, Germany")
-            for n in range(last_page_cards if start == last_start else _PAGE_SIZE)
+            for n in range(last_page_cards if start == starts[-1] else page_len)
         ])
-        for start in range(0, _PAGE_SIZE * _MAX_PAGES_PER_QUERY, _PAGE_SIZE)
+        for start in starts
     }
 
 
 def test_page_cap_hit_is_reported_when_the_last_page_was_full(monkeypatch, capsys):
-    from src.scraper import _PAGE_SIZE
-    mock_get, calls = _paging_mock_get(_capped_pages(_PAGE_SIZE))
+    mock_get, calls = _paging_mock_get(_capped_pages(_ENDPOINT_PAGE_LEN))
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert "Hit the page cap" in capsys.readouterr().out
+
+
+def test_page_cap_hit_is_reported_for_any_endpoint_page_size(monkeypatch, capsys):
+    # "Full" is measured against the pages this query actually saw, so the
+    # report keeps working if the endpoint's page size moves again (25 -> 10
+    # in 2026-09) instead of silently never firing.
+    mock_get, calls = _paging_mock_get(_capped_pages(7, page_len=7))
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
 
@@ -562,13 +602,14 @@ def test_page_cap_hit_is_reported_when_the_last_full_page_overlaps_the_previous(
     # LinkedIn's offset window shifts while a crawl runs, so a genuinely full
     # final page can repeat a couple of cards from the page before it. That
     # overlap must not mask the cap-hit report.
-    from src.scraper import _MAX_PAGES_PER_QUERY, _PAGE_SIZE
-    pages = _capped_pages(_PAGE_SIZE)
-    last_start = _PAGE_SIZE * (_MAX_PAGES_PER_QUERY - 1)
-    prev_start = last_start - _PAGE_SIZE
+    from src.scraper import _MAX_PAGES_PER_QUERY
+    pages = _capped_pages(_ENDPOINT_PAGE_LEN)
+    last_start = _ENDPOINT_PAGE_LEN * (_MAX_PAGES_PER_QUERY - 1)
+    prev_start = last_start - _ENDPOINT_PAGE_LEN
     pages[last_start] = _search_html(
         [(prev_start + n, "AI Engineer", "Berlin, Germany") for n in range(2)]
-        + [(last_start + n, "AI Engineer", "Berlin, Germany") for n in range(_PAGE_SIZE - 2)]
+        + [(last_start + n, "AI Engineer", "Berlin, Germany")
+           for n in range(_ENDPOINT_PAGE_LEN - 2)]
     )
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
@@ -580,8 +621,7 @@ def test_page_cap_hit_is_reported_when_the_last_full_page_overlaps_the_previous(
 
 
 def test_no_page_cap_report_when_the_last_page_was_under_full(monkeypatch, capsys):
-    from src.scraper import _PAGE_SIZE
-    mock_get, calls = _paging_mock_get(_capped_pages(_PAGE_SIZE - 14))
+    mock_get, calls = _paging_mock_get(_capped_pages(_ENDPOINT_PAGE_LEN - 4))
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
 
@@ -591,7 +631,7 @@ def test_no_page_cap_report_when_the_last_page_was_under_full(monkeypatch, capsy
 
 
 def test_hard_error_ending_pagination_is_reported(monkeypatch, capsys):
-    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 400}
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 1: 400}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -610,7 +650,7 @@ def test_pagination_propagates_a_403_instead_of_ending_results(monkeypatch):
     # compromises the whole remaining crawl, not just this one query - it
     # must reach run_tier_with_retry as a real error rather than being
     # silently absorbed as end-of-results after a truncated offer list.
-    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 403}
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 1: 403}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -621,7 +661,7 @@ def test_pagination_propagates_a_403_instead_of_ending_results(monkeypatch):
 
 
 def test_no_hard_error_report_when_pagination_ends_naturally(monkeypatch, capsys):
-    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: EMPTY_PAGE_HTML}
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 1: EMPTY_PAGE_HTML}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -632,7 +672,7 @@ def test_no_hard_error_report_when_pagination_ends_naturally(monkeypatch, capsys
 
 
 def test_no_page_cap_report_when_an_empty_page_ends_pagination(monkeypatch, capsys):
-    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: EMPTY_PAGE_HTML}
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 1: EMPTY_PAGE_HTML}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -644,7 +684,7 @@ def test_no_page_cap_report_when_an_empty_page_ends_pagination(monkeypatch, caps
 
 def test_no_page_cap_report_when_a_repeated_page_ends_pagination(monkeypatch, capsys):
     page = _search_html([(1, "AI Engineer", "Berlin, Germany")])
-    mock_get, calls = _paging_mock_get({0: page, 25: page})
+    mock_get, calls = _paging_mock_get({0: page, 1: page})
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
 
@@ -654,7 +694,7 @@ def test_no_page_cap_report_when_a_repeated_page_ends_pagination(monkeypatch, ca
 
 
 def test_no_page_cap_report_when_end_of_results_ends_pagination(monkeypatch, capsys):
-    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 25: 400}
+    pages = {0: _search_html([(1, "AI Engineer", "Berlin, Germany")]), 1: 400}
     mock_get, calls = _paging_mock_get(pages)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
@@ -684,8 +724,8 @@ def test_search_pages_are_paced_but_the_first_request_is_not_delayed(monkeypatch
     # loop sleep) happens - the page sleep is the only pacing left.
     pages = {
         0: _search_html([(1, "AI Engineer", "London, United Kingdom")]),
-        25: _search_html([(2, "AI Engineer", "Zurich, Switzerland")]),
-        50: EMPTY_PAGE_HTML,
+        1: _search_html([(2, "AI Engineer", "Zurich, Switzerland")]),
+        2: EMPTY_PAGE_HTML,
     }
     mock_get, calls = _event_log_mock_get(pages, log)
     monkeypatch.setattr("src.scraper.requests.get", mock_get)

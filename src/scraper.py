@@ -26,10 +26,12 @@ _DESC_MAX_RETRIES = 8
 _DESC_BASE_WAIT = 30
 _DESC_WAIT_CAP = 300
 
-_PAGE_SIZE = 25
 # Deliberately conservative. The captain asked to revisit this against real
 # observed page counts after the first production run of the reshaped tiers -
 # raising it multiplies requests per query and therefore rate-limit exposure.
+# Since pagination steps by the cards actually returned (see _fetch_for_query),
+# this cap is a card budget, not a page-size-dependent one: 8 pages of the
+# endpoint's current 10 cards is ~80 offers per query.
 _MAX_PAGES_PER_QUERY = 8
 
 
@@ -139,6 +141,13 @@ def _fetch_for_query(
     offers: list[JobOffer] = []
     seen_links: set[str] = set()
     next_id = start_id
+    # The endpoint's page size is not ours to assume: it returned 25 cards per
+    # request until 2026-09 and 10 now, and a constant stride larger than the
+    # real page size silently skipped most of every window (positions 10-24,
+    # 35-49, ...). `start` is an absolute offset the endpoint honours, so it
+    # advances by the number of cards each response actually consumed.
+    next_start = 0
+    widest_page = 0
     last_page_was_full = False
 
     for page in range(_MAX_PAGES_PER_QUERY):
@@ -148,7 +157,7 @@ def _fetch_for_query(
             # back. Same pacing the card loop already applies.
             time.sleep(random.uniform(1.5, 3.0))
         try:
-            response = _fetch_search_page(role, location, time_range, work_mode, page * _PAGE_SIZE)
+            response = _fetch_search_page(role, location, time_range, work_mode, next_start)
         except _EndOfResults:
             if page == 0:
                 raise
@@ -173,7 +182,12 @@ def _fetch_for_query(
             # LinkedIn repeats the last page instead of returning an empty one
             # once a query is exhausted, so a page with nothing new ends it.
             break
-        last_page_was_full = len(cards) == _PAGE_SIZE
+        # "Full" is measured against the widest page this query has actually
+        # seen, i.e. the endpoint's own page size as observed right now, so
+        # the cap-hit report below keeps working when that size moves again.
+        last_page_was_full = len(cards) >= widest_page
+        widest_page = max(widest_page, len(cards))
+        next_start += len(cards)
 
         for card in new_cards:
             seen_links.add(card["link"])
@@ -202,7 +216,8 @@ def _fetch_for_query(
         # a full last page leaves it ambiguous whether the cap truncated this
         # query. The cap stays where it is until production shows real page
         # depth, and that observation needs this line to be free of false
-        # positives.
+        # positives - hence "full" meaning "as wide as this query's other
+        # pages", never "== some hardcoded page size".
         if last_page_was_full:
             print(f"[scraper] Hit the page cap ({_MAX_PAGES_PER_QUERY} pages) for "
                   f"{role}/{location}/{work_mode} - there may be more results beyond this.")

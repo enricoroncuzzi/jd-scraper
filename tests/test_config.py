@@ -302,3 +302,34 @@ def test_tier3_config_scope_matches_tier3_allowed_countries(monkeypatch):
     _set_env(monkeypatch)
     config = load_config(str(_REPO_ROOT / "config" / "config_tier3.json"))
     assert resolve_allowed_countries(config.search.allowed_countries) == TIER3_ALLOWED_COUNTRIES
+
+
+def test_retry_queue_path_sits_beside_the_dedup_log(tmp_path, monkeypatch):
+    # The queue is the complement of the dedup log (offers fetched but not
+    # handled), so it lives next to it and follows the same per-tier naming.
+    _set_env(monkeypatch)
+    config = load_config(str(_write_config(tmp_path, {"tier": 4})))
+
+    assert config.dedup_log_path == "/data/seen.txt"
+    assert config.retry_queue_path == "/data/unscored_tier4.jsonl"
+
+
+def test_retry_queue_path_handles_a_dedup_log_with_no_directory(tmp_path, monkeypatch):
+    _set_env(monkeypatch)
+    monkeypatch.setenv("DEDUP_LOG_PATH", "seen.txt")
+
+    config = load_config(str(_write_config(tmp_path)))
+
+    assert config.retry_queue_path == "unscored_tier0.jsonl"
+
+
+def test_every_tier_config_gets_its_own_retry_queue(monkeypatch):
+    _set_env(monkeypatch)
+
+    queues = [
+        load_config(str(_REPO_ROOT / "config" / f"config_tier{tier}.json")).retry_queue_path
+        for tier in (1, 2, 3, 4)
+    ]
+
+    assert len(set(queues)) == 4
+    assert queues[0] == "data/unscored_tier1.jsonl"

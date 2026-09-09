@@ -15,8 +15,11 @@ def send_summary(
     chat_id: str,
     verification_enabled: bool = False,
     verification_degraded: bool = False,
+    deferred_count: int = 0,
 ) -> None:
-    text = _format_message(offers, threshold, greeting, verification_enabled, verification_degraded)
+    text = _format_message(
+        offers, threshold, greeting, verification_enabled, verification_degraded, deferred_count
+    )
     send_message(text, token, chat_id)
 
 
@@ -59,12 +62,23 @@ def _format_message(
     greeting: str,
     verification_enabled: bool = False,
     verification_degraded: bool = False,
+    deferred_count: int = 0,
 ) -> str:
     today = date.today().isoformat()
     high = [o for o in offers if o.score >= threshold]
     low = [o for o in offers if o.score < threshold]
 
     if not offers:
+        # An empty digest has two very different causes and they must not read
+        # the same: nothing found, versus offers found that scoring never
+        # reached (see src/retry_queue.py). Claiming "no new offers after
+        # dedup" on a day 222 offers went unscored hid a real loss.
+        if deferred_count:
+            return (
+                f"{greeting}\n\nJob Digest - {today}\n\n"
+                f"No offers scored today: {deferred_count} offer(s) are still unscored and "
+                f"queued for the next run (scoring did not finish)."
+            )
         return f"{greeting}\n\nJob Digest - {today}\n\nNo new offers after dedup filter."
 
     lines = [f"{greeting}\n\nJob Digest - {today}\n"]
@@ -91,6 +105,12 @@ def _format_message(
 
     if low:
         lines.append(f"Low-score: {len(low)} offers below threshold. Check vault for notes.")
+
+    if deferred_count:
+        lines.append(
+            f"\n_{deferred_count} offer(s) still unscored and queued for the next run "
+            f"(scoring stopped early)._"
+        )
 
     if verification_degraded:
         lines.append("\n_Remote verification did not run for this tier; treat every offer as unconfirmed._")

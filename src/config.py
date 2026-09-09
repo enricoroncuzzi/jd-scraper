@@ -67,12 +67,21 @@ class AppConfig:
     db_url: str | None = None
     autoapply: AutoApplyConfig = None
     remote_check: RemoteCheckConfig = None
+    # Deferred-offer queue (src/retry_queue.py): the offers a run fetched but
+    # never scored. Derived rather than configured, because it is the
+    # complement of dedup_log_path and must follow it - data/seen_tier1.txt
+    # pairs with data/unscored_tier1.jsonl.
+    retry_queue_path: str = ""
 
     def __post_init__(self):
         if self.autoapply is None:
             self.autoapply = AutoApplyConfig()
         if self.remote_check is None:
             self.remote_check = RemoteCheckConfig()
+        if not self.retry_queue_path:
+            directory = os.path.dirname(self.dedup_log_path)
+            name = f"unscored_tier{self.tier}.jsonl"
+            self.retry_queue_path = os.path.join(directory, name) if directory else name
 
 
 def load_config(config_path: str = "config/config.json") -> AppConfig:
