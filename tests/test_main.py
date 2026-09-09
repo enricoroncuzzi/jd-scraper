@@ -140,9 +140,15 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
     mock_write_rejected.assert_called_once()
     mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1,
-                                               verification_enabled=config.remote_check.enabled)
+                                               verification_enabled=config.remote_check.enabled,
+                                               deferred_count=0)
     mock_send.assert_called_once()
-    mock_mark.assert_called_once_with(new_offers, "/data/seen.txt")
+    # "Seen" means handled (rejected by verification, or scored), not fetched:
+    # everything scoring never reached stays new to the next run.
+    mock_mark.assert_called_once()
+    marked, log_path = mock_mark.call_args.args
+    assert [o.link for o in marked] == ["https://li.com/0"]
+    assert log_path == "/data/seen.txt"
 
 
 def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
@@ -512,8 +518,9 @@ def test_rejected_offers_are_dropped_before_scoring_but_still_marked_seen(monkey
     scored_input = {}
 
     def fake_score(offers, **kwargs):
-        scored_input["ids"] = [o.id for o in offers]
-        return [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        scored_input["links"] = [o.link for o in offers]
+        return ([ScoredOffer(**o.model_dump(), score=9, comment="c", summary="s") for o in offers],
+                {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
 
     marked = {}
     import main
@@ -522,13 +529,14 @@ def test_rejected_offers_are_dropped_before_scoring_but_still_marked_seen(monkey
     monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
     monkeypatch.setattr("main.verify_offers", fake_verify)
     monkeypatch.setattr("main.score_offers", fake_score)
-    monkeypatch.setattr("main.mark_seen", lambda offers, path: marked.update(ids=[o.id for o in offers]))
+    monkeypatch.setattr("main.mark_seen",
+                        lambda offers, path: marked.update(links=[o.link for o in offers]))
     _stub_common_pipeline(monkeypatch)
 
     main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
 
-    assert scored_input["ids"] == [1]
-    assert sorted(marked["ids"]) == [1, 2]
+    assert scored_input["links"] == ["https://x/1"]
+    assert sorted(marked["links"]) == ["https://x/1", "https://x/2"]
 
 
 def test_all_offers_rejected_by_verification_notifies_and_still_marks_seen(monkeypatch, tmp_path):
@@ -727,3 +735,230 @@ def test_handler_logs_verification_token_usage_against_daily_limit(monkeypatch, 
     assert "Verification token usage" in out
     assert "total: 50" in out
     assert f"Groq verification total today: 50/{main._GROQ_DAILY_TOKEN_LIMIT}" in out
+
+
+# --- the deferred-offer retry queue (scoring dies mid-tier) -----------------
+
+_ZERO_USAGE = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def _offer(i, link=None):
+    return JobOffer(id=i, title=f"Role {i}", company="A",
+                    link=link or f"https://x/{i}", description="a real description")
+
+
+def _score_all(offers, **kwargs):
+    return ([ScoredOffer(**o.model_dump(), score=9, comment="c", summary="s") for o in offers],
+            dict(_ZERO_USAGE))
+
+
+def _score_nothing(offers, **kwargs):
+    return [], dict(_ZERO_USAGE)
+
+
+def _score_first_n(n):
+    """Stands in for src/scorer.py's partial-save behaviour: score_offers
+    returns what it scored and stops when a batch dies after all retries."""
+    def fake(offers, **kwargs):
+        return ([ScoredOffer(**o.model_dump(), score=9, comment="c", summary="s")
+                 for o in offers[:n]], dict(_ZERO_USAGE))
+    return fake
+
+
+def _queue_path(tmp_path, tier=1):
+    return str(tmp_path / f"unscored_tier{tier}.jsonl")
+
+
+def _seen_path(tmp_path):
+    return str(tmp_path / "seen.txt")
+
+
+def _seed_queue(tmp_path, offers, tier=1, age=None):
+    from src.retry_queue import QueueEntry, build_deferred, save_deferred
+    from datetime import datetime, timedelta
+    if age is None:
+        entries = build_deferred(list(offers), [])
+    else:
+        entries = [QueueEntry(queued_at=datetime.now() - age, offer=o) for o in offers]
+    save_deferred(_queue_path(tmp_path, tier), entries)
+
+
+def _run_handler(monkeypatch, tmp_path, fetched, score=_score_all, tier=1,
+                 remote_check=None, verify=None):
+    """Run main.handler against the real dedup log and retry queue in tmp_path,
+    with only the outward-facing stages stubbed. Returns the offers scoring was
+    handed and the send_summary mock."""
+    config_path = _config_with(tmp_path, monkeypatch, tier=tier, remote_check=remote_check)
+    calls = {"score_input": []}
+
+    def fake_score(offers, **kwargs):
+        calls["score_input"] = list(offers)
+        return score(offers, **kwargs)
+
+    import main
+    _stub_common_pipeline(monkeypatch)
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: list(fetched))
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.score_offers", fake_score)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+    if verify is not None:
+        monkeypatch.setattr("main.verify_offers", verify)
+    mock_send_summary = MagicMock()
+    monkeypatch.setattr("main.send_summary", mock_send_summary)
+
+    main.handler({}, None, config_path=str(config_path))
+    return calls, mock_send_summary
+
+
+def test_offers_scoring_never_reached_are_queued_and_not_marked_seen(monkeypatch, tmp_path):
+    """The 2026-09-07 tier-4 loss in miniature: 5 new offers, scoring dies
+    after 2. The unscored 3 must stay out of the dedup log, land in the retry
+    queue with their descriptions, and be reported in the summary."""
+    from src.dedup import filter_new
+    from src.retry_queue import load_deferred
+    fetched = [_offer(i) for i in range(5)]
+
+    _, send_summary = _run_handler(monkeypatch, tmp_path, fetched, score=_score_first_n(2))
+
+    assert [o.link for o in filter_new(fetched, _seen_path(tmp_path))] == [
+        "https://x/2", "https://x/3", "https://x/4",
+    ]
+    queue = load_deferred(_queue_path(tmp_path))
+    assert [e.offer.link for e in queue] == ["https://x/2", "https://x/3", "https://x/4"]
+    assert queue[0].offer.description == "a real description"
+    assert send_summary.call_args.kwargs["deferred_count"] == 3
+
+
+def test_a_run_where_scoring_produces_nothing_defers_every_survivor(monkeypatch, tmp_path):
+    from src.retry_queue import load_deferred
+    fetched = [_offer(i) for i in range(3)]
+
+    _, send_summary = _run_handler(monkeypatch, tmp_path, fetched, score=_score_nothing)
+
+    assert open(_seen_path(tmp_path)).read().strip() == ""
+    assert len(load_deferred(_queue_path(tmp_path))) == 3
+    assert send_summary.call_args.kwargs["deferred_count"] == 3
+
+
+def test_the_next_run_scores_the_queue_ahead_of_fresh_offers(monkeypatch, tmp_path):
+    from src.dedup import filter_new
+    from src.retry_queue import load_deferred
+    queued = [_offer(101), _offer(102)]
+    _seed_queue(tmp_path, queued)
+
+    calls, send_summary = _run_handler(monkeypatch, tmp_path, [_offer(1)])
+
+    assert [o.link for o in calls["score_input"]] == [
+        "https://x/101", "https://x/102", "https://x/1",
+    ]
+    assert filter_new(queued + [_offer(1)], _seen_path(tmp_path)) == []
+    assert load_deferred(_queue_path(tmp_path)) == []
+    assert send_summary.call_args.kwargs["deferred_count"] == 0
+
+
+def test_a_queued_offer_scraped_again_today_is_scored_once(monkeypatch, tmp_path):
+    # A deferred offer is not in the dedup log, so today's scrape can return it
+    # again. The fresh copy wins (newer description and verdict) and it must
+    # not be scored twice.
+    from src.retry_queue import load_deferred
+    _seed_queue(tmp_path, [_offer(1)])
+
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(1), _offer(2)])
+
+    assert [o.link for o in calls["score_input"]] == ["https://x/1", "https://x/2"]
+    assert load_deferred(_queue_path(tmp_path)) == []
+
+
+def test_a_run_with_no_new_offers_still_drains_the_queue(monkeypatch, tmp_path):
+    from src.dedup import _hash, filter_new
+    queued = [_offer(1)]
+    _seed_queue(tmp_path, queued)
+    open(_seen_path(tmp_path), "w").write(_hash("https://x/9") + "\n")
+
+    calls, send_summary = _run_handler(monkeypatch, tmp_path, [_offer(9)])
+
+    assert [o.link for o in calls["score_input"]] == ["https://x/1"]
+    assert filter_new(queued, _seen_path(tmp_path)) == []
+    assert send_summary.call_args.kwargs["deferred_count"] == 0
+
+
+def test_an_offer_deferred_twice_keeps_its_original_queue_timestamp(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+    from src.retry_queue import load_deferred
+    _seed_queue(tmp_path, [_offer(1)], age=timedelta(days=2))
+
+    _run_handler(monkeypatch, tmp_path, [_offer(2)], score=_score_nothing)
+
+    entries = {e.offer.link: e.queued_at for e in load_deferred(_queue_path(tmp_path))}
+    assert set(entries) == {"https://x/1", "https://x/2"}
+    assert entries["https://x/1"] < datetime.now() - timedelta(days=1, hours=12)
+    assert entries["https://x/2"] > datetime.now() - timedelta(minutes=5)
+
+
+def test_expired_queue_entries_are_not_rescored(monkeypatch, tmp_path):
+    from datetime import timedelta
+    from src.retry_queue import MAX_AGE_DAYS, load_deferred
+    _seed_queue(tmp_path, [_offer(1)], age=timedelta(days=MAX_AGE_DAYS, hours=1))
+
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(2)])
+
+    assert [o.link for o in calls["score_input"]] == ["https://x/2"]
+    assert load_deferred(_queue_path(tmp_path)) == []
+
+
+def test_queued_offers_keep_their_verdict_and_rejected_ones_stay_marked_seen(monkeypatch, tmp_path):
+    """With verification on: rejected offers are handled (marked seen), the
+    survivor scoring never reached is deferred with its verdict intact, so the
+    next run does not pay Groq to re-verify it."""
+    from src.dedup import filter_new
+    from src.retry_queue import load_deferred
+    fetched = [_offer(0), _offer(1), _offer(2)]
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+        offers[0].remote_verdict = "rejected"
+        for o in offers[1:]:
+            o.remote_verdict = "confirmed"
+        return offers, dict(_ZERO_USAGE)
+
+    calls, send_summary = _run_handler(monkeypatch, tmp_path, fetched,
+                                       score=_score_first_n(1), remote_check=True,
+                                       verify=fake_verify)
+
+    assert [o.link for o in calls["score_input"]] == ["https://x/1", "https://x/2"]
+    assert [o.link for o in filter_new(fetched, _seen_path(tmp_path))] == ["https://x/2"]
+    queue = load_deferred(_queue_path(tmp_path))
+    assert [e.offer.link for e in queue] == ["https://x/2"]
+    assert queue[0].offer.remote_verdict == "confirmed"
+    assert send_summary.call_args.kwargs["deferred_count"] == 1
+
+
+def test_queued_offers_are_renumbered_so_their_ids_cannot_collide(monkeypatch, tmp_path):
+    # src/scorer.py keys results by offer id; a queued offer carrying the id it
+    # had on the run that fetched it would cross-wire today's scores.
+    _seed_queue(tmp_path, [_offer(7), _offer(8)])
+
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(0), _offer(1)])
+
+    assert [o.link for o in calls["score_input"]] == [
+        "https://x/7", "https://x/8", "https://x/0", "https://x/1",
+    ]
+    assert [o.id for o in calls["score_input"]] == [0, 1, 2, 3]
+
+
+def test_a_queued_offer_rejected_by_todays_verification_is_dropped(monkeypatch, tmp_path):
+    """Today's verdict is the newer one. If the fresh copy of a queued offer is
+    rejected as not full-remote, the stale queued copy must not slip into
+    scoring behind that verdict, and it must not linger in the queue file."""
+    from src.retry_queue import load_deferred
+    _seed_queue(tmp_path, [_offer(1)])
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+        for o in offers:
+            o.remote_verdict = "rejected"
+        return offers, dict(_ZERO_USAGE)
+
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(1), _offer(2)],
+                            remote_check=True, verify=fake_verify)
+
+    assert calls["score_input"] == []
+    assert load_deferred(_queue_path(tmp_path)) == []

@@ -251,3 +251,30 @@ def test_note_frontmatter_escapes_remote_reason_for_yaml_safety(tmp_path):
     # The raw, unescaped colon-and-quote text must never appear unquoted -
     # only inside the JSON-escaped form checked above.
     assert f"remote_reason: {reason}" not in text
+
+
+def test_write_digest_no_offers_with_deferrals_says_scoring_produced_nothing(tmp_path):
+    # Same lie as the Telegram summary used to tell: an empty digest does not
+    # mean nothing was found when scoring simply never reached the offers.
+    write_digest([], str(tmp_path), threshold=8, tier=1, verification_enabled=False,
+                 deferred_count=222)
+
+    text = (_digest_dir(tmp_path, 1) / "digest.md").read_text()
+    assert "No new offers after dedup filter" not in text
+    assert "222" in text
+    assert "queued" in text.lower()
+
+
+def test_write_digest_records_deferrals_next_to_the_scored_offers(tmp_path):
+    write_digest([_offer(0, "AI Engineer", "Acme", 9)], str(tmp_path), threshold=8, tier=1,
+                 verification_enabled=False, deferred_count=3)
+
+    text = (_digest_dir(tmp_path, 1) / "digest.md").read_text()
+    assert "AI Engineer" in text
+    assert "3 offer(s)" in text
+
+
+def test_write_digest_no_offers_and_no_deferrals_keeps_the_dedup_wording(tmp_path):
+    write_digest([], str(tmp_path), threshold=8, tier=1, verification_enabled=False)
+
+    assert "No new offers after dedup filter" in (_digest_dir(tmp_path, 1) / "digest.md").read_text()

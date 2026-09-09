@@ -31,6 +31,7 @@ def write_digest(
     tier: int,
     verification_enabled: bool,
     offer_cap: int = 20,
+    deferred_count: int = 0,
 ) -> None:
     today = date.today().isoformat()
     tier_dir = os.path.join(output_path, today, f"tier{tier}")
@@ -38,7 +39,8 @@ def write_digest(
     path = os.path.join(tier_dir, "digest.md")
     try:
         with open(path, "w") as f:
-            f.write(_format_digest(offers, today, threshold, tier, offer_cap, verification_enabled))
+            f.write(_format_digest(offers, today, threshold, tier, offer_cap, verification_enabled,
+                                   deferred_count))
     except OSError as e:
         print(f"[writer] Failed to write {path}: {e}")
 
@@ -125,8 +127,19 @@ def _digest_entry(o: ScoredOffer, today: str, tier: int, with_reason: bool) -> l
     return lines
 
 
-def _format_digest(offers, today, threshold, tier, offer_cap, verification_enabled):
+def _format_digest(offers, today, threshold, tier, offer_cap, verification_enabled,
+                   deferred_count=0):
     if not offers:
+        # The vault copy of the same distinction src/telegram.py draws: an
+        # empty digest means either nothing was found or scoring never reached
+        # what was found (see src/retry_queue.py), and the audit file must not
+        # claim the first when the second happened.
+        if deferred_count:
+            return (
+                f"# Job Digest - {today}\n\n"
+                f"No offers scored today: {deferred_count} offer(s) were found but scoring "
+                f"did not finish. They are queued and will be retried on the next run.\n"
+            )
         return f"# Job Digest - {today}\n\nNo new offers after dedup filter.\n"
 
     high = sorted([o for o in offers if o.score >= threshold], key=lambda x: x.score, reverse=True)
@@ -153,5 +166,9 @@ def _format_digest(offers, today, threshold, tier, offer_cap, verification_enabl
     if low:
         lines.append("## Low-Score Offers\n")
         lines.append(f"{len(low)} offers below threshold. Notes written to scraped/.\n")
+
+    if deferred_count:
+        lines.append(f"> {deferred_count} offer(s) found today were not scored (scoring stopped "
+                     f"early) and are queued for the next run.\n")
 
     return "\n".join(lines)

@@ -18,7 +18,19 @@ what the README doesn't (or what has drifted from it).
    native model fallback array - see `_OPENROUTER_MODEL`/
    `_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`), Postgres (Neon) storage,
    then a per-tier `digest.md` + `rejected.md` audit file in Obsidian, plus a
-   Telegram summary. The 4 tiers (`config/config_tier{1..4}.json`) are not a
+   Telegram summary. `src/dedup.py`'s log means "this offer was handled", not
+   "this offer was fetched": `main.py` marks seen only what verification
+   rejected plus what scoring actually scored, and whatever scoring never
+   reached (`score_offers` returns the offers it scored and stops when a batch
+   dies after all retries) goes to a per-tier JSONL retry queue -
+   `src/retry_queue.py`, `data/unscored_tier{N}.jsonl`, its path derived from
+   `dedup_log_path` as `AppConfig.retry_queue_path`. The next run feeds that
+   queue into scoring ahead of fresh offers, description and remote verdict
+   intact so neither LinkedIn nor Groq is paid twice, and entries expire after
+   `MAX_AGE_DAYS` (3); the deferred count is reported in both the digest and
+   the Telegram summary. Before that, an unconditional `mark_seen` destroyed
+   222 of 242 tier-4 offers on 2026-09-07 while the run logged "Done." with
+   exit code 0. The 4 tiers (`config/config_tier{1..4}.json`) are not a
    uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
    Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's

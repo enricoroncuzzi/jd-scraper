@@ -37,6 +37,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 - **Test-driven throughout**: 317 tests (`.venv/bin/python -m pytest tests/`), every module built red to green.
 - **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and CV-section generation, no string-parsed output.
+- **No silent loss**: the dedup log records offers that were *handled*, not merely fetched. Whatever scoring never reached (a quota-exhausted or 5xx day) is written to a per-tier retry queue (`src/retry_queue.py`) with its description and remote verdict intact, re-scored ahead of fresh offers by the next run, expired after 3 days, and counted in the digest and Telegram summary.
 - **Resilience by design**: quota-aware exponential backoff (`src/retry.py`) and batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying.
 - **Anti-hallucination in code, not just the prompt**: the "every claim traces to the source CV" guarantee is a runtime check, not an instruction the model can ignore.
 
