@@ -962,3 +962,70 @@ def test_a_queued_offer_rejected_by_todays_verification_is_dropped(monkeypatch, 
 
     assert calls["score_input"] == []
     assert load_deferred(_queue_path(tmp_path)) == []
+
+
+
+# --- an unguarded summary call must not re-run the tier --------------------
+
+
+def test_a_telegram_outage_does_not_re_run_the_tier(monkeypatch, tmp_path):
+    """Every piece of real work is done before send_summary runs, so a
+    ConnectionError there must degrade the notification, not re-trigger
+    run_tier_with_retry's full re-scrape/re-verify/re-score (4x quota)."""
+    import requests as _requests
+    config_path = _config_with(tmp_path, monkeypatch)
+    calls = {"fetch": 0, "score": 0}
+
+    def fake_fetch(**kwargs):
+        calls["fetch"] += 1
+        return [_offer(1)]
+
+    def fake_score(offers, **kwargs):
+        calls["score"] += 1
+        return _score_all(offers)
+
+    import main
+    _stub_common_pipeline(monkeypatch)
+    monkeypatch.setattr("main.fetch_offers", fake_fetch)
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.score_offers", fake_score)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+    monkeypatch.setattr(
+        "main.send_summary",
+        MagicMock(side_effect=_requests.ConnectionError("Telegram API unreachable")),
+    )
+    mock_send_message = MagicMock()
+    monkeypatch.setattr("main.send_message", mock_send_message)
+
+    sleeps = []
+    main.run_tier_with_retry(str(config_path), sleep=sleeps.append)
+
+    assert calls == {"fetch": 1, "score": 1}
+    assert sleeps == []
+    text = mock_send_message.call_args.args[0]
+    assert "Tier 1" in text
+    assert "ConnectionError" in text
+
+
+def test_handler_survives_the_summary_failure_notice_also_failing(monkeypatch, tmp_path, capsys):
+    import requests as _requests
+    config_path = _config_with(tmp_path, monkeypatch)
+
+    import main
+    _stub_common_pipeline(monkeypatch)
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: [_offer(1)])
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.score_offers", _score_all)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+    monkeypatch.setattr(
+        "main.send_summary",
+        MagicMock(side_effect=_requests.ConnectionError("Telegram API unreachable")),
+    )
+    monkeypatch.setattr(
+        "main.send_message",
+        MagicMock(side_effect=_requests.ConnectionError("still down")),
+    )
+
+    main.handler({}, None, config_path=str(config_path))  # must not raise
+
+    assert "Failed to send summary failure notification" in capsys.readouterr().out

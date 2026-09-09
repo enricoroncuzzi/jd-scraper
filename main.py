@@ -220,16 +220,34 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 print(f"[main] Failed to send auto-apply failure notification: {notify_exc}")
 
     print("[main] Sending Telegram summary...")
-    send_summary(
-        offers=scored,
-        threshold=config.scoring.threshold,
-        greeting=config.telegram.greeting,
-        token=config.telegram_token,
-        chat_id=config.telegram_chat_id,
-        verification_enabled=config.remote_check.enabled,
-        verification_degraded=verification_degraded,
-        deferred_count=len(deferred),
-    )
+    try:
+        send_summary(
+            offers=scored,
+            threshold=config.scoring.threshold,
+            greeting=config.telegram.greeting,
+            token=config.telegram_token,
+            chat_id=config.telegram_chat_id,
+            verification_enabled=config.remote_check.enabled,
+            verification_degraded=verification_degraded,
+            deferred_count=len(deferred),
+        )
+    except Exception as e:
+        # Every piece of real work (digest, notes, DB rows, retry queue) is
+        # finished by the time this runs, so a Telegram outage must degrade the
+        # notification rather than the run: an uncaught ConnectionError here
+        # used to reach run_tier_with_retry and re-run the whole tier -
+        # re-scrape, re-verify, re-score - up to four times, quadrupling a
+        # day's LinkedIn requests, Groq tokens and OpenRouter requests over one
+        # flaky API minute. Same shape as the auto-apply guard above.
+        print(f"[main] Failed to send Telegram summary: {type(e).__name__}: {e}")
+        try:
+            send_message(
+                f"Tier {config.tier} digest FAILED to send: {type(e).__name__}: {e}",
+                config.telegram_token,
+                config.telegram_chat_id,
+            )
+        except Exception as notify_exc:
+            print(f"[main] Failed to send summary failure notification: {notify_exc}")
 
     # "Seen" means handled, not fetched: only the offers verification rejected
     # and the offers scoring actually scored are recorded, so anything deferred

@@ -47,7 +47,17 @@ what the README doesn't (or what has drifted from it).
    `run_with_backoff` - it never retries OpenRouter daily-quota exhaustion
    (reuses `src/scorer.py`'s `_is_quota_exceeded`, see below), and a final
    give-up sends a Telegram failure notification
-   (`main.py`'s `_notify_failure`) so it isn't just a cron log line. Scoring
+   (`main.py`'s `_notify_failure`) so it isn't just a cron log line. Because
+   that retry layer re-runs the *whole* tier, notification-only calls that
+   happen after the tier's work is finished are wrapped in `main.py` so they
+   cannot re-enter it: the auto-apply notification and, since 2026-09, the
+   Telegram `send_summary` call (an uncaught `requests.ConnectionError` there
+   used to re-scrape, re-verify and re-score four times over one flaky
+   Telegram minute). Calls that produce or persist the run's product
+   (`write_digest`, `mark_seen`, `save_deferred`) deliberately keep
+   propagating - `save_deferred` failing *before* `mark_seen` is what stops a
+   disk error from turning back into the silent loss the queue exists to
+   prevent. Scoring
    migrated from Cerebras to OpenRouter in
    2026-08 after Cerebras killed its permanent free tier; OpenRouter's $0 tier
    caps at 50 requests/day account-wide (not per-model, not per-key - the
