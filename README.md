@@ -14,7 +14,7 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 
 ## What runs daily, zero-touch
 
-1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to 8 pages each (`_MAX_PAGES_PER_QUERY`, `src/scraper.py`): tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote, tier 4 United Kingdom full-remote. A tier narrows its results to the countries listed in its config's `search.allowed_countries` (enforced by `src/tier_scope.py`); tiers 1 and 4 list none and do no narrowing.
+1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to 8 pages each (`_MAX_PAGES_PER_QUERY`, `src/scraper.py`), where each page advances `start` by the number of cards the endpoint actually returned rather than by an assumed page size: tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote, tier 4 United Kingdom full-remote. A tier narrows its results to the countries listed in its config's `search.allowed_countries` (enforced by `src/tier_scope.py`); tiers 1 and 4 list none and do no narrowing.
 2. **Verify** - `src/remote_verifier.py` runs an LLM (via Groq) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description) resolves to unconfirmed instead of silently dropping a real job.
 3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a 3-model native fallback array that includes `liquid/lfm-2.5-2.6b:free`), returning structured Pydantic output with a one-line rationale.
 4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included.
@@ -46,7 +46,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 |---|---|---|
 | Automated tests | **317** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
-| Max pages per query | **8** | `_MAX_PAGES_PER_QUERY` in `src/scraper.py` |
+| Max pages per query | **8** (~80 cards at the endpoint's current 10/request) | `_MAX_PAGES_PER_QUERY` in `src/scraper.py` |
 | Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~3,000** | `wc -l` |
 | Manual steps in the daily run | **0** | cron-driven, see `AGENTS.md` |
 

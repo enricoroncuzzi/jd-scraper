@@ -8,7 +8,12 @@ what the README doesn't (or what has drifted from it).
 
 1. **Scraper -> verifier -> scoring -> corpus** (`main.py`, `orchestrator.py`,
    `src/`): a 4-tier LinkedIn scraper (paginated per query up to a page cap,
-   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py`), language filter, dedup,
+   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py` - a *card* budget, not a
+   page-count one, because `_fetch_for_query` advances `start` by the number
+   of cards each response actually returned; the guest endpoint served 25
+   cards per request until 2026-09 and 10 now, and a constant 25 stride
+   silently skipped ~60% of every window, so never re-introduce a page-size
+   assumption here), language filter, dedup,
    remote verification, LLM scoring (OpenRouter, free-tier models with a
    native model fallback array - see `_OPENROUTER_MODEL`/
    `_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`), Postgres (Neon) storage,
