@@ -102,3 +102,22 @@ def test_resolve_allowed_countries_canonicalizes_names():
 def test_resolve_allowed_countries_rejects_unknown_names():
     with pytest.raises(ValueError):
         resolve_allowed_countries(["Narnia"])
+
+
+def test_two_letter_tails_colliding_with_iso2_codes_stay_unresolvable():
+    # "DE"/"MT"/"MD"/"ME"/"AL"/"IL"/"IN" are ISO-3166 alpha-2 country codes and
+    # "NE"/"AR" are Swiss canton abbreviations, all of which also happen to be
+    # US state postal codes. Mislabelling them "united states" would drop the
+    # offer from a European scope before its description is ever fetched.
+    for location in ("Berlin, DE", "Valletta, MT", "Chisinau, MD",
+                     "Podgorica, ME", "Tirana, AL", "Tel Aviv, IL",
+                     "Bengaluru, IN", "Neuchatel, NE", "Herisau, AR"):
+        assert resolve_country(location) is None
+        assert is_in_scope(location, TIER3_ALLOWED_COUNTRIES) is True
+        assert is_in_scope(location, frozenset({"switzerland", "san marino"})) is True
+
+
+def test_unambiguous_us_state_tails_still_resolve():
+    for location in ("El Segundo, CA", "Austin, TX", "Seattle, WA",
+                     "Washington, DC", "Boston, MA"):
+        assert resolve_country(location) == "united states"

@@ -65,17 +65,31 @@ _KNOWN_COUNTRIES = frozenset(
 # component is one of these - "El Segundo, CA", "Irvine, CA" - names a US state,
 # not a country, so it resolves to "united states" and is discarded by any scope
 # that does not allow it. The codes are disjoint from the country alias table
-# ("uk"/"us" live there, not here) and from every European country name, so a
-# bare two-letter tail can never collide with a legitimate European location.
-# ("CA" as Canada's ISO code does not arise in practice: LinkedIn spells Canadian
-# locations "Vancouver, British Columbia, Canada".)
-_US_STATE_CODES = frozenset({
+# ("uk"/"us" live there, not here) but NOT from the two-letter ISO-3166 codes of
+# countries we recognise, nor from Swiss canton abbreviations - see
+# _AMBIGUOUS_TWO_LETTER_TAILS below.
+_ALL_US_STATE_CODES = frozenset({
     "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id",
     "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms",
     "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok",
     "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
     "wi", "wy", "dc",
 })
+
+# US state codes that are also the ISO-3166 alpha-2 code of a country in
+# _KNOWN_COUNTRIES (AL Albania, DE Germany, IL Israel, IN India, MD Moldova,
+# ME Montenegro, MT Malta) or a Swiss canton abbreviation (AR Appenzell
+# Ausserrhoden, NE Neuchatel). A tail of one of these is genuinely ambiguous, so
+# it stays unresolvable (None) and is_in_scope keeps it, rather than being
+# silently mislabelled "united states" and dropped before its description is
+# ever fetched. "CA" is deliberately NOT in this set: it is Canada's ISO code,
+# but the California form is the observed defect this rule exists to catch, and
+# LinkedIn spells Canadian locations out ("Vancouver, British Columbia, Canada").
+_AMBIGUOUS_TWO_LETTER_TAILS = frozenset({
+    "al", "ar", "de", "il", "in", "md", "me", "mt", "ne",
+})
+
+_US_STATE_CODES = _ALL_US_STATE_CODES - _AMBIGUOUS_TWO_LETTER_TAILS
 
 
 def resolve_country(location: str) -> str | None:
