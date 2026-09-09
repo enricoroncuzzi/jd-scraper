@@ -126,6 +126,16 @@ what the README doesn't (or what has drifted from it).
 - Scraper tier configs live in `config/config_tier1.json` .. `config_tier4.json`
   (one per tier); `config/config.example.json` is the template for the
   gitignored `config/config.json`.
+- Each tier's geographic scope filter is config-driven: `search.allowed_countries`
+  lists the countries its results must resolve to (canonical or display names,
+  mapped by `src/tier_scope.py::resolve_allowed_countries`, which raises on an
+  unknown name); a tier with no such list does no narrowing. This replaced the
+  old hardcoded `config.tier == 3` binding in `main.py`. The bare search string
+  "San Marino" geo-resolves to San Marino, California on LinkedIn's guest API, so
+  tier 2's `search.countries` must use "San Marino, San Marino" to reach the
+  republic; two-letter US state tails ("El Segundo, CA") resolve to
+  "united states" in `resolve_country` and are discarded by scopes that do not
+  allow them.
 - Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
   expected keys. `LLM_API_KEY` is read generically (the `llm_api_key`
   assignment in `src/config.py`'s `load_config`, not provider-specific by

@@ -61,6 +61,22 @@ _KNOWN_COUNTRIES = frozenset(
     }
 )
 
+# Two-letter US state postal codes (plus DC). A LinkedIn location whose last
+# component is one of these - "El Segundo, CA", "Irvine, CA" - names a US state,
+# not a country, so it resolves to "united states" and is discarded by any scope
+# that does not allow it. The codes are disjoint from the country alias table
+# ("uk"/"us" live there, not here) and from every European country name, so a
+# bare two-letter tail can never collide with a legitimate European location.
+# ("CA" as Canada's ISO code does not arise in practice: LinkedIn spells Canadian
+# locations "Vancouver, British Columbia, Canada".)
+_US_STATE_CODES = frozenset({
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id",
+    "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms",
+    "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok",
+    "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
+    "wi", "wy", "dc",
+})
+
 
 def resolve_country(location: str) -> str | None:
     """Return the canonical lowercase country named by a LinkedIn location
@@ -77,14 +93,24 @@ def resolve_country(location: str) -> str | None:
     if not tail:
         return None
     canonical = _COUNTRY_ALIASES.get(tail, tail)
-    return canonical if canonical in _KNOWN_COUNTRIES else None
+    if canonical in _KNOWN_COUNTRIES:
+        return canonical
+    if tail in _US_STATE_CODES:
+        return "united states"
+    # US metro-area strings such as "Los Angeles Metropolitan Area" stay
+    # unresolvable (None) by design: "Basel Metropolitan Area", "Lausanne
+    # Metropolitan Area" and "Zurich Metropolitan Area" are genuine Swiss
+    # results that is_in_scope must keep, so there is no way to tell a US metro
+    # area from a Swiss one at the string level. is_in_scope keeps unresolvable
+    # locations, so those remain a residual gap.
+    return None
 
 
 def is_in_scope(location: str, allowed: frozenset[str] | None) -> bool:
     """True when this offer belongs to a tier whose scope is `allowed`.
 
     `allowed` of None means the tier does no geographic narrowing at all, which
-    is the case for every tier except tier 3.
+    is the case for tiers whose config carries no allowed-country scope.
     """
     if allowed is None:
         return True
@@ -92,3 +118,23 @@ def is_in_scope(location: str, allowed: frozenset[str] | None) -> bool:
     if country is None:
         return True
     return country in allowed
+
+
+def resolve_allowed_countries(allowed_countries: list[str] | None) -> frozenset[str] | None:
+    """Translate a tier config's allowed-country list into the canonical
+    lowercase country set that is_in_scope()/resolve_country() compare against.
+
+    Returns None when no scope is configured, meaning no geographic narrowing
+    at all. Raises ValueError on a name that resolves to no known country, so a
+    config typo fails loudly instead of silently disabling the filter.
+    """
+    if not allowed_countries:
+        return None
+    resolved = set()
+    for name in allowed_countries:
+        key = name.strip().lower()
+        canonical = _COUNTRY_ALIASES.get(key, key)
+        if canonical not in _KNOWN_COUNTRIES:
+            raise ValueError(f"Unknown country in allowed_countries: {name!r}")
+        resolved.add(canonical)
+    return frozenset(resolved)

@@ -33,7 +33,7 @@ def _mock_config(db_url="postgresql://test", autoapply=None):
     )
 
 
-def _config_with(tmp_path, monkeypatch, tier=1, remote_check=None):
+def _config_with(tmp_path, monkeypatch, tier=1, remote_check=None, allowed_countries=None):
     """Write a real config JSON file on disk and stub the env vars load_config
     needs, so a test can exercise main.handler's actual load_config() call
     instead of monkeypatching main.load_config directly."""
@@ -48,15 +48,19 @@ def _config_with(tmp_path, monkeypatch, tier=1, remote_check=None):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
+    search = {
+        "roles": ["AI Engineer"],
+        "location": "Europe",
+        "time_range": "r86400",
+        "work_mode": ["remote"],
+        "countries": ["Italy"],
+    }
+    if allowed_countries is not None:
+        search["allowed_countries"] = allowed_countries
+
     data = {
         "tier": tier,
-        "search": {
-            "roles": ["AI Engineer"],
-            "location": "Europe",
-            "time_range": "r86400",
-            "work_mode": ["remote"],
-            "countries": ["Italy"],
-        },
+        "search": search,
         "scoring": {
             "threshold": 8,
             "exclude_keywords": [],
@@ -587,8 +591,29 @@ def test_tier3_passes_the_scope_filter_to_the_scraper(monkeypatch, tmp_path):
     import main
     seen = {}
     monkeypatch.setattr("main.fetch_offers", lambda **kwargs: seen.update(kwargs) or [])
-    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, tier=3)))
+    main.handler({}, None, config_path=str(_config_with(
+        tmp_path, monkeypatch, tier=3, allowed_countries=sorted(TIER3_ALLOWED_COUNTRIES),
+    )))
     assert seen["allowed_countries"] == TIER3_ALLOWED_COUNTRIES
+
+
+def test_tier2_passes_its_scope_to_the_scraper(monkeypatch, tmp_path):
+    import main
+    seen = {}
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: seen.update(kwargs) or [])
+    main.handler({}, None, config_path=str(_config_with(
+        tmp_path, monkeypatch, tier=2, allowed_countries=["Switzerland", "San Marino"],
+    )))
+    assert seen["allowed_countries"] == frozenset({"switzerland", "san marino"})
+
+
+def test_tiers_without_a_scope_do_no_narrowing(monkeypatch, tmp_path):
+    import main
+    for tier in (1, 4):
+        seen = {}
+        monkeypatch.setattr("main.fetch_offers", lambda **kwargs: seen.update(kwargs) or [])
+        main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, tier=tier)))
+        assert seen["allowed_countries"] is None
 
 
 def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):

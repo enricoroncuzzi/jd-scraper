@@ -3,7 +3,8 @@
   "search": {
     "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
     "location": "Europe",
-    "countries": ["Switzerland", "San Marino"],
+    "countries": ["Switzerland", "San Marino, San Marino"],
+    "allowed_countries": ["Switzerland", "San Marino"],
     "time_range": "r86400",
     "work_mode": []
   },
