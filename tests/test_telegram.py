@@ -197,6 +197,7 @@ def test_summary_reports_offers_left_unscored(monkeypatch):
     text = sent["text"]
     assert "3 offer(s)" in text
     assert "queued" in text.lower()
+    assert "found today" not in text
     assert "Role" in text  # the offers that did get scored are still there
 
 
@@ -211,6 +212,7 @@ def test_summary_with_nothing_scored_does_not_claim_there_were_no_new_offers(mon
     assert "No new offers after dedup filter" not in text
     assert "222" in text
     assert "queued" in text.lower()
+    assert "found today" not in text
 
 
 def test_summary_with_no_offers_and_nothing_deferred_keeps_the_dedup_wording(monkeypatch):

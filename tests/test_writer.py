@@ -263,6 +263,7 @@ def test_write_digest_no_offers_with_deferrals_says_scoring_produced_nothing(tmp
     assert "No new offers after dedup filter" not in text
     assert "222" in text
     assert "queued" in text.lower()
+    assert "found today" not in text
 
 
 def test_write_digest_records_deferrals_next_to_the_scored_offers(tmp_path):

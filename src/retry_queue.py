@@ -28,7 +28,7 @@ import json
 import os
 from datetime import datetime, timedelta
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from src.models import JobOffer
 
@@ -40,6 +40,16 @@ MAX_AGE_DAYS = 3
 class QueueEntry(BaseModel):
     queued_at: datetime
     offer: JobOffer
+
+    @field_validator("queued_at")
+    @classmethod
+    def _naive_local(cls, value: datetime) -> datetime:
+        # This module writes naive local timestamps, but a hand-edited or
+        # externally written line can carry a UTC offset, and comparing the two
+        # raises TypeError in the expiry check below.
+        if value.tzinfo is None:
+            return value
+        return value.astimezone().replace(tzinfo=None)
 
 
 def load_deferred(path: str, now: datetime | None = None) -> list[QueueEntry]:
@@ -59,10 +69,11 @@ def load_deferred(path: str, now: datetime | None = None) -> list[QueueEntry]:
                 continue
             try:
                 entry = QueueEntry.model_validate(json.loads(line))
-            except (json.JSONDecodeError, ValidationError) as e:
+                stale = entry.queued_at < cutoff
+            except (json.JSONDecodeError, ValidationError, TypeError) as e:
                 print(f"[queue] Skipping an unreadable entry in {path}: {type(e).__name__}: {e}")
                 continue
-            if entry.queued_at < cutoff:
+            if stale:
                 expired += 1
                 continue
             entries.append(entry)
@@ -76,9 +87,12 @@ def build_deferred(
     previous: list[QueueEntry],
     now: datetime | None = None,
 ) -> list[QueueEntry]:
-    """Entries for the offers this run did not score. An offer already on the
-    queue keeps its original timestamp, so expiry counts from the first
-    deferral rather than being pushed back by every bad day."""
+    """Entries for the offers this run did not score. An offer whose link is
+    already on the queue keeps its original timestamp - including when today's
+    scrape returned it again and it is being re-queued as a fresh copy - so
+    expiry counts from the first deferral rather than being pushed back by
+    every bad day. `previous` must therefore be every entry loaded from the
+    queue, not just the subset carried into scoring."""
     now = now or datetime.now()
     queued_at_by_link = {entry.offer.link: entry.queued_at for entry in previous}
     return [

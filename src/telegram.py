@@ -76,8 +76,8 @@ def _format_message(
         if deferred_count:
             return (
                 f"{greeting}\n\nJob Digest - {today}\n\n"
-                f"No offers scored today: {deferred_count} offer(s) were found but scoring "
-                f"did not finish. They are queued and will be retried on the next run."
+                f"No offers scored today: {deferred_count} offer(s) are still unscored and "
+                f"queued for the next run (scoring did not finish)."
             )
         return f"{greeting}\n\nJob Digest - {today}\n\nNo new offers after dedup filter."
 
@@ -108,8 +108,8 @@ def _format_message(
 
     if deferred_count:
         lines.append(
-            f"\n_{deferred_count} offer(s) found today were not scored (scoring stopped early) "
-            f"and are queued for the next run._"
+            f"\n_{deferred_count} offer(s) still unscored and queued for the next run "
+            f"(scoring stopped early)._"
         )
 
     if verification_degraded:

@@ -137,8 +137,8 @@ def _format_digest(offers, today, threshold, tier, offer_cap, verification_enabl
         if deferred_count:
             return (
                 f"# Job Digest - {today}\n\n"
-                f"No offers scored today: {deferred_count} offer(s) were found but scoring "
-                f"did not finish. They are queued and will be retried on the next run.\n"
+                f"No offers scored today: {deferred_count} offer(s) are still unscored and "
+                f"queued for the next run (scoring did not finish).\n"
             )
         return f"# Job Digest - {today}\n\nNo new offers after dedup filter.\n"
 
@@ -168,7 +168,7 @@ def _format_digest(offers, today, threshold, tier, offer_cap, verification_enabl
         lines.append(f"{len(low)} offers below threshold. Notes written to scraped/.\n")
 
     if deferred_count:
-        lines.append(f"> {deferred_count} offer(s) found today were not scored (scoring stopped "
-                     f"early) and are queued for the next run.\n")
+        lines.append(f"> {deferred_count} offer(s) still unscored and queued for the next run "
+                     f"(scoring stopped early).\n")
 
     return "\n".join(lines)

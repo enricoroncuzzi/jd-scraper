@@ -158,7 +158,11 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     # seen again. This is how 222 of 242 tier-4 offers vanished on 2026-09-07.
     scored_links = {o.link for o in scored}
     deferred = [o for o in to_score if o.link not in scored_links]
-    save_deferred(config.retry_queue_path, build_deferred(deferred, carried))
+    # Timestamps come from every entry loaded off the queue, not just `carried`:
+    # an offer today's scrape returned again is re-queued as today's copy, but
+    # its expiry clock must still run from the first deferral or it can be
+    # re-scraped and re-deferred forever.
+    save_deferred(config.retry_queue_path, build_deferred(deferred, deferred_entries))
     if deferred:
         print(f"[main] {len(deferred)} offer(s) left unscored (scoring stopped early) "
               f"- queued for the next run in {config.retry_queue_path}")

@@ -895,6 +895,39 @@ def test_an_offer_deferred_twice_keeps_its_original_queue_timestamp(monkeypatch,
     assert entries["https://x/2"] > datetime.now() - timedelta(minutes=5)
 
 
+def test_a_requeued_offer_scraped_again_today_keeps_its_first_deferral_clock(monkeypatch, tmp_path):
+    # Today's scrape returns an already-queued offer, so it is re-queued as
+    # today's copy - but restarting its expiry clock would let a re-scraped
+    # offer sit on the queue forever, which is what MAX_AGE_DAYS exists to stop.
+    from datetime import datetime, timedelta
+    from src.retry_queue import MAX_AGE_DAYS, load_deferred
+    _seed_queue(tmp_path, [_offer(1)], age=timedelta(days=2))
+
+    _run_handler(monkeypatch, tmp_path, [_offer(1)], score=_score_nothing)
+
+    entries = {e.offer.link: e.queued_at for e in load_deferred(_queue_path(tmp_path))}
+    assert set(entries) == {"https://x/1"}
+    assert entries["https://x/1"] < datetime.now() - timedelta(days=1, hours=12)
+    later = datetime.now() + timedelta(days=MAX_AGE_DAYS - 1)
+    assert load_deferred(_queue_path(tmp_path), now=later) == []
+
+
+def test_a_timezone_aware_queue_entry_does_not_take_down_the_run(monkeypatch, tmp_path):
+    # A hand-edited or externally written line can carry a UTC offset. Comparing
+    # it against a naive cutoff used to raise TypeError out of handler and into
+    # run_tier_with_retry, re-running the whole tier four times.
+    from datetime import datetime, timedelta, timezone
+    from src.retry_queue import QueueEntry
+    aware = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=5))) - timedelta(hours=1)
+    entry = QueueEntry.model_construct(queued_at=aware, offer=_offer(1))
+    with open(_queue_path(tmp_path), "w") as f:
+        f.write(entry.model_dump_json() + "\n")
+
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(2)])
+
+    assert [o.link for o in calls["score_input"]] == ["https://x/1", "https://x/2"]
+
+
 def test_expired_queue_entries_are_not_rescored(monkeypatch, tmp_path):
     from datetime import timedelta
     from src.retry_queue import MAX_AGE_DAYS, load_deferred
