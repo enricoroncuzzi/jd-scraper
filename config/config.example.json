@@ -2,6 +2,7 @@
   "search": {
     "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
     "location": "Europe",
+    "allowed_countries": [],
     "time_range": "r86400",
     "work_mode": ["remote"]
   },

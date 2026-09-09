@@ -9,7 +9,7 @@ from src.language_filter import filter_by_language
 from src.dedup import filter_new, mark_seen
 from src.scorer import score_offers
 from src.remote_verifier import verify_offers
-from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+from src.tier_scope import resolve_allowed_countries
 from src.writer import write_notes, write_digest, write_rejected
 from src.telegram import send_summary, send_message
 from src.storage import init_db, save_run, save_offers
@@ -29,12 +29,13 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     config = load_config(config_path)
 
     print(f"[main] Tier {config.tier} - fetching offers...")
-    # The scope filter is bound to the literal tier number 3, not config-driven
-    # like every other per-tier knob. Renumbering tiers or adding a fifth tier
-    # will silently detach this filter (or attach it to the wrong tier) with no
-    # error - the only symptom is out-of-scope roles quietly appearing in the
-    # digest. A config-driven binding is filed as separate follow-up work.
-    allowed_countries = TIER3_ALLOWED_COUNTRIES if config.tier == 3 else None
+    # The allowed-country scope is config-driven: each tier config's
+    # search.allowed_countries lists the countries its results must resolve to,
+    # and tiers with no list do no geographic narrowing at all.
+    # resolve_allowed_countries maps the names onto tier_scope's canonical
+    # country vocabulary and raises on a typo, so renumbering tiers or adding a
+    # fifth one can no longer silently detach (or attach) this filter.
+    allowed_countries = resolve_allowed_countries(config.search.allowed_countries)
     raw_offers = fetch_offers(
         roles=config.search.roles,
         location=config.search.location,

@@ -61,6 +61,36 @@ _KNOWN_COUNTRIES = frozenset(
     }
 )
 
+# Two-letter US state postal codes (plus DC). A LinkedIn location whose last
+# component is one of these - "El Segundo, CA", "Irvine, CA" - names a US state,
+# not a country, so it resolves to "united states" and is discarded by any scope
+# that does not allow it. The codes are disjoint from the country alias table
+# ("uk"/"us" live there, not here) but NOT from the two-letter ISO-3166 codes of
+# countries we recognise, nor from Swiss canton abbreviations - see
+# _AMBIGUOUS_TWO_LETTER_TAILS below.
+_ALL_US_STATE_CODES = frozenset({
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id",
+    "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms",
+    "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok",
+    "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
+    "wi", "wy", "dc",
+})
+
+# US state codes that are also the ISO-3166 alpha-2 code of a country in
+# _KNOWN_COUNTRIES (AL Albania, DE Germany, IL Israel, IN India, MD Moldova,
+# ME Montenegro, MT Malta) or a Swiss canton abbreviation (AR Appenzell
+# Ausserrhoden, NE Neuchatel). A tail of one of these is genuinely ambiguous, so
+# it stays unresolvable (None) and is_in_scope keeps it, rather than being
+# silently mislabelled "united states" and dropped before its description is
+# ever fetched. "CA" is deliberately NOT in this set: it is Canada's ISO code,
+# but the California form is the observed defect this rule exists to catch, and
+# LinkedIn spells Canadian locations out ("Vancouver, British Columbia, Canada").
+_AMBIGUOUS_TWO_LETTER_TAILS = frozenset({
+    "al", "ar", "de", "il", "in", "md", "me", "mt", "ne",
+})
+
+_US_STATE_CODES = _ALL_US_STATE_CODES - _AMBIGUOUS_TWO_LETTER_TAILS
+
 
 def resolve_country(location: str) -> str | None:
     """Return the canonical lowercase country named by a LinkedIn location
@@ -77,14 +107,24 @@ def resolve_country(location: str) -> str | None:
     if not tail:
         return None
     canonical = _COUNTRY_ALIASES.get(tail, tail)
-    return canonical if canonical in _KNOWN_COUNTRIES else None
+    if canonical in _KNOWN_COUNTRIES:
+        return canonical
+    if tail in _US_STATE_CODES:
+        return "united states"
+    # US metro-area strings such as "Los Angeles Metropolitan Area" stay
+    # unresolvable (None) by design: "Basel Metropolitan Area", "Lausanne
+    # Metropolitan Area" and "Zurich Metropolitan Area" are genuine Swiss
+    # results that is_in_scope must keep, so there is no way to tell a US metro
+    # area from a Swiss one at the string level. is_in_scope keeps unresolvable
+    # locations, so those remain a residual gap.
+    return None
 
 
 def is_in_scope(location: str, allowed: frozenset[str] | None) -> bool:
     """True when this offer belongs to a tier whose scope is `allowed`.
 
     `allowed` of None means the tier does no geographic narrowing at all, which
-    is the case for every tier except tier 3.
+    is the case for tiers whose config carries no allowed-country scope.
     """
     if allowed is None:
         return True
@@ -92,3 +132,23 @@ def is_in_scope(location: str, allowed: frozenset[str] | None) -> bool:
     if country is None:
         return True
     return country in allowed
+
+
+def resolve_allowed_countries(allowed_countries: list[str] | None) -> frozenset[str] | None:
+    """Translate a tier config's allowed-country list into the canonical
+    lowercase country set that is_in_scope()/resolve_country() compare against.
+
+    Returns None when no scope is configured, meaning no geographic narrowing
+    at all. Raises ValueError on a name that resolves to no known country, so a
+    config typo fails loudly instead of silently disabling the filter.
+    """
+    if not allowed_countries:
+        return None
+    resolved = set()
+    for name in allowed_countries:
+        key = name.strip().lower()
+        canonical = _COUNTRY_ALIASES.get(key, key)
+        if canonical not in _KNOWN_COUNTRIES:
+            raise ValueError(f"Unknown country in allowed_countries: {name!r}")
+        resolved.add(canonical)
+    return frozenset(resolved)

@@ -11,6 +11,9 @@ class SearchConfig:
     time_range: str
     work_mode: list[str] = None
     countries: list[str] = None
+    # Allowed-country scope (canonical or display country names). None means no
+    # geographic narrowing; see src/tier_scope.resolve_allowed_countries.
+    allowed_countries: list[str] = None
 
     def __post_init__(self):
         if self.work_mode is None:

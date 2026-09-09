@@ -1,6 +1,10 @@
 import json
+from pathlib import Path
+
 import pytest
+
 from src.config import load_config
+from src.tier_scope import resolve_allowed_countries
 
 
 def test_load_config_reads_json_and_env(tmp_path, monkeypatch):
@@ -277,3 +281,24 @@ def test_remote_check_loads_from_json(tmp_path, monkeypatch):
     config = load_config(str(path))
     assert config.remote_check.enabled is True
     assert config.remote_check.require_italy_eligibility is False
+
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_tier2_config_has_unambiguous_search_locations_and_scope(monkeypatch):
+    _set_env(monkeypatch)
+    config = load_config(str(_REPO_ROOT / "config" / "config_tier2.json"))
+    # "San Marino" alone geo-resolves to San Marino, California, so the search
+    # location must be the disambiguated "San Marino, San Marino".
+    assert config.search.countries == ["Switzerland", "San Marino, San Marino"]
+    scope = resolve_allowed_countries(config.search.allowed_countries)
+    assert scope == frozenset({"switzerland", "san marino"})
+
+
+def test_tier3_config_scope_matches_tier3_allowed_countries(monkeypatch):
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+
+    _set_env(monkeypatch)
+    config = load_config(str(_REPO_ROOT / "config" / "config_tier3.json"))
+    assert resolve_allowed_countries(config.search.allowed_countries) == TIER3_ALLOWED_COUNTRIES

@@ -4,6 +4,13 @@
     "roles": ["AI Engineer", "ML Engineer", "Data Scientist", "Software Engineer AI"],
     "location": "Europe",
     "countries": [],
+    "allowed_countries": [
+      "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czechia",
+      "Denmark", "Estonia", "Finland", "France", "Germany", "Greece",
+      "Hungary", "Ireland", "Latvia", "Lithuania", "Luxembourg", "Malta",
+      "Netherlands", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia",
+      "Spain", "Sweden", "Norway", "Iceland", "Liechtenstein"
+    ],
     "time_range": "r86400",
     "work_mode": ["remote"]
   },
