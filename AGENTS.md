@@ -135,7 +135,8 @@ what the README doesn't (or what has drifted from it).
   tier 2's `search.countries` must use "San Marino, San Marino" to reach the
   republic; two-letter US state tails ("El Segundo, CA") resolve to
   "united states" in `resolve_country` and are discarded by scopes that do not
-  allow them.
+  allow them, except for the tails that are also a country ISO2 or Swiss canton
+  code and so stay unresolvable on purpose (see `_AMBIGUOUS_TWO_LETTER_TAILS`).
 - Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
   expected keys. `LLM_API_KEY` is read generically (the `llm_api_key`
   assignment in `src/config.py`'s `load_config`, not provider-specific by
