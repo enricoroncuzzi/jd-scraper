@@ -120,7 +120,14 @@ what the README doesn't (or what has drifted from it).
    the same tier's `handler()` run), so an `openai.RateLimitError` from it
    where `_is_quota_exceeded` is true sets its own `openrouter_exhausted`
    flag and gets the identical stage-stop treatment, instead of repeating a
-   doomed call for every remaining batch. The OpenRouter batch call itself
+   doomed call for every remaining batch. Short of that, the failover may
+   spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (25, half the
+   account cap, retries included) OpenRouter requests per UTC day - `main.py`
+   passes the day's running count from the usage log as
+   `openrouter_requests_used_today` - and once that share is spent, remaining
+   batches go unconfirmed so scoring keeps its half. Both daily counters in
+   `main.py`'s usage log are bucketed by UTC date, the boundary both providers
+   reset on. The OpenRouter batch call itself
    reuses `src/scorer.py`'s `_is_quota_exceeded`,
    `_is_retryable_upstream_value_error` and `_EmptyStructuredOutput` rather
    than a second, divergent set of failure classifiers, since it is hitting

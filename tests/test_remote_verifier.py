@@ -11,6 +11,7 @@ from src.models import JobOffer
 from src.remote_verifier import (
     BATCH_SIZE,
     GROQ_DAILY_TOKEN_LIMIT,
+    OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP,
     _DEGRADED_REASON,
     _GROQ_TPD_HEADROOM_TOKENS,
     _MAX_DESC_CHARS,
@@ -533,6 +534,67 @@ def test_openrouters_own_daily_cap_stops_further_openrouter_calls(monkeypatch):
     # attempt is skipped too (openrouter_exhausted), not a second doomed call.
     assert or_chain.invoke.call_count == 1
     assert all(o.remote_verdict == "unconfirmed" for o in verified)
+    assert usage["degraded"] is True
+
+
+# --- Verification's daily share of OpenRouter requests ----------------------
+
+def test_openrouter_failover_stops_at_its_daily_request_share(monkeypatch):
+    """Scoring spends the same OpenRouter account cap later in the tier, so
+    the failover stops once its share is spent, even mid-run."""
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    or_chain = _mock_openrouter(monkeypatch, [
+        _verdict_output([(i, "confirmed") for i in range(1, 9)]),
+        _verdict_output([(i, "confirmed") for i in range(9, 17)]),
+    ])
+
+    offers = [_offer(i) for i in range(1, 25)]  # 3 batches at BATCH_SIZE=8
+    verified, usage = verify_offers(
+        offers, True, "", llm_api_key="or-key",
+        openrouter_requests_used_today=OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP - 2,
+    )
+
+    assert or_chain.invoke.call_count == 2
+    by_id = {o.id: o for o in verified}
+    assert all(by_id[i].remote_verdict == "confirmed" for i in range(1, 17))
+    assert all(by_id[i].remote_verdict == "unconfirmed" for i in range(17, 25))
+    assert usage["openrouter_requests"] == 2
+    assert usage["provider"] == "openrouter"
+    assert usage["degraded"] is True
+
+
+def test_openrouter_failover_makes_no_call_once_the_share_is_already_spent(monkeypatch):
+    or_chain = _mock_openrouter(monkeypatch, [])
+
+    verified, usage = verify_offers(
+        [_offer(1)], True, "", llm_api_key="or-key",
+        openrouter_requests_used_today=OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP,
+    )
+
+    assert or_chain.invoke.call_count == 0
+    assert verified[0].remote_verdict == "unconfirmed"
+    assert usage["openrouter_requests"] == 0
+    assert usage["degraded"] is True
+
+
+def test_openrouter_retries_count_against_the_daily_request_share(monkeypatch):
+    """A retry is a request against the account cap too: the ladder stops at
+    the share instead of running past it."""
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    or_chain = _mock_openrouter(monkeypatch, [
+        openai.APIConnectionError(request=MagicMock()),
+        openai.APIConnectionError(request=MagicMock()),
+        _verdict_output([(1, "confirmed")]),
+    ])
+
+    verified, usage = verify_offers(
+        [_offer(1)], True, "", llm_api_key="or-key",
+        openrouter_requests_used_today=OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP - 2,
+    )
+
+    assert or_chain.invoke.call_count == 2
+    assert verified[0].remote_verdict == "unconfirmed"
+    assert usage["openrouter_requests"] == 2
     assert usage["degraded"] is True
 
 

@@ -2,7 +2,7 @@ import sys
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from src.config import load_config
 from src.scraper import fetch_offers
 from src.language_filter import filter_by_language
@@ -71,17 +71,17 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     verify_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     if config.remote_check.enabled and new_offers:
         print(f"[main] Verifying full-remote status of {len(new_offers)} offers...")
-        groq_tokens_before = _groq_verification_tokens_today()
         new_offers, verify_usage = verify_offers(
             offers=new_offers,
             require_italy_eligibility=config.remote_check.require_italy_eligibility,
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             llm_api_key=config.llm_api_key,
-            groq_tokens_used_today=groq_tokens_before,
+            groq_tokens_used_today=_verification_usage_today("total_tokens"),
+            openrouter_requests_used_today=_verification_usage_today("openrouter_requests"),
         )
         verification_degraded = verify_usage.pop("degraded", False)
         _log_usage(config.tier, "verification", len(new_offers), verify_usage)
-        groq_today = _groq_verification_tokens_today()
+        groq_today = _verification_usage_today("total_tokens")
         provider_note = f" | provider: {verify_usage.get('provider', 'groq')}"
         if verify_usage.get("openrouter_total_tokens"):
             provider_note += f" (+{verify_usage['openrouter_total_tokens']} OpenRouter tokens)"
@@ -279,7 +279,7 @@ def _log_usage(tier: int, stage: str, offer_count: int, usage: dict) -> None:
     os.makedirs(os.path.dirname(_USAGE_LOG_PATH), exist_ok=True)
     with open(_USAGE_LOG_PATH, "a") as f:
         f.write(json.dumps({
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "tier": tier,
             "stage": stage,
             "offers_scored": offer_count,
@@ -287,10 +287,13 @@ def _log_usage(tier: int, stage: str, offer_count: int, usage: dict) -> None:
         }) + "\n")
 
 
-def _groq_verification_tokens_today() -> int:
+def _verification_usage_today(field: str) -> int:
+    """Sum `field` over today's verification log entries. "Today" is the UTC
+    date because both Groq's and OpenRouter's daily limits reset at the UTC
+    day boundary."""
     if not os.path.exists(_USAGE_LOG_PATH):
         return 0
-    today = datetime.now().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     total = 0
     with open(_USAGE_LOG_PATH) as f:
         for line in f:
@@ -299,7 +302,7 @@ def _groq_verification_tokens_today() -> int:
             except json.JSONDecodeError:
                 continue
             if entry.get("stage") == "verification" and entry.get("timestamp", "").startswith(today):
-                total += entry.get("total_tokens", 0)
+                total += entry.get(field, 0)
     return total
 
 
