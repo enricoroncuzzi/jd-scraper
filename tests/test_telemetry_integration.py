@@ -130,3 +130,42 @@ def test_draining_a_hand_written_run_open_twice_inserts_one_running_row(tmp_path
             conn.close()
     finally:
         _cleanup(url, run_uuid)
+
+
+from datetime import date, timedelta
+from src import report_data
+
+
+@requires_test_db
+def test_load_day_and_metrics_read_back_a_recorded_run(tmp_path, monkeypatch):
+    url = test_db_url()
+    monkeypatch.setenv("JDS_TELEMETRY_DIR", str(tmp_path))
+    telemetry._reset_for_tests()
+    daily = "it-" + uuid.uuid4().hex
+    session = telemetry.start_session(tier=1, daily_run_id=daily, attempt=1, db_url=url)
+    try:
+        telemetry.set_fields(offers_fetched=40, verification_tokens=1234, verification_rejected=3)
+        telemetry.add_query(role="AI Engineer", location="Italy", work_mode="remote",
+                            pages_walked=30, page_cap=30, cards_seen=300, offers_kept=250,
+                            stop_reason="cap_hit")
+        with telemetry.llm_call(stage="verification", provider="groq",
+                                request_model="openai/gpt-oss-20b", batch_size=8, attempt=1,
+                                prompt_version="a" * 12) as call:
+            call.set_usage(response_model="openai/gpt-oss-20b", input_tokens=900, output_tokens=100)
+        telemetry.end_session(status="ok")
+        settings = report_data.load_tier_settings([f"config/config_tier{n}.json" for n in (1, 2, 3, 4)])
+        report = report_data.load_day(url, settings=settings, daily_run_id=daily)
+        assert report.tiers[1].status == "ok" and report.tiers[1].offers_fetched == 40
+        assert [q.stop_reason for q in report.queries] == ["cap_hit"]
+        [stage] = report.stages
+        assert stage.stage == "verification" and stage.tokens == 1000
+        groq20 = [l for l in report.limits if l.model == "openai/gpt-oss-20b"][0]
+        assert groq20.used >= 1000 and groq20.used_through_tier[1] >= 1000
+        metrics = report_data.load_daily_metrics(url, since=date.today() - timedelta(days=2),
+                                                 settings=settings)
+        assert any(m.cap_hits and m.cap_hits >= 1 for m in metrics)
+        models, verdicts = report_data.load_llm_view(url, since=date.today() - timedelta(days=1),
+                                                     stage="verification")
+        assert any(m["model"] == "openai/gpt-oss-20b" for m in models)
+    finally:
+        _cleanup(url, session.run_uuid)
