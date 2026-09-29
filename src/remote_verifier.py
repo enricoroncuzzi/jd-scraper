@@ -43,6 +43,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ValidationError, field_validator
 
+from src.llm_limits import limit_for
 from src.models import JobOffer
 from src.scorer import (
     _EmptyStructuredOutput,
@@ -74,7 +75,13 @@ _GROQ_MODEL = "openai/gpt-oss-20b"
 # here rather than in main.py because the proactive failover check below
 # needs it; main.py imports it rather than keeping its own copy so the two
 # never drift apart.
-GROQ_DAILY_TOKEN_LIMIT = 200_000
+# Sourced from config/llm_limits.json; the literal is only the safety fallback
+# when that file is missing or the entry is unknown, so a config problem can
+# never leave the stage without a budget.
+_GROQ_DAILY_TOKEN_LIMIT_FALLBACK = 200_000
+_groq_limit = limit_for("groq", _GROQ_MODEL)
+GROQ_DAILY_TOKEN_LIMIT = (_groq_limit.per_day if _groq_limit and _groq_limit.per_day
+                          else _GROQ_DAILY_TOKEN_LIMIT_FALLBACK)
 # Failing over BEFORE the cap is hit (main.py already tracks the day's
 # running Groq total and passes it in as groq_tokens_used_today) needs a
 # safety margin at least as large as one worst-case batch, so a proactive
