@@ -740,3 +740,73 @@ def test_a_throttled_batch_sends_exactly_the_requests_it_counted(monkeypatch):
     assert usage["openrouter_requests"] > 0
     assert hits["openrouter"] == usage["openrouter_requests"]
     assert verified[0].remote_verdict == "unconfirmed"
+
+
+def test_each_groq_verification_batch_is_recorded():
+    from unittest.mock import patch
+    from src import telemetry
+
+    client = MagicMock()
+    response = MagicMock()
+    response.model = "openai/gpt-oss-20b"
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = json.dumps(
+        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "States remote."}]}
+    )
+    response.usage = MagicMock(prompt_tokens=30, completion_tokens=5, total_tokens=35)
+    client.chat.completions.create.return_value = response
+
+    recorded = []
+    real = telemetry.llm_call
+
+    def spy(**kwargs):
+        cm = real(**kwargs)
+        recorded.append(kwargs)
+        return cm
+
+    with patch("src.remote_verifier.telemetry.llm_call", side_effect=spy):
+        verdicts, usage = _verify_batch(client, [_offer(1)], False)
+
+    assert verdicts[1].verdict == "confirmed"
+    assert usage["prompt_tokens"] == 30
+    assert usage["completion_tokens"] == 5
+    assert len(recorded) == 1
+    assert recorded[0]["stage"] == "verification"
+    assert recorded[0]["provider"] == "groq"
+    assert recorded[0]["request_model"] == "openai/gpt-oss-20b"
+
+
+def test_groq_daily_quota_is_recorded_as_quota_exhausted(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    from src import telemetry
+
+    monkeypatch.setenv("JDS_TELEMETRY_DIR", str(tmp_path / "telemetry"))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    telemetry._reset_for_tests()
+    patches = [
+        patch("src.telemetry.storage.init_db"),
+        patch("src.telemetry.flush_records", side_effect=OSError("keep in buffer")),
+    ]
+    for started in patches:
+        started.start()
+    try:
+        session = telemetry.start_session(
+            tier=1, daily_run_id="d", attempt=1, db_url="postgresql://x")
+        session.telemetry_ok = True
+        telemetry._warned_sites.clear()
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _rate_limit_error(_TPD_MESSAGE)
+        with pytest.raises(groq.RateLimitError):
+            _verify_batch(client, [_offer(1)], True)
+
+        records = [
+            line["data"]
+            for line in (json.loads(line) for line in open(session.buffer_path) if line.strip())
+            if line["kind"] == "llm_call"
+        ]
+        assert [record["outcome"] for record in records] == ["quota_exhausted"]
+    finally:
+        for started in patches:
+            started.stop()
+        telemetry._reset_for_tests()

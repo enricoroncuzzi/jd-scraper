@@ -517,3 +517,50 @@ def test_scoring_request_routes_nemotron_primary_with_liquid_in_fallbacks(monkey
     assert len(fallbacks) <= 3
     # Every routed model must support tool-calling: scoring forces a tool call.
     assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]
+
+
+from unittest.mock import MagicMock, patch
+from langchain_core.outputs import LLMResult
+from src import scorer, telemetry
+
+
+def test_token_counter_exposes_the_last_call():
+    counter = scorer._TokenCounter()
+    counter.begin_call()
+    counter.on_llm_end(LLMResult(generations=[], llm_output={
+        "token_usage": {"prompt_tokens": 50, "completion_tokens": 7},
+        "model_name": "google/gemma-4-26b-a4b-it:free"}))
+    assert (counter.last_model, counter.last_prompt_tokens, counter.last_completion_tokens) == (
+        "google/gemma-4-26b-a4b-it:free", 50, 7)
+    assert counter.total_tokens == 57
+    counter.begin_call()
+    assert counter.last_model is None
+
+
+def test_empty_structured_output_is_an_invalid_llm_output():
+    assert issubclass(scorer._EmptyStructuredOutput, telemetry.InvalidLLMOutput)
+
+
+def test_each_scoring_attempt_is_recorded_with_the_responding_model():
+    chain = MagicMock()
+    counter = scorer._TokenCounter()
+
+    def invoke(payload, config):
+        counter.on_llm_end(LLMResult(generations=[], llm_output={
+            "token_usage": {"prompt_tokens": 10, "completion_tokens": 2}, "model_name": "served"}))
+        return None if chain.invoke.call_count == 1 else MagicMock(offers=[])
+
+    chain.invoke.side_effect = invoke
+    recorded = []
+    real = telemetry.llm_call
+
+    def spy(**kwargs):
+        cm = real(**kwargs)
+        recorded.append(kwargs)
+        return cm
+
+    with patch("src.scorer.telemetry.llm_call", side_effect=spy), patch("src.scorer.time.sleep"):
+        scorer._invoke_batch(chain, [], "p", [], [], counter)
+    assert [r["attempt"] for r in recorded] == [1, 2]
+    assert all(r["stage"] == "scoring" and r["provider"] == "openrouter" for r in recorded)
+    assert all(len(r["prompt_version"]) == 12 for r in recorded)

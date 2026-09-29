@@ -34,6 +34,8 @@ _DEGRADED_FAILURE_RATIO) - a run where 27 of 28 batches died used to report
 itself healthy.
 """
 
+import functools
+import inspect
 import json
 import time
 
@@ -43,12 +45,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ValidationError, field_validator
 
+from src import telemetry
 from src.llm_limits import limit_for
 from src.models import JobOffer
 from src.scorer import (
     _EmptyStructuredOutput,
     _is_quota_exceeded,
     _is_retryable_upstream_value_error,
+    _openrouter_quota_exhausted,
     _TokenCounter,
 )
 
@@ -329,19 +333,36 @@ def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str
     )
 
 
+@functools.lru_cache(maxsize=2)
+def _prompt_version(require_italy_eligibility: bool) -> str:
+    try:
+        rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
+        return telemetry.prompt_version(inspect.getsource(_build_prompt), rule)
+    except Exception:
+        return "unknown"
+
+
 def _verify_batch(client, batch: list[JobOffer], require_italy_eligibility: bool) -> tuple[dict, dict]:
     """Return (verdicts by offer id, token usage). Raises when every retry fails."""
     prompt = _build_prompt(batch, require_italy_eligibility)
     last_error = None
     for attempt in range(_MAX_RETRIES):
         try:
-            response = client.chat.completions.create(
-                model=_GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-            )
-            parsed = _VerdictOutput.model_validate_json(response.choices[0].message.content)
+            with telemetry.llm_call(stage="verification", provider="groq",
+                                    request_model=_GROQ_MODEL, batch_size=len(batch),
+                                    attempt=attempt + 1,
+                                    prompt_version=_prompt_version(require_italy_eligibility),
+                                    is_quota_exhausted=_is_daily_quota_exceeded) as call:
+                response = client.chat.completions.create(
+                    model=_GROQ_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                )
+                call.set_usage(response_model=getattr(response, "model", None),
+                               input_tokens=getattr(response.usage, "prompt_tokens", None),
+                               output_tokens=getattr(response.usage, "completion_tokens", None))
+                parsed = _VerdictOutput.model_validate_json(response.choices[0].message.content)
             usage = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
                 "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
@@ -427,9 +448,18 @@ def _verify_batch_openrouter(
             raise _OpenRouterShareSpent()
         usage["openrouter_requests"] += 1
         try:
-            result = chain.invoke({"prompt": prompt}, config={"callbacks": [counter]})
-            if result is None:
-                raise _EmptyStructuredOutput()
+            counter.begin_call()
+            with telemetry.llm_call(stage="verification", provider="openrouter",
+                                    request_model=_OPENROUTER_MODEL, batch_size=len(batch),
+                                    attempt=attempt + 1,
+                                    prompt_version=_prompt_version(require_italy_eligibility),
+                                    is_quota_exhausted=_openrouter_quota_exhausted) as call:
+                result = chain.invoke({"prompt": prompt}, config={"callbacks": [counter]})
+                call.set_usage(response_model=counter.last_model,
+                               input_tokens=counter.last_prompt_tokens,
+                               output_tokens=counter.last_completion_tokens)
+                if result is None:
+                    raise _EmptyStructuredOutput()
             verdicts = {
                 item.id: item
                 for item in result.offers

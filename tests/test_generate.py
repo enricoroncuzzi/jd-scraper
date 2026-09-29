@@ -110,3 +110,43 @@ def test_selection_schema_shape():
     )
     assert s.cover_letter.proof_id == "exp.0.b0"
     assert s.hr_message.startswith("Hi")
+
+
+def test_tailoring_generation_is_recorded(tmp_path):
+    import json
+    from unittest.mock import MagicMock, patch
+
+    from src import telemetry
+    from src.tailor.generate import generate
+
+    response = MagicMock()
+    response.model = "openai/gpt-oss-120b"
+    response.usage = MagicMock(prompt_tokens=40, completion_tokens=12)
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = json.dumps({
+        "included_bullet_ids": ["exp.0.b0"],
+        "skill_order": ["skill.languages", "skill.ai_stack"],
+        "cover_letter": {"hook": "I focus on agents.", "bridge": "I built pipelines.", "proof_id": "exp.0.b0"},
+        "hr_message": "Hi, I saw the role.",
+    })
+    client = MagicMock()
+    client.chat.completions.create.return_value = response
+
+    recorded = []
+    real = telemetry.llm_call
+
+    def spy(**kwargs):
+        cm = real(**kwargs)
+        recorded.append(kwargs)
+        return cm
+
+    with patch("groq.Groq", return_value=client), patch(
+        "src.tailor.generate.telemetry.llm_call", side_effect=spy
+    ):
+        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert selection.cover_letter.proof_id == "exp.0.b0"
+    assert len(recorded) == 1
+    assert recorded[0]["stage"] == "tailoring"
+    assert recorded[0]["batch_size"] == 1
+    assert recorded[0]["attempt"] == 1
