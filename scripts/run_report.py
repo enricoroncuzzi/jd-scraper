@@ -12,12 +12,13 @@ import os
 import sys
 from datetime import date, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 from dotenv import load_dotenv  # noqa: E402
 from src import report_data, report_render  # noqa: E402
 
-CONFIGS = [f"config/config_tier{n}.json" for n in (1, 2, 3, 4)]
+CONFIGS = [os.path.join(ROOT, f"config/config_tier{n}.json") for n in (1, 2, 3, 4)]
 
 
 def main() -> int:
@@ -35,6 +36,7 @@ def main() -> int:
     llm.add_argument("--days", type=int, default=7)
     args = parser.parse_args()
 
+    os.chdir(ROOT)
     load_dotenv()
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:

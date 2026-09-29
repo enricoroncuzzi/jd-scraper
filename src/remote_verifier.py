@@ -166,11 +166,11 @@ _OPENROUTER_FALLBACK_MODELS = [
     "google/gemma-4-26b-a4b-it:free",
     "thinkingmachines/inkling-small:free",
 ]
-# OpenRouter's $0 tier caps the whole account at 50 requests per UTC day, and
-# scoring - which runs after this stage in every tier - spends that same
-# budget. The failover may use at most this many of them per UTC day
-# (retries included), so a Groq-exhausted day still leaves scoring its half
-# instead of verification starving it. main.py passes the day's running
+# The failover may use at most this many OpenRouter requests per UTC day
+# (retries included). 25 is the verifier's own share of the account's daily
+# request budget. Scoring runs after this stage in every tier and spends
+# that same budget, so once this share is used the remaining batches go
+# unconfirmed and scoring keeps the rest. main.py passes the day's running
 # count in as openrouter_requests_used_today.
 OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP = 25
 

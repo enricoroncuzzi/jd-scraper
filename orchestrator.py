@@ -42,7 +42,7 @@ def _send_morning_report(daily_run_id: str) -> None:
                          os.environ["TELEGRAM_CHAT_ID"], parse_mode=None)
         print(f"[orchestrator] Morning report sent ({len(blocks)} blocks).")
     except Exception as e:
-        print(f"[orchestrator] Morning report FAILED: {type(e).__name__}: {e}")
+        print(f"[orchestrator] Morning report FAILED: {type(e).__name__}: {telemetry._redact(str(e))}")
 
 
 def main() -> None:

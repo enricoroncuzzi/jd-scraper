@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 import psycopg2
 import psycopg2.extras
 
-from src.llm_limits import load_limits, limit_for
+from src.llm_limits import load_limits
 
 TIER_NAMES = {1: "Italy", 2: "Switzerland", 3: "EU", 4: "UK"}
 TIER_FLAGS = {1: "🇮🇹", 2: "🇨🇭", 3: "🇪🇺", 4: "🇬🇧"}

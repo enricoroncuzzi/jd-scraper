@@ -167,7 +167,8 @@ def render_day_detail(report, *, settings) -> str:
                      f"{q.offers_kept} kept, stopped: {q.stop_reason}")
     lines.append("Tiers:")
     for n, t in sorted(report.tiers.items()):
-        lines.append(f"  T{n} attempt {t.attempt} of {t.attempts} · {t.status} · "
+        status = {"running": "CRASHED"}.get(t.status, t.status)
+        lines.append(f"  T{n} attempt {t.attempt} of {t.attempts} · {status} · "
                      f"{_duration(t.started_at, t.finished_at)}"
                      + (f" · error: {t.error}" if t.error else ""))
     return "\n".join(lines)
