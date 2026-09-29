@@ -14,6 +14,9 @@ class SearchConfig:
     # Allowed-country scope (canonical or display country names). None means no
     # geographic narrowing; see src/tier_scope.resolve_allowed_countries.
     allowed_countries: list[str] = None
+    # Per-query pagination page cap. None (or an invalid value) falls back to
+    # the conservative default; see src/scraper.resolve_max_pages_per_query.
+    max_pages_per_query: int = None
 
     def __post_init__(self):
         if self.work_mode is None:

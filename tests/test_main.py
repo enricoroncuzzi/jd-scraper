@@ -126,6 +126,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
         work_modes=["remote", "hybrid"],
         countries=["Italy", "Spain"],
         allowed_countries=None,
+        max_pages_per_query=8,
     )
     mock_lang_filter.assert_called_once_with(raw_offers)
     mock_filter.assert_called_once_with(language_filtered, "/data/seen.txt")

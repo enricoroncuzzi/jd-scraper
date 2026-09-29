@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timezone
 from src.config import load_config
-from src.scraper import fetch_offers
+from src.scraper import fetch_offers, resolve_max_pages_per_query
 from src.language_filter import filter_by_language
 from src.dedup import filter_new, mark_seen
 from src.models import JobOffer
@@ -33,6 +33,11 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     # country vocabulary and raises on a typo, so renumbering tiers or adding a
     # fifth one can no longer silently detach (or attach) this filter.
     allowed_countries = resolve_allowed_countries(config.search.allowed_countries)
+    # The per-query page cap is config-driven the same way: each tier config's
+    # search.max_pages_per_query sets its own cap, and resolve_max_pages_per_query
+    # falls back to the conservative default when it is absent or invalid, so a
+    # malformed or older config can never turn into unbounded pagination.
+    max_pages_per_query = resolve_max_pages_per_query(config.search.max_pages_per_query)
     raw_offers = fetch_offers(
         roles=config.search.roles,
         location=config.search.location,
@@ -40,6 +45,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         work_modes=config.search.work_mode,
         countries=config.search.countries,
         allowed_countries=allowed_countries,
+        max_pages_per_query=max_pages_per_query,
     )
     print(f"[main] Fetched {len(raw_offers)} offers")
 
