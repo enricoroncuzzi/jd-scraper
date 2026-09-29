@@ -82,7 +82,9 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         verification_degraded = verify_usage.pop("degraded", False)
         _log_usage(config.tier, "verification", len(new_offers), verify_usage)
         groq_today = _verification_usage_today("total_tokens")
-        provider_note = f" | provider: {verify_usage.get('provider', 'groq')}"
+        provider = verify_usage.get("provider", "none")
+        provider_note = (" | provider: none (no LLM call made)" if provider == "none"
+                         else f" | provider: {provider}")
         if verify_usage.get("openrouter_total_tokens"):
             provider_note += f" (+{verify_usage['openrouter_total_tokens']} OpenRouter tokens)"
         print(f"[main] Verification token usage - prompt: {verify_usage['prompt_tokens']}, "

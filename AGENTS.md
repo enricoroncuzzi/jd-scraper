@@ -122,7 +122,9 @@ what the README doesn't (or what has drifted from it).
    flag and gets the identical stage-stop treatment, instead of repeating a
    doomed call for every remaining batch. Short of that, the failover may
    spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (25, half the
-   account cap, retries included) OpenRouter requests per UTC day - `main.py`
+   account cap, retries included; the verifier's own SDK clients run with
+   `max_retries=0` so each counted attempt is exactly one HTTP request)
+   OpenRouter requests per UTC day - `main.py`
    passes the day's running count from the usage log as
    `openrouter_requests_used_today` - and once that share is spent, remaining
    batches go unconfirmed so scoring keeps its half. Both daily counters in

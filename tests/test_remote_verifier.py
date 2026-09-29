@@ -502,6 +502,7 @@ def test_missing_groq_key_without_openrouter_key_still_just_degrades(monkeypatch
 
     assert verified[0].remote_verdict == "unconfirmed"
     assert usage["degraded"] is True
+    assert usage["provider"] == "none"  # neither provider was called
 
 
 def test_groq_client_build_failure_fails_over_to_openrouter_when_configured(monkeypatch):
@@ -575,6 +576,7 @@ def test_openrouter_failover_makes_no_call_once_the_share_is_already_spent(monke
     assert verified[0].remote_verdict == "unconfirmed"
     assert usage["openrouter_requests"] == 0
     assert usage["degraded"] is True
+    assert usage["provider"] == "none"
 
 
 def test_openrouter_retries_count_against_the_daily_request_share(monkeypatch):
@@ -673,3 +675,57 @@ def test_batch_pause_is_applied_between_consecutive_groq_batches(monkeypatch):
     verify_offers([_offer(i) for i in range(1, 17)], True, "key")  # 2 batches
 
     assert sleeps.count(_GROQ_BATCH_PAUSE_SECONDS) == 1  # once, between batch 1 and 2
+
+
+# --- The request share bounds real HTTP requests, not logical attempts -------
+
+def test_a_throttled_batch_sends_exactly_the_requests_it_counted(monkeypatch):
+    """The real Groq and OpenRouter SDK clients, pointed at a local fake
+    server, must not add hidden retries of their own: every HTTP request the
+    verifier makes has to be one it counted against its OpenRouter share."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    hits = {"groq": 0, "openrouter": 0}
+
+    class FakeProviders(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            if self.path.startswith("/groq"):
+                hits["groq"] += 1
+                body = {"error": {"message": _TPD_MESSAGE, "type": "tokens",
+                                  "code": "rate_limit_exceeded"}}
+                reset_ms = None
+            else:
+                hits["openrouter"] += 1
+                body = {"error": {"message": "Rate limit exceeded", "code": 429}}
+                reset_ms = str(int((time.time() + 5) * 1000))  # transient
+            payload = json.dumps(body).encode()
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("retry-after-ms", "1")
+            if reset_ms:
+                self.send_header("X-RateLimit-Reset", reset_ms)
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeProviders)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    monkeypatch.setenv("GROQ_BASE_URL", f"{base}/groq")
+    monkeypatch.setattr("src.remote_verifier._OPENROUTER_BASE_URL", f"{base}/openrouter")
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    try:
+        verified, usage = verify_offers([_offer(1)], True, "groq-key", llm_api_key="or-key")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert hits["groq"] == 1  # a TPD 429 is final: no SDK-level retries
+    assert usage["openrouter_requests"] > 0
+    assert hits["openrouter"] == usage["openrouter_requests"]
+    assert verified[0].remote_verdict == "unconfirmed"

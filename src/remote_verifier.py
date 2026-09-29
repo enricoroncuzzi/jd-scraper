@@ -272,7 +272,9 @@ class _OpenRouterShareSpent(Exception):
 def _client(api_key: str):
     from groq import Groq
 
-    return Groq(api_key=api_key)
+    # max_retries=0: _verify_batch's own ladder is the only retry layer, so a
+    # TPD 429 is seen on the first hit instead of after the SDK's retries.
+    return Groq(api_key=api_key, max_retries=0)
 
 
 def _is_daily_quota_exceeded(e: Exception) -> bool:
@@ -380,6 +382,9 @@ def _openrouter_chain(llm_api_key: str):
         base_url=_OPENROUTER_BASE_URL,
         extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
         temperature=0.0,
+        # _verify_batch_openrouter's own ladder is the only retry layer, so
+        # every HTTP request is one counted against this stage's share.
+        max_retries=0,
     )
     return (
         ChatPromptTemplate.from_messages([("human", "{prompt}")])
@@ -487,7 +492,7 @@ def verify_offers(
         "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
         "openrouter_prompt_tokens": 0, "openrouter_completion_tokens": 0,
         "openrouter_total_tokens": 0, "openrouter_requests": 0,
-        "degraded": False, "provider": "groq",
+        "degraded": False, "provider": "none",
     }
     if not offers:
         return [], usage
@@ -634,8 +639,10 @@ def verify_offers(
         usage["provider"] = "groq+openrouter"
     elif used_openrouter:
         usage["provider"] = "openrouter"
-    else:
+    elif used_groq:
         usage["provider"] = "groq"
+    else:
+        usage["provider"] = "none"
 
     # Degraded means a material share of what this stage was asked to judge
     # came back from a stage failure, not a real verdict - not only the
