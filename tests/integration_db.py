@@ -17,3 +17,6 @@ def test_db_url() -> str:
     if url == os.environ.get("DATABASE_URL"):
         pytest.fail("refusing to run integration tests against the production DATABASE_URL")
     return url
+
+
+test_db_url.__test__ = False

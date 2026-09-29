@@ -58,6 +58,65 @@ def init_db(db_url: str) -> None:
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS application_channel VARCHAR(20)""")
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_verdict VARCHAR(12)""")
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_reason TEXT""")
+                # --- run observability (data/run-observability/design.md) ---
+                for column in (
+                    "run_uuid UUID", "daily_run_id TEXT", "attempt INTEGER",
+                    "git_commit TEXT", "git_dirty BOOLEAN", "status VARCHAR(10)",
+                    "started_at TIMESTAMPTZ", "finished_at TIMESTAMPTZ", "error TEXT",
+                    "offers_deferred INTEGER", "offers_packaged INTEGER",
+                    "verification_provider TEXT", "verification_tokens INTEGER",
+                    "verification_batches_failed INTEGER", "verification_batches_total INTEGER",
+                    "verification_degraded BOOLEAN", "verification_confirmed INTEGER",
+                    "verification_unconfirmed INTEGER", "verification_rejected INTEGER",
+                    "search_rate_limits INTEGER", "description_rate_limits INTEGER",
+                    "telemetry_ok BOOLEAN",
+                ):
+                    cur.execute(f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {column}")
+                # Unique so buffered run records upsert idempotently; NULL for
+                # pre-telemetry rows, which Postgres allows any number of.
+                cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS runs_run_uuid_key ON runs (run_uuid)")
+                cur.execute("CREATE INDEX IF NOT EXISTS runs_daily_run_id_idx ON runs (daily_run_id)")
+                # Child rows reference runs by run_uuid, not runs.id: they must be
+                # writable from the local buffer while Neon is unreachable, before
+                # any serial id exists. No foreign key, deliberately - a flush must
+                # never fail on ordering; joins go through run_uuid.
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS run_queries (
+                        id           UUID PRIMARY KEY,
+                        run_uuid     UUID NOT NULL,
+                        role         TEXT,
+                        location     TEXT,
+                        work_mode    TEXT,
+                        pages_walked INTEGER,
+                        page_cap     INTEGER,
+                        cards_seen   INTEGER,
+                        offers_kept  INTEGER,
+                        stop_reason  VARCHAR(20) NOT NULL,
+                        recorded_at  TIMESTAMPTZ NOT NULL
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS run_queries_run_uuid_idx ON run_queries (run_uuid)")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS llm_calls (
+                        id             UUID PRIMARY KEY,
+                        run_uuid       UUID,
+                        stage          VARCHAR(12) NOT NULL,
+                        provider       VARCHAR(12) NOT NULL,
+                        request_model  TEXT NOT NULL,
+                        response_model TEXT,
+                        input_tokens   INTEGER,
+                        output_tokens  INTEGER,
+                        latency_ms     INTEGER NOT NULL,
+                        batch_size     INTEGER NOT NULL,
+                        attempt        INTEGER NOT NULL,
+                        outcome        VARCHAR(16) NOT NULL,
+                        error          TEXT,
+                        prompt_version VARCHAR(12) NOT NULL,
+                        started_at     TIMESTAMPTZ NOT NULL
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS llm_calls_run_uuid_idx ON llm_calls (run_uuid)")
+                cur.execute("CREATE INDEX IF NOT EXISTS llm_calls_started_at_idx ON llm_calls (started_at)")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS applications (
                         id           SERIAL PRIMARY KEY,
@@ -75,39 +134,6 @@ def init_db(db_url: str) -> None:
             conn.close()
     except Exception as e:
         print(f"[storage] init_db failed: {e}")
-
-
-def save_run(
-    db_url: str,
-    tier: int,
-    offers_fetched: int,
-    offers_new: int,
-    prompt_tokens: int,
-    completion_tokens: int,
-    total_tokens: int,
-) -> int:
-    if db_url is None:
-        return 0
-    try:
-        conn = psycopg2.connect(db_url)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO runs (tier, offers_fetched, offers_new, prompt_tokens, completion_tokens, total_tokens)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (tier, offers_fetched, offers_new, prompt_tokens, completion_tokens, total_tokens),
-                )
-                run_id = cur.fetchone()[0]
-            conn.commit()
-            return run_id
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"[storage] save_run failed: {e}")
-        return 0
 
 
 def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) -> None:
