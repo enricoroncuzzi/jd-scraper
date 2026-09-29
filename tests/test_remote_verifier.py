@@ -638,6 +638,17 @@ def test_degraded_fires_well_below_total_failure(monkeypatch):
     assert usage["degraded"] is True
 
 
+def test_verify_offers_usage_includes_batch_counters(monkeypatch):
+    # 9 offers = 2 batches (8+1). One batch fails - same selective mock as degraded tests.
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    _mock_groq_selective(monkeypatch, should_fail=lambda first_id: first_id == 1)
+
+    _verified, usage = verify_offers([_offer(i) for i in range(1, 10)], True, "key")
+
+    assert usage["failed_batches"] == 1
+    assert usage["total_batches"] == 2
+
+
 def test_a_single_stray_batch_failure_in_a_large_tier_does_not_flip_degraded(monkeypatch):
     # 160 offers = 20 batches, one fails: 5% failure, below the materiality bar.
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)

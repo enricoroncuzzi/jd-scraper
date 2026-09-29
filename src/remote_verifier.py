@@ -503,6 +503,7 @@ def verify_offers(
         "openrouter_prompt_tokens": 0, "openrouter_completion_tokens": 0,
         "openrouter_total_tokens": 0, "openrouter_requests": 0,
         "degraded": False, "provider": "none",
+        "failed_batches": 0, "total_batches": 0,
     }
     if not offers:
         return [], usage
@@ -662,4 +663,6 @@ def verify_offers(
     usage["degraded"] = (
         total_batches > 0 and failed_batches / total_batches >= _DEGRADED_FAILURE_RATIO
     )
+    usage["failed_batches"] = failed_batches
+    usage["total_batches"] = total_batches
     return offers, usage

@@ -2,7 +2,9 @@ import sys
 import json
 import os
 import time
+import uuid
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 from src.config import load_config
 from src.scraper import fetch_offers, resolve_max_pages_per_query
 from src.language_filter import filter_by_language
@@ -14,7 +16,8 @@ from src.remote_verifier import verify_offers, GROQ_DAILY_TOKEN_LIMIT
 from src.tier_scope import resolve_allowed_countries
 from src.writer import write_notes, write_digest, write_rejected
 from src.telegram import send_summary, send_message
-from src.storage import init_db, save_run, save_offers
+from src.storage import save_offers
+from src import telemetry
 from src.autoapply.pipeline import run_autoapply
 from src.retry import run_with_backoff
 import tailor as tailor_cli
@@ -54,6 +57,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
 
     new_offers = filter_new(language_filtered, config.dedup_log_path)
     print(f"[main] {len(new_offers)} new offers after dedup")
+    telemetry.set_fields(offers_fetched=len(raw_offers), offers_new=len(new_offers))
 
     # Offers an earlier run fetched but never scored, because scoring stopped
     # partway through that tier. They were deliberately left out of the dedup
@@ -104,6 +108,16 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         confirmed = sum(1 for o in survivors if o.remote_verdict == "confirmed")
         print(f"[main] Remote verification - confirmed: {confirmed}, "
               f"unconfirmed: {len(survivors) - confirmed}, rejected: {len(rejected)}")
+        telemetry.set_fields(
+            verification_provider=verify_usage.get("provider"),
+            verification_tokens=verify_usage["total_tokens"] + verify_usage.get("openrouter_total_tokens", 0),
+            verification_batches_failed=verify_usage.get("failed_batches", 0),
+            verification_batches_total=verify_usage.get("total_batches", 0),
+            verification_degraded=verification_degraded,
+            verification_confirmed=confirmed,
+            verification_unconfirmed=len(survivors) - confirmed,
+            verification_rejected=len(rejected),
+        )
     else:
         survivors = new_offers
 
@@ -130,20 +144,6 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             )
         except Exception as notify_exc:
             print(f"[main] Failed to send all-rejected notification: {notify_exc}")
-        if config.db_url:
-            try:
-                init_db(config.db_url)
-                save_run(
-                    config.db_url,
-                    tier=config.tier,
-                    offers_fetched=len(raw_offers),
-                    offers_new=len(new_offers),
-                    prompt_tokens=verify_usage["prompt_tokens"],
-                    completion_tokens=verify_usage["completion_tokens"],
-                    total_tokens=verify_usage["total_tokens"],
-                )
-            except Exception as e:
-                print(f"[storage] Failed: {e}")
         mark_seen(new_offers, config.dedup_log_path)
         # Nothing is pending on this path (a non-empty `carried` would have
         # scored), so whatever the queue file still holds is superseded by
@@ -179,22 +179,20 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         print(f"[main] {len(deferred)} offer(s) left unscored (scoring stopped early) "
               f"- queued for the next run in {config.retry_queue_path}")
 
+    telemetry.set_fields(
+        prompt_tokens=usage["prompt_tokens"],
+        completion_tokens=usage["completion_tokens"],
+        total_tokens=usage["total_tokens"],
+        offers_deferred=len(deferred),
+    )
     if config.db_url:
-        try:
-            init_db(config.db_url)
-            run_id = save_run(
-                config.db_url,
-                tier=config.tier,
-                offers_fetched=len(raw_offers),
-                offers_new=len(new_offers),
-                prompt_tokens=usage["prompt_tokens"],
-                completion_tokens=usage["completion_tokens"],
-                total_tokens=usage["total_tokens"],
-            )
-            if run_id:
-                save_offers(config.db_url, scored, run_id, config.tier)
-        except Exception as e:
-            print(f"[storage] Failed: {e}")
+        session = telemetry.current()
+        run_id = session.ensure_run_id() if session is not None else None
+        if run_id:
+            save_offers(config.db_url, scored, run_id, config.tier)
+        else:
+            print("[storage] Run record not reachable in Neon - scored offers were not "
+                  "saved to the database this run (files and digest are unaffected).")
 
     print("[main] Writing output files...")
     write_notes(scored, config.output_path, config.scoring.threshold, config.tier)
@@ -221,6 +219,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 telegram_chat_id=config.telegram_chat_id,
             )
             print(f"[main] Auto-apply packaged {len(packaged)} offer(s)")
+            telemetry.set_fields(offers_packaged=len(packaged))
         except Exception as e:
             # Never let an auto-apply failure (e.g. a missing CV source path, or a
             # Telegram send failure on notify_package) take down the whole tier run -
@@ -328,6 +327,15 @@ def _notify_failure(config_path: str, exc: Exception, attempts: int, retryable: 
         print(f"[main] Failed to send failure notification: {notify_exc}")
 
 
+def _tier_of(config_path: str) -> int:
+    """The tier number, read without load_config so it needs no secrets and never raises."""
+    try:
+        with open(config_path) as f:
+            return int(json.load(f).get("tier", 0))
+    except Exception:
+        return 0
+
+
 def run_tier_with_retry(config_path: str, sleep=time.sleep) -> None:
     """Run one tier via handler(), retrying transient failures (an uncaught
     scraper/scorer exception) with exponential backoff. Never retries quota
@@ -335,8 +343,21 @@ def run_tier_with_retry(config_path: str, sleep=time.sleep) -> None:
     via Telegram, not just left as a cron log line, then re-raised so the
     process still exits non-zero."""
 
+    daily_run_id = os.environ.get("JDS_DAILY_RUN_ID") or uuid.uuid4().hex
+    attempts = {"n": 0}
+
     def attempt():
-        handler({}, None, config_path=config_path)
+        attempts["n"] += 1
+        telemetry.start_session(
+            tier=_tier_of(config_path), daily_run_id=daily_run_id,
+            attempt=attempts["n"], db_url=os.environ.get("DATABASE_URL"),
+        )
+        try:
+            handler({}, None, config_path=config_path)
+        except BaseException as exc:
+            telemetry.end_session(status="failed", error=f"{type(exc).__name__}: {exc}")
+            raise
+        telemetry.end_session()
 
     def on_retry(exc: Exception, attempt_num: int, delay: float) -> None:
         print(f"[main] Tier run failed (attempt {attempt_num}): {exc}. Retrying in {delay:.0f}s...")
@@ -351,4 +372,5 @@ def run_tier_with_retry(config_path: str, sleep=time.sleep) -> None:
 
 if __name__ == "__main__":
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config/config.json"
+    load_dotenv()
     run_tier_with_retry(config_path)

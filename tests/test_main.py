@@ -91,8 +91,10 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter = MagicMock(return_value=language_filtered)
     mock_filter = MagicMock(return_value=new_offers)
     mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
-    mock_init_db = MagicMock()
-    mock_save_run = MagicMock(return_value=42)
+    mock_session = MagicMock()
+    mock_session.ensure_run_id.return_value = 42
+    mock_telemetry = MagicMock()
+    mock_telemetry.current.return_value = mock_session
     mock_save_offers = MagicMock()
     mock_write_notes = MagicMock()
     mock_write_digest = MagicMock()
@@ -106,8 +108,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
     monkeypatch.setattr("main.filter_new", mock_filter)
     monkeypatch.setattr("main.score_offers", mock_score)
-    monkeypatch.setattr("main.init_db", mock_init_db)
-    monkeypatch.setattr("main.save_run", mock_save_run)
+    monkeypatch.setattr("main.telemetry", mock_telemetry)
     monkeypatch.setattr("main.save_offers", mock_save_offers)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
     monkeypatch.setattr("main.write_digest", mock_write_digest)
@@ -131,11 +132,9 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_lang_filter.assert_called_once_with(raw_offers)
     mock_filter.assert_called_once_with(language_filtered, "/data/seen.txt")
     mock_score.assert_called_once()
-    mock_init_db.assert_called_once_with("postgresql://test")
-    mock_save_run.assert_called_once_with(
-        "postgresql://test",
-        tier=1, offers_fetched=1, offers_new=1,
-        prompt_tokens=0, completion_tokens=0, total_tokens=0,
+    mock_telemetry.set_fields.assert_any_call(offers_fetched=1, offers_new=1)
+    mock_telemetry.set_fields.assert_any_call(
+        prompt_tokens=0, completion_tokens=0, total_tokens=0, offers_deferred=0,
     )
     mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
     mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
@@ -163,8 +162,7 @@ def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     mock_lang_filter = MagicMock(return_value=raw_offers)
     mock_filter = MagicMock(return_value=raw_offers)
     mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
-    mock_init_db = MagicMock()
-    mock_save_run = MagicMock()
+    mock_telemetry = MagicMock()
     mock_write_notes = MagicMock()
     mock_write_digest = MagicMock()
     mock_send = MagicMock()
@@ -175,19 +173,20 @@ def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     monkeypatch.setattr("main.filter_by_language", mock_lang_filter)
     monkeypatch.setattr("main.filter_new", mock_filter)
     monkeypatch.setattr("main.score_offers", mock_score)
-    monkeypatch.setattr("main.init_db", mock_init_db)
-    monkeypatch.setattr("main.save_run", mock_save_run)
+    monkeypatch.setattr("main.telemetry", mock_telemetry)
     monkeypatch.setattr("main.write_notes", mock_write_notes)
     monkeypatch.setattr("main.write_digest", mock_write_digest)
     monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", mock_send)
     monkeypatch.setattr("main.mark_seen", mock_mark)
+    mock_save_offers = MagicMock()
+    monkeypatch.setattr("main.save_offers", mock_save_offers)
 
     import main
     main.handler({}, None)
 
-    mock_init_db.assert_not_called()
-    mock_save_run.assert_not_called()
+    mock_telemetry.current.assert_not_called()
+    mock_save_offers.assert_not_called()
 
 
 def test_handler_skips_pipeline_when_no_new_offers(monkeypatch):
@@ -239,8 +238,7 @@ def test_handler_logs_description_quality_summary(monkeypatch, tmp_path, capsys)
     monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
-    monkeypatch.setattr("main.init_db", lambda *a: None)
-    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.telemetry", MagicMock())
     monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
     monkeypatch.setattr("main.os.makedirs", lambda *a, **kw: None)
     monkeypatch.setattr("builtins.open", lambda *a, **kw: __import__("io").StringIO())
@@ -272,8 +270,7 @@ def test_handler_skips_autoapply_when_disabled(monkeypatch):
     monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
-    monkeypatch.setattr("main.init_db", lambda *a: None)
-    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.telemetry", MagicMock())
     monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
     mock_autoapply = MagicMock()
     monkeypatch.setattr("main.run_autoapply", mock_autoapply)
@@ -303,8 +300,7 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
     monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
-    monkeypatch.setattr("main.init_db", lambda *a: None)
-    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.telemetry", MagicMock())
     monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
     mock_autoapply = MagicMock(return_value=[])
     monkeypatch.setattr("main.run_autoapply", mock_autoapply)
@@ -344,8 +340,7 @@ def test_handler_survives_autoapply_failure_and_still_sends_digest(monkeypatch):
     mock_send_summary = MagicMock()
     monkeypatch.setattr("main.send_summary", mock_send_summary)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
-    monkeypatch.setattr("main.init_db", lambda *a: None)
-    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.telemetry", MagicMock())
     monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
     monkeypatch.setattr(
         "main.run_autoapply",
@@ -383,8 +378,7 @@ def test_handler_survives_autoapply_failure_notification_also_failing(monkeypatc
     monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
     monkeypatch.setattr("main.mark_seen", lambda *a: None)
-    monkeypatch.setattr("main.init_db", lambda *a: None)
-    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.telemetry", MagicMock())
     monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
     monkeypatch.setattr("main.run_autoapply", MagicMock(side_effect=RuntimeError("telegram POST failed")))
     monkeypatch.setattr("main.send_message", MagicMock(side_effect=RuntimeError("network down")))
@@ -498,8 +492,7 @@ def _stub_common_pipeline(monkeypatch):
     monkeypatch.setattr("main.write_digest", lambda *a, **kw: None)
     monkeypatch.setattr("main.write_rejected", lambda *a, **kw: None)
     monkeypatch.setattr("main.send_summary", lambda **kw: None)
-    monkeypatch.setattr("main.init_db", lambda *a: None)
-    monkeypatch.setattr("main.save_run", lambda *a, **kw: 0)
+    monkeypatch.setattr("main.telemetry", MagicMock())
     monkeypatch.setattr("main.save_offers", lambda *a, **kw: None)
     monkeypatch.setattr("main.run_autoapply", lambda **kw: [])
 
@@ -625,7 +618,7 @@ def test_tiers_without_a_scope_do_no_narrowing(monkeypatch, tmp_path):
         assert seen["allowed_countries"] is None
 
 
-def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
+def _all_rejected_run(monkeypatch, tmp_path, mock_telemetry, db_url):
     from src.models import JobOffer
     fetched = [
         JobOffer(id=1, title="Bad1", company="A", link="https://x/1", description="d"),
@@ -635,7 +628,10 @@ def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
     def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
-        return offers, {"prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100}
+        return offers, {
+            "prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100,
+            "failed_batches": 0, "total_batches": 1, "provider": "groq",
+        }
 
     import main
     monkeypatch.setattr("main.fetch_offers", lambda **kwargs: fetched)
@@ -646,7 +642,7 @@ def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
     monkeypatch.setattr("main.mark_seen", lambda offers, path: None)
     monkeypatch.setattr("main.send_message", MagicMock())
     _stub_common_pipeline(monkeypatch)
-    monkeypatch.setattr("main.save_run", mock_save_run)
+    monkeypatch.setattr("main.telemetry", mock_telemetry)
     if db_url:
         monkeypatch.setenv("DATABASE_URL", db_url)
     else:
@@ -656,34 +652,32 @@ def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
 
 
 def test_all_rejected_run_is_still_recorded_in_storage(monkeypatch, tmp_path):
-    mock_save_run = MagicMock(return_value=7)
+    mock_telemetry = MagicMock()
 
-    _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url="postgresql://test")
+    _all_rejected_run(monkeypatch, tmp_path, mock_telemetry, db_url="postgresql://test")
 
-    mock_save_run.assert_called_once()
-    kwargs = mock_save_run.call_args.kwargs
-    assert kwargs["tier"] == 1
-    assert kwargs["offers_fetched"] == 2
-    assert kwargs["offers_new"] == 2
-    assert kwargs["total_tokens"] == 100
-    assert kwargs["prompt_tokens"] == 70
-    assert kwargs["completion_tokens"] == 30
+    mock_telemetry.set_fields.assert_any_call(offers_fetched=2, offers_new=2)
+    mock_telemetry.set_fields.assert_any_call(
+        verification_provider="groq",
+        verification_tokens=100,
+        verification_batches_failed=0,
+        verification_batches_total=1,
+        verification_degraded=False,
+        verification_confirmed=0,
+        verification_unconfirmed=0,
+        verification_rejected=2,
+    )
 
 
 def test_all_rejected_run_skips_storage_when_db_url_is_none(monkeypatch, tmp_path):
-    mock_save_run = MagicMock()
+    mock_telemetry = MagicMock()
+    mock_save_offers = MagicMock()
+    monkeypatch.setattr("main.save_offers", mock_save_offers)
 
-    _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url=None)
+    _all_rejected_run(monkeypatch, tmp_path, mock_telemetry, db_url=None)
 
-    mock_save_run.assert_not_called()
-
-
-def test_all_rejected_run_survives_a_storage_failure(monkeypatch, tmp_path, capsys):
-    mock_save_run = MagicMock(side_effect=RuntimeError("neon down"))
-
-    _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url="postgresql://test")
-
-    assert "[storage] Failed" in capsys.readouterr().out
+    mock_save_offers.assert_not_called()
+    mock_telemetry.set_fields.assert_any_call(offers_fetched=2, offers_new=2)
 
 
 def test_verification_usage_today_sums_only_todays_verification_entries(monkeypatch, tmp_path):
@@ -1125,3 +1119,33 @@ def test_handler_survives_the_summary_failure_notice_also_failing(monkeypatch, t
     main.handler({}, None, config_path=str(config_path))  # must not raise
 
     assert "Failed to send summary failure notification" in capsys.readouterr().out
+
+
+def test_run_tier_with_retry_opens_one_session_per_attempt_and_closes_each(monkeypatch):
+    import main
+
+    monkeypatch.setenv("JDS_DAILY_RUN_ID", "day-1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    calls = {"n": 0}
+
+    def flaky(event, context, config_path):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("scrape blew up")
+
+    with patch("main.handler", side_effect=flaky), \
+         patch("main._tier_of", return_value=3), \
+         patch("main.telemetry") as tel:
+        main.run_tier_with_retry("config/config_tier3.json", sleep=lambda s: None)
+    starts = tel.start_session.call_args_list
+    assert [c.kwargs["attempt"] for c in starts] == [1, 2]
+    assert all(c.kwargs["daily_run_id"] == "day-1" and c.kwargs["tier"] == 3 for c in starts)
+    ends = tel.end_session.call_args_list
+    assert ends[0].kwargs["status"] == "failed" and "scrape blew up" in ends[0].kwargs["error"]
+    assert ends[1].kwargs == {}
+
+
+def test_tier_of_never_raises(tmp_path):
+    import main
+
+    assert main._tier_of(str(tmp_path / "missing.json")) == 0
