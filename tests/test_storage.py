@@ -117,8 +117,26 @@ def test_save_offers_persists_the_verdict():
 
 def test_save_offers_does_nothing_on_empty_list():
     with patch("src.storage.psycopg2.connect") as mock_connect:
-        save_offers("postgresql://test", [], run_id=42, tier=1)
+        assert save_offers("postgresql://test", [], run_id=42, tier=1) is True
     mock_connect.assert_not_called()
+
+
+def test_save_offers_returns_false_when_the_write_fails():
+    offers = [
+        ScoredOffer(id=0, title="AI Engineer", company="Acme", location="Remote",
+                    link="https://li.com/0", description="text",
+                    description_status="ok", work_mode="remote", score=9, comment="c", summary="s"),
+    ]
+    with patch("src.storage.psycopg2.connect", side_effect=OSError("neon down")):
+        assert save_offers("postgresql://test", offers, run_id=1, tier=1) is False
+
+
+def test_telemetry_init_db_bounds_the_connection():
+    mock_conn, _ = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn) as connect:
+        init_db("postgresql://test", connect_timeout=10)
+    assert connect.call_args.kwargs["connect_timeout"] == 10
+    assert "statement_timeout" in connect.call_args.kwargs["options"]
 
 
 def test_init_db_skips_when_db_url_is_none():

@@ -138,6 +138,69 @@ def test_ensure_run_id_retries_the_open_flush_later():
         assert session.ensure_run_id() == 9
 
 
+def test_buffer_append_failure_still_inserts_the_run_row():
+    with patch("src.telemetry.storage.init_db"), \
+         patch("src.telemetry.flush_records") as flush, \
+         patch("src.telemetry._lookup_run_id", return_value=7), \
+         patch("src.telemetry.TierSession._append", side_effect=OSError("disk full")):
+        session = telemetry.start_session(tier=1, daily_run_id="d", attempt=1, db_url="postgresql://x")
+    assert session.run_id == 7
+    assert flush.call_args[0][0][0]["kind"] == "run_open"
+
+
+def test_failed_close_flush_persists_telemetry_ok_false():
+    def flaky(records, url):
+        if any(r.get("kind") == "run_close" for r in records):
+            raise OSError("neon down")
+    with patch("src.telemetry.storage.init_db"), \
+         patch("src.telemetry.flush_records", side_effect=flaky), \
+         patch("src.telemetry._lookup_run_id", return_value=1):
+        session = telemetry.start_session(tier=1, daily_run_id="d", attempt=1, db_url="postgresql://x")
+        telemetry.end_session(status="ok")
+    close = _lines(session.buffer_path)[-1]["data"]
+    assert close["telemetry_ok"] is False
+    assert session.telemetry_ok is False
+
+
+def test_drain_stops_after_the_first_connectivity_failure(tmp_path):
+    import psycopg2
+    d = tmp_path / "buffers"
+    d.mkdir()
+    for name in ("a.jsonl", "b.jsonl", "c.jsonl"):
+        (d / name).write_text(json.dumps({"kind": "run_open", "data": {"run_uuid": name}}) + "\n")
+    calls = []
+
+    def boom(records, url):
+        calls.append(records[0]["data"]["run_uuid"])
+        raise psycopg2.OperationalError("timeout")
+
+    with patch("src.telemetry.flush_records", side_effect=boom):
+        telemetry.drain_buffers(str(d), "postgresql://x")
+    assert calls == ["a.jsonl"]
+    assert sorted(os.listdir(d)) == ["a.jsonl", "b.jsonl", "c.jsonl"]
+
+
+def test_observability_connects_are_bounded():
+    conn = MagicMock()
+    with patch("src.telemetry.psycopg2.connect", return_value=conn) as connect:
+        telemetry.flush_records([], "postgresql://x")
+    assert connect.call_args.kwargs["connect_timeout"] == 10
+    assert "statement_timeout" in connect.call_args.kwargs["options"]
+    assert "lock_timeout" in connect.call_args.kwargs["options"]
+
+
+def test_end_session_degrades_when_offers_were_not_saved():
+    with patch("src.telemetry.storage.init_db"), \
+         patch("src.telemetry.flush_records") as flush, \
+         patch("src.telemetry._lookup_run_id", return_value=1):
+        session = telemetry.start_session(tier=1, daily_run_id="d", attempt=1, db_url="postgresql://x")
+        session.storage_failed = True
+        telemetry.end_session()
+    close = flush.call_args_list[-1][0][0][-1]["data"]
+    assert close["status"] == "degraded"
+    assert "not saved" in close["error"]
+
+
 def test_ensure_run_id_retries_lookup_after_a_successful_flush_deleted_the_buffer():
     with patch("src.telemetry.storage.init_db"), \
          patch("src.telemetry.flush_records"), \

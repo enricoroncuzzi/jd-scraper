@@ -122,9 +122,18 @@ def _insert(cur, table: str, columns: tuple, data: dict, conflict: str) -> None:
     )
 
 
+def _connect(db_url: str):
+    """Bound an observability connection so a dead database cannot stall a run."""
+    return psycopg2.connect(
+        db_url,
+        connect_timeout=10,
+        options="-c statement_timeout=15000 -c lock_timeout=5000",
+    )
+
+
 def flush_records(records: list[dict], db_url: str) -> None:
     """Write records in order, in one transaction. Raises on any failure."""
-    conn = psycopg2.connect(db_url, connect_timeout=10)
+    conn = _connect(db_url)
     try:
         with conn.cursor() as cur:
             for record in records:
@@ -161,6 +170,33 @@ def _read_buffer(path: str) -> list[dict]:
     return records
 
 
+def _persist_incomplete_close(path: str) -> None:
+    """Rewrite a buffered run_close so a failed flush cannot persist telemetry_ok true."""
+    if not os.path.exists(path):
+        return
+    try:
+        records = _read_buffer(path)
+    except Exception as exc:
+        _warn("close rewrite", exc)
+        return
+    changed = False
+    for record in records:
+        if record.get("kind") != "run_close":
+            continue
+        data = record.setdefault("data", {})
+        if data.get("telemetry_ok") is not False:
+            data["telemetry_ok"] = False
+            changed = True
+    if not changed:
+        return
+    try:
+        with open(path, "w") as f:
+            for record in records:
+                f.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        _warn("close rewrite", exc)
+
+
 def flush_buffer_file(path: str, db_url: str) -> bool:
     if not os.path.exists(path):
         return True
@@ -170,6 +206,9 @@ def flush_buffer_file(path: str, db_url: str) -> bool:
             flush_records(records, db_url)
         os.remove(path)
         return True
+    except psycopg2.OperationalError as exc:
+        _warn("flush", exc)
+        raise
     except Exception as exc:
         _warn("flush", exc)
         return False
@@ -184,13 +223,18 @@ def drain_buffers(buffer_dir: str, db_url: str, *, exclude: str | None = None) -
             path = os.path.join(buffer_dir, name)
             if not name.endswith(".jsonl") or os.path.abspath(path) == excluded:
                 continue
-            flush_buffer_file(path, db_url)
+            try:
+                flush_buffer_file(path, db_url)
+            except psycopg2.OperationalError:
+                # One dead connection is enough. Leave the remaining files
+                # for a later drain instead of waiting out a timeout each.
+                return
     except Exception as exc:
         _warn("drain", exc)
 
 
 def _lookup_run_id(db_url: str, run_uuid: str) -> int | None:
-    conn = psycopg2.connect(db_url, connect_timeout=10)
+    conn = _connect(db_url)
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM runs WHERE run_uuid = %s", (run_uuid,))
@@ -227,12 +271,21 @@ class TierSession:
             self.run_id = _safe("run id lookup", _lookup_run_id, self.db_url, self.run_uuid)
 
     def open(self) -> None:
-        self._append("run_open", {
+        data = {
             "run_uuid": self.run_uuid, "run_at": self.started_at, "tier": self.tier,
             "daily_run_id": self.daily_run_id, "attempt": self.attempt,
             "git_commit": self.git.commit, "git_dirty": self.git.dirty,
             "status": "running", "started_at": self.started_at,
-        })
+        }
+        try:
+            self._append("run_open", data)
+        except Exception as exc:
+            # The local buffer could not take the row. Neon may still be up,
+            # and offer persistence is gated on this run id, so insert directly.
+            _warn("open buffer", exc)
+            _safe("open direct", flush_records, [{"kind": "run_open", "data": data}], self.db_url)
+            self.run_id = _safe("run id lookup", _lookup_run_id, self.db_url, self.run_uuid)
+            return
         self._flush_and_lookup()
 
     def ensure_run_id(self) -> int | None:
@@ -246,7 +299,14 @@ class TierSession:
             "error": error[:500] if error else None,
             **self.fields, **self.counters, "telemetry_ok": self.telemetry_ok,
         })
-        flush_buffer_file(self.buffer_path, self.db_url)
+        try:
+            flushed = flush_buffer_file(self.buffer_path, self.db_url)
+        except psycopg2.OperationalError:
+            flushed = False
+        if not flushed:
+            # The line just written still says telemetry_ok true. A later drain
+            # would persist that and the morning report would miss the gap.
+            _persist_incomplete_close(self.buffer_path)
 
 
 def start_session(*, tier: int, daily_run_id: str, attempt: int, db_url: str | None,
@@ -257,7 +317,7 @@ def start_session(*, tier: int, daily_run_id: str, attempt: int, db_url: str | N
                           git=read_git_info(repo_dir))
     _current = session
     if session.enabled:
-        _safe("init_db", storage.init_db, db_url)
+        _safe("init_db", storage.init_db, db_url, connect_timeout=10)
         drain_buffers(session.buffer_dir, db_url, exclude=session.buffer_path)
         _safe("open", session.open)
     return session
@@ -270,7 +330,12 @@ def end_session(*, status: str | None = None, error: str | None = None) -> None:
         if session is None or not session.enabled:
             return
         if status is None:
-            status = "degraded" if session.fields.get("verification_degraded") else "ok"
+            if session.fields.get("verification_degraded") or getattr(session, "storage_failed", False) is True:
+                status = "degraded"
+            else:
+                status = "ok"
+        if error is None and getattr(session, "storage_failed", False) is True:
+            error = "scored offers were not saved to Neon"
         _safe("close", session.close, status, error)
     finally:
         _current = None

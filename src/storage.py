@@ -15,11 +15,15 @@ def _link_hash(link: str) -> str:
     return hashlib.md5(link.encode()).hexdigest()
 
 
-def init_db(db_url: str) -> None:
+def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
     if db_url is None:
         return
     try:
-        conn = psycopg2.connect(db_url)
+        kwargs = {}
+        if connect_timeout is not None:
+            kwargs["connect_timeout"] = connect_timeout
+            kwargs["options"] = "-c statement_timeout=15000 -c lock_timeout=5000"
+        conn = psycopg2.connect(db_url, **kwargs)
         try:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -136,11 +140,15 @@ def init_db(db_url: str) -> None:
         print(f"[storage] init_db failed: {e}")
 
 
-def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) -> None:
-    if not offers:
-        return
-    if db_url is None:
-        return
+def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) -> bool:
+    """Persist scored offers. False means the rows were not written.
+
+    Callers that ignore the return keep the old behaviour: a storage error is
+    printed and does not raise. A caller that checks it can keep the run from
+    looking healthy when the funnel rows never landed.
+    """
+    if not offers or db_url is None:
+        return True
     try:
         now = datetime.now(timezone.utc)
         conn = psycopg2.connect(db_url)
@@ -165,8 +173,10 @@ def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) 
             conn.commit()
         finally:
             conn.close()
+        return True
     except Exception as e:
         print(f"[storage] save_offers failed: {e}")
+        return False
 
 
 def save_application_channel(db_url: str, link: str, channel: str) -> None:

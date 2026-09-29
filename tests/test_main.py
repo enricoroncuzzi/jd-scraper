@@ -151,6 +151,69 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     assert log_path == "/data/seen.txt"
 
 
+def test_scored_offers_are_saved_when_the_telemetry_buffer_cannot_be_written(monkeypatch, tmp_path):
+    raw_offers = [JobOffer(id=0, title="AI Eng", company="Acme", link="https://li.com/0")]
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+    config = _mock_config()
+    mock_save_offers = MagicMock(return_value=True)
+    monkeypatch.setattr("main.load_config", MagicMock(return_value=config))
+    monkeypatch.setattr("main.fetch_offers", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.filter_by_language", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.filter_new", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.score_offers", MagicMock(return_value=(
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})))
+    monkeypatch.setattr("main.save_offers", mock_save_offers)
+    monkeypatch.setattr("main.write_notes", MagicMock())
+    monkeypatch.setattr("main.write_digest", MagicMock())
+    monkeypatch.setattr("main.write_rejected", MagicMock())
+    monkeypatch.setattr("main.send_summary", MagicMock())
+    monkeypatch.setattr("main.mark_seen", MagicMock())
+    import main
+    from src import telemetry
+    with patch("src.telemetry.storage.init_db"), \
+         patch("src.telemetry.flush_records"), \
+         patch("src.telemetry._lookup_run_id", return_value=42), \
+         patch("src.telemetry.TierSession._append", side_effect=OSError("disk full")):
+        telemetry.start_session(tier=1, daily_run_id="d", attempt=1,
+                                db_url="postgresql://test", buffer_directory=str(tmp_path))
+        try:
+            main.handler({}, None)
+        finally:
+            telemetry.end_session()
+    mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
+
+
+def test_a_failed_offer_save_marks_the_session(monkeypatch):
+    raw_offers = [JobOffer(id=0, title="AI Eng", company="Acme", link="https://li.com/0")]
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+    config = _mock_config()
+    session = MagicMock()
+    session.ensure_run_id.return_value = 42
+    session.storage_failed = False
+    telemetry = MagicMock()
+    telemetry.current.return_value = session
+    monkeypatch.setattr("main.load_config", MagicMock(return_value=config))
+    monkeypatch.setattr("main.fetch_offers", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.filter_by_language", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.filter_new", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.score_offers", MagicMock(return_value=(
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})))
+    monkeypatch.setattr("main.telemetry", telemetry)
+    monkeypatch.setattr("main.save_offers", MagicMock(return_value=False))
+    monkeypatch.setattr("main.write_notes", MagicMock())
+    monkeypatch.setattr("main.write_digest", MagicMock())
+    monkeypatch.setattr("main.write_rejected", MagicMock())
+    monkeypatch.setattr("main.send_summary", MagicMock())
+    monkeypatch.setattr("main.mark_seen", MagicMock())
+    import main
+    main.handler({}, None)
+    assert session.storage_failed is True
+
+
 def test_handler_skips_storage_when_db_url_is_none(monkeypatch):
     raw_offers = [JobOffer(id=0, title="AI Eng", company="Acme", link="https://li.com/0")]
     scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",

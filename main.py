@@ -189,7 +189,8 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         session = telemetry.current()
         run_id = session.ensure_run_id() if session is not None else None
         if run_id:
-            save_offers(config.db_url, scored, run_id, config.tier)
+            if save_offers(config.db_url, scored, run_id, config.tier) is False and session is not None:
+                session.storage_failed = True
         else:
             print("[storage] Run record not reachable in Neon - scored offers were not "
                   "saved to the database this run (files and digest are unaffected).")
