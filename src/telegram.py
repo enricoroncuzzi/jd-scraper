@@ -113,6 +113,9 @@ def _format_message(
         )
 
     if verification_degraded:
-        lines.append("\n_Remote verification did not run for this tier; treat every offer as unconfirmed._")
+        lines.append(
+            "\n_Remote verification was incomplete for this tier; some offers may show "
+            "unconfirmed because a stage failure, not a real judgement, left them that way._"
+        )
 
     return "\n".join(lines)

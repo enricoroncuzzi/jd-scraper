@@ -510,7 +510,7 @@ def test_rejected_offers_are_dropped_before_scoring_but_still_marked_seen(monkey
         JobOffer(id=2, title="Bad", company="B", link="https://x/2", description="d"),
     ]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         offers[0].remote_verdict = "confirmed"
         offers[1].remote_verdict = "rejected"
         return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -546,7 +546,7 @@ def test_all_offers_rejected_by_verification_notifies_and_still_marks_seen(monke
         JobOffer(id=2, title="Bad2", company="B", link="https://x/2", description="d"),
     ]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
         return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -631,7 +631,7 @@ def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
         JobOffer(id=2, title="Bad2", company="B", link="https://x/2", description="d"),
     ]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
         return offers, {"prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100}
@@ -685,36 +685,63 @@ def test_all_rejected_run_survives_a_storage_failure(monkeypatch, tmp_path, caps
     assert "[storage] Failed" in capsys.readouterr().out
 
 
-def test_groq_verification_tokens_today_sums_only_todays_verification_entries(monkeypatch, tmp_path):
+def test_verification_usage_today_sums_only_todays_verification_entries(monkeypatch, tmp_path):
     import main
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     usage_log = tmp_path / "usage_log.jsonl"
     monkeypatch.setattr("main._USAGE_LOG_PATH", str(usage_log))
 
-    today = datetime.now().isoformat(timespec="seconds")
-    yesterday = (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+    now = datetime.now(timezone.utc)
+    today = now.isoformat(timespec="seconds")
+    yesterday = (now - timedelta(days=1)).isoformat(timespec="seconds")
     usage_log.write_text("\n".join(json.dumps(entry) for entry in [
-        {"timestamp": today, "stage": "verification", "total_tokens": 1000},
+        {"timestamp": today, "stage": "verification", "total_tokens": 1000, "openrouter_requests": 3},
         {"timestamp": today, "stage": "verification", "total_tokens": 2500},
         {"timestamp": today, "stage": "scoring", "total_tokens": 9999},  # different stage, excluded
         {"timestamp": yesterday, "stage": "verification", "total_tokens": 7777},  # different day, excluded
     ]) + "\n")
 
-    assert main._groq_verification_tokens_today() == 3500
+    assert main._verification_usage_today("total_tokens") == 3500
+    assert main._verification_usage_today("openrouter_requests") == 3
 
 
-def test_groq_verification_tokens_today_is_zero_when_log_missing(monkeypatch, tmp_path):
+def test_verification_usage_today_buckets_by_utc_date_not_local(monkeypatch, tmp_path):
+    """Groq's and OpenRouter's daily limits reset at UTC midnight: a run just
+    after local midnight on a UTC+2 host still belongs to the previous UTC day."""
+    import main
+    from datetime import datetime as real_datetime, timezone
+
+    utc_now = real_datetime(2026, 9, 28, 23, 30, tzinfo=timezone.utc)
+
+    class FakeDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return real_datetime(2026, 9, 29, 1, 30)  # host local time, UTC+2
+            return utc_now.astimezone(tz)
+
+    monkeypatch.setattr("main.datetime", FakeDatetime)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+
+    main._log_usage(1, "verification", 8, {"total_tokens": 4000})
+
+    assert main._verification_usage_today("total_tokens") == 4000
+    entry = json.loads((tmp_path / "usage_log.jsonl").read_text())
+    assert entry["timestamp"].startswith("2026-09-28T23:30")
+
+
+def test_verification_usage_today_is_zero_when_log_missing(monkeypatch, tmp_path):
     import main
     monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "does_not_exist.jsonl"))
-    assert main._groq_verification_tokens_today() == 0
+    assert main._verification_usage_today("total_tokens") == 0
 
 
 def test_handler_logs_verification_token_usage_against_daily_limit(monkeypatch, tmp_path, capsys):
     import main
     fetched = [JobOffer(id=1, title="Good", company="A", link="https://x/1", description="d")]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         offers[0].remote_verdict = "confirmed"
         return offers, {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50}
 
@@ -734,7 +761,42 @@ def test_handler_logs_verification_token_usage_against_daily_limit(monkeypatch, 
     out = capsys.readouterr().out
     assert "Verification token usage" in out
     assert "total: 50" in out
-    assert f"Groq verification total today: 50/{main._GROQ_DAILY_TOKEN_LIMIT}" in out
+    assert f"Groq verification total today: 50/{main.GROQ_DAILY_TOKEN_LIMIT}" in out
+
+
+def test_handler_passes_todays_openrouter_verification_requests_to_the_verifier(monkeypatch, tmp_path):
+    """An earlier tier's OpenRouter failover requests must count against the
+    verifier's daily share on the next tier, not reset per run."""
+    import main
+    from datetime import datetime, timezone
+    fetched = [JobOffer(id=1, title="Good", company="A", link="https://x/1", description="d")]
+    usage_log = tmp_path / "usage_log.jsonl"
+    usage_log.write_text(json.dumps({
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "stage": "verification", "total_tokens": 700, "openrouter_requests": 12,
+    }) + "\n")
+    seen = {}
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
+        seen.update(kwargs)
+        offers[0].remote_verdict = "confirmed"
+        return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: fetched)
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
+    monkeypatch.setattr("main.verify_offers", fake_verify)
+    monkeypatch.setattr("main.score_offers", lambda **kwargs: (
+        [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    ))
+    monkeypatch.setattr("main.mark_seen", lambda *a: None)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(usage_log))
+    _stub_common_pipeline(monkeypatch)
+
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch, remote_check=True)))
+
+    assert seen["groq_tokens_used_today"] == 700
+    assert seen["openrouter_requests_used_today"] == 12
 
 
 # --- the deferred-offer retry queue (scoring dies mid-tier) -----------------
@@ -947,7 +1009,7 @@ def test_queued_offers_keep_their_verdict_and_rejected_ones_stay_marked_seen(mon
     from src.retry_queue import load_deferred
     fetched = [_offer(0), _offer(1), _offer(2)]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         offers[0].remote_verdict = "rejected"
         for o in offers[1:]:
             o.remote_verdict = "confirmed"
@@ -985,7 +1047,7 @@ def test_a_queued_offer_rejected_by_todays_verification_is_dropped(monkeypatch, 
     from src.retry_queue import load_deferred
     _seed_queue(tmp_path, [_offer(1)])
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
         return offers, dict(_ZERO_USAGE)
