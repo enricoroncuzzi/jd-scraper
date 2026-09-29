@@ -131,7 +131,10 @@ def test_degraded_verification_is_announced(monkeypatch):
     sent = _capture(monkeypatch)
     send_summary([_scored(9, verdict="unconfirmed")], 8, "Hey!", "t", "1",
                  verification_enabled=True, verification_degraded=True)
-    assert "verification did not run" in sent["text"].lower()
+    # Not "did not run" - degraded now also fires on a materially incomplete
+    # run (some batches failed, not necessarily all), so the message must not
+    # claim the whole stage was skipped when it might have partly worked.
+    assert "incomplete" in sent["text"].lower()
 
 
 def _long_offer(id, verdict):

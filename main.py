@@ -10,7 +10,7 @@ from src.dedup import filter_new, mark_seen
 from src.models import JobOffer
 from src.retry_queue import build_deferred, load_deferred, save_deferred
 from src.scorer import score_offers
-from src.remote_verifier import verify_offers
+from src.remote_verifier import verify_offers, GROQ_DAILY_TOKEN_LIMIT
 from src.tier_scope import resolve_allowed_countries
 from src.writer import write_notes, write_digest, write_rejected
 from src.telegram import send_summary, send_message
@@ -20,11 +20,6 @@ from src.retry import run_with_backoff
 import tailor as tailor_cli
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
-# Groq's free-tier cap (see src/remote_verifier.py's BATCH_SIZE comment) - account-wide,
-# not per-key. Printed each run against a running daily total so a human
-# reading cron.log can see the budget being approached before a tier dies
-# partway through, rather than only after a 429 already truncated a run.
-_GROQ_DAILY_TOKEN_LIMIT = 200_000
 
 
 def handler(event: dict, context, config_path: str = "config/config.json") -> None:
@@ -76,17 +71,26 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     verify_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     if config.remote_check.enabled and new_offers:
         print(f"[main] Verifying full-remote status of {len(new_offers)} offers...")
+        groq_tokens_before = _groq_verification_tokens_today()
         new_offers, verify_usage = verify_offers(
             offers=new_offers,
             require_italy_eligibility=config.remote_check.require_italy_eligibility,
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
+            llm_api_key=config.llm_api_key,
+            groq_tokens_used_today=groq_tokens_before,
         )
         verification_degraded = verify_usage.pop("degraded", False)
         _log_usage(config.tier, "verification", len(new_offers), verify_usage)
         groq_today = _groq_verification_tokens_today()
+        provider_note = f" | provider: {verify_usage.get('provider', 'groq')}"
+        if verify_usage.get("openrouter_total_tokens"):
+            provider_note += f" (+{verify_usage['openrouter_total_tokens']} OpenRouter tokens)"
         print(f"[main] Verification token usage - prompt: {verify_usage['prompt_tokens']}, "
-              f"completion: {verify_usage['completion_tokens']}, total: {verify_usage['total_tokens']} "
-              f"| Groq verification total today: {groq_today}/{_GROQ_DAILY_TOKEN_LIMIT}")
+              f"completion: {verify_usage['completion_tokens']}, total: {verify_usage['total_tokens']}"
+              f"{provider_note} | Groq verification total today: {groq_today}/{GROQ_DAILY_TOKEN_LIMIT}")
+        if verification_degraded:
+            print(f"[main] Verification DEGRADED for tier {config.tier}: a material share of "
+                  f"batches never produced a real verdict.")
         rejected = [o for o in new_offers if o.remote_verdict == "rejected"]
         survivors = [o for o in new_offers if o.remote_verdict != "rejected"]
         confirmed = sum(1 for o in survivors if o.remote_verdict == "confirmed")

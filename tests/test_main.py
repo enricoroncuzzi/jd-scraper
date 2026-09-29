@@ -510,7 +510,7 @@ def test_rejected_offers_are_dropped_before_scoring_but_still_marked_seen(monkey
         JobOffer(id=2, title="Bad", company="B", link="https://x/2", description="d"),
     ]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         offers[0].remote_verdict = "confirmed"
         offers[1].remote_verdict = "rejected"
         return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -546,7 +546,7 @@ def test_all_offers_rejected_by_verification_notifies_and_still_marks_seen(monke
         JobOffer(id=2, title="Bad2", company="B", link="https://x/2", description="d"),
     ]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
         return offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -631,7 +631,7 @@ def _all_rejected_run(monkeypatch, tmp_path, mock_save_run, db_url):
         JobOffer(id=2, title="Bad2", company="B", link="https://x/2", description="d"),
     ]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
         return offers, {"prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100}
@@ -714,7 +714,7 @@ def test_handler_logs_verification_token_usage_against_daily_limit(monkeypatch, 
     import main
     fetched = [JobOffer(id=1, title="Good", company="A", link="https://x/1", description="d")]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         offers[0].remote_verdict = "confirmed"
         return offers, {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50}
 
@@ -734,7 +734,7 @@ def test_handler_logs_verification_token_usage_against_daily_limit(monkeypatch, 
     out = capsys.readouterr().out
     assert "Verification token usage" in out
     assert "total: 50" in out
-    assert f"Groq verification total today: 50/{main._GROQ_DAILY_TOKEN_LIMIT}" in out
+    assert f"Groq verification total today: 50/{main.GROQ_DAILY_TOKEN_LIMIT}" in out
 
 
 # --- the deferred-offer retry queue (scoring dies mid-tier) -----------------
@@ -947,7 +947,7 @@ def test_queued_offers_keep_their_verdict_and_rejected_ones_stay_marked_seen(mon
     from src.retry_queue import load_deferred
     fetched = [_offer(0), _offer(1), _offer(2)]
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         offers[0].remote_verdict = "rejected"
         for o in offers[1:]:
             o.remote_verdict = "confirmed"
@@ -985,7 +985,7 @@ def test_a_queued_offer_rejected_by_todays_verification_is_dropped(monkeypatch, 
     from src.retry_queue import load_deferred
     _seed_queue(tmp_path, [_offer(1)])
 
-    def fake_verify(offers, require_italy_eligibility, groq_api_key):
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
         for o in offers:
             o.remote_verdict = "rejected"
         return offers, dict(_ZERO_USAGE)

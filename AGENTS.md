@@ -36,11 +36,15 @@ what the README doesn't (or what has drifted from it).
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's
    `search`/`remote_check` block for the exact filters. Remote verification
    (`src/remote_verifier.py::verify_offers`) runs after scraping/dedup but
-   before scoring, on Groq (a separate key/quota from the OpenRouter scorer)
-   rather than OpenRouter, and rules each offer confirmed/rejected/unconfirmed;
+   before scoring, primarily on Groq (a separate key/quota from the
+   OpenRouter scorer), and rules each offer confirmed/rejected/unconfirmed;
    it is a filter, not a gate - every failure mode (missing key, empty
-   description, a batch that won't complete) resolves to unconfirmed rather
-   than silently dropping a real job. `orchestrator.py` runs the 4 tier
+   description, a batch that won't complete, both providers unavailable)
+   resolves to unconfirmed rather than silently dropping a real job. Since
+   2026-09-29, Groq's 200,000-token/day account-wide budget failing over
+   mid-run means this stage stops feeding Groq's exhausted quota and starts
+   verifying on OpenRouter instead - see the failover paragraph below.
+   `orchestrator.py` runs the 4 tier
    configs sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
    `run_tier_with_retry`) retries an uncaught transient failure (scraper/scorer
    exception) with quota-aware exponential backoff via `src/retry.py`'s
@@ -94,7 +98,51 @@ what the README doesn't (or what has drifted from it).
    spend. When the keyword windows don't fit the budget, the context radius
    shrinks uniformly instead of the excerpt being filled in document order -
    otherwise early remote-flavoured boilerplate crowds out a decisive late
-   on-site sentence.
+   on-site sentence. `verify_offers` fails over from Groq to OpenRouter
+   (`_openrouter_chain`, using `_VerdictOutput` via
+   `with_structured_output(method="function_calling")`, same shape as the
+   scorer) both proactively - `main.py` passes the day's running Groq total
+   as `groq_tokens_used_today`, and a batch switches before it would push
+   past `GROQ_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS` - and reactively,
+   on a Groq 429 whose body contains "tokens per day (TPD)"
+   (`_is_daily_quota_exceeded`, the same detect-and-propagate-immediately
+   pattern as `_is_quota_exceeded` in `src/scorer.py`, but text-matched
+   rather than reset-timestamp-matched because that is the signal Groq's
+   body actually carries). Groq being unusable from the very start (no key,
+   or `_client` raising) sets the same `groq_exhausted` flag rather than
+   returning early, so it goes through this same OpenRouter path too - a
+   missing/broken Groq key does not skip a working fallback. Once Groq is
+   known exhausted for the run, no further batches call it at all
+   (stage-stop, not just that one batch's retry ladder) - they go to
+   OpenRouter if `llm_api_key` was passed, or are marked unconfirmed
+   immediately if not. OpenRouter is itself a shared, budget-limited
+   fallback (its daily request cap is also what scoring depends on later in
+   the same tier's `handler()` run), so an `openai.RateLimitError` from it
+   where `_is_quota_exceeded` is true sets its own `openrouter_exhausted`
+   flag and gets the identical stage-stop treatment, instead of repeating a
+   doomed call for every remaining batch. The OpenRouter batch call itself
+   reuses `src/scorer.py`'s `_is_quota_exceeded`,
+   `_is_retryable_upstream_value_error` and `_EmptyStructuredOutput` rather
+   than a second, divergent set of failure classifiers, since it is hitting
+   the same provider with the same documented failure shapes. The verifier's
+   own OpenRouter model pin (`_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS`
+   in `src/remote_verifier.py`) is kept independent of the scorer's array
+   rather than importing it, so this stage's correctness does not inherit the
+   scorer's pin drift (see `_OPENROUTER_FALLBACK_MODELS`'s comment there for
+   a currently-known-stale entry in the scorer's own array - untouched,
+   separate issue). Verdict quality of the OpenRouter fallback versus Groq's
+   has not been empirically benchmarked (no OpenRouter key was available
+   where this was built); treat the first live week of failover verdicts as
+   worth a spot check. `usage["degraded"]` fires once `failed_batches /
+   total_batches >= _DEGRADED_FAILURE_RATIO` (10%), not only at 100% failure -
+   a run where 27 of 28 batches died (2026-09-08 tier 1, attempt 3) used to
+   report itself healthy in the Telegram digest. A `_GROQ_BATCH_PAUSE_SECONDS`
+   (25s) pause between consecutive Groq batches (not applied once failed over
+   to OpenRouter) trades tier runtime for fewer TPM-throttle retries: Groq's
+   free-plan 8,000-token/minute ceiling is tight against this stage's
+   ~4,500-5,500-token batches, so two back-to-back calls reliably trip it even
+   nowhere near the daily cap; the pause removes most but not all of those
+   (two calls can still land in the same rolling 60s window).
 2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
    CV/cover-letter/recruiter message per job posting. The CV body is never
    rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders
@@ -168,7 +216,9 @@ what the README doesn't (or what has drifted from it).
   expected keys. `LLM_API_KEY` is read generically (the `llm_api_key`
   assignment in `src/config.py`'s `load_config`, not provider-specific by
   name) and currently holds an OpenRouter key consumed by
-  `src/scorer.py`'s scoring calls. `GROQ_API_KEY` is consumed by three
+  `src/scorer.py`'s scoring calls and, since 2026-09-29, by
+  `src/remote_verifier.py`'s OpenRouter failover once Groq's daily
+  verification budget is exhausted. `GROQ_API_KEY` is consumed by three
   paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
   (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
   (`src/remote_verifier.py`, via `main.py`'s call into `verify_offers`). Its absence does not fail the
