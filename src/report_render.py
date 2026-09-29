@@ -78,7 +78,14 @@ def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[s
         warnings.append(f"⚠ New code live since the last run: {report.git_commit[:8]}{subject}")
     if report.git_dirty:
         warnings.append("⚠ The server's copy has uncommitted edits: numbers may not match any commit")
+    if getattr(report, "limits_unconfigured", False):
+        warnings.append("⚠ Provider limits could not be loaded: ceilings shown as unknown")
     return warnings
+
+
+def _is_informational(warning: str) -> bool:
+    """Code-identity notes. They do not mean the run itself was unhealthy."""
+    return "New code live" in warning or "uncommitted edits" in warning
 
 
 def _limit_header_line(limit) -> str:
@@ -91,7 +98,13 @@ def _limit_header_line(limit) -> str:
 def _summary_block(report, *, settings, expected_tiers) -> str:
     warnings = collect_warnings(report, settings=settings, expected_tiers=expected_tiers)
     ok = sum(1 for n in expected_tiers if n in report.tiers and report.tiers[n].status == "ok")
-    verdict = "ALL OK" if ok == len(expected_tiers) else f"{ok} of {len(expected_tiers)} tiers ok"
+    health = [w for w in warnings if not _is_informational(w)]
+    if ok == len(expected_tiers) and not health:
+        verdict = "ALL OK"
+    elif ok != len(expected_tiers):
+        verdict = f"{ok} of {len(expected_tiers)} tiers ok"
+    else:
+        verdict = "CHECK"
     day = report.started_at.astimezone(_ROME).strftime("%d/%m")
     code = (report.git_commit or "unknown")[:8]
     lines = warnings + [
@@ -166,9 +179,17 @@ def render_day_detail(report, *, settings) -> str:
                      f"{q.pages_walked}/{q.page_cap} pages, {q.cards_seen} cards, "
                      f"{q.offers_kept} kept, stopped: {q.stop_reason}")
     lines.append("Tiers:")
-    for n, t in sorted(report.tiers.items()):
+    entries = list(getattr(report, "attempt_log", None) or [])
+    if not entries:
+        entries = [
+            type("T", (), {"tier": n, "attempt": t.attempt, "attempts": t.attempts,
+                           "status": t.status, "started_at": t.started_at,
+                           "finished_at": t.finished_at, "error": t.error})()
+            for n, t in sorted(report.tiers.items())
+        ]
+    for t in sorted(entries, key=lambda e: (e.tier, e.attempt)):
         status = {"running": "CRASHED"}.get(t.status, t.status)
-        lines.append(f"  T{n} attempt {t.attempt} of {t.attempts} · {status} · "
+        lines.append(f"  T{t.tier} attempt {t.attempt} of {t.attempts} · {status} · "
                      f"{_duration(t.started_at, t.finished_at)}"
                      + (f" · error: {t.error}" if t.error else ""))
     return "\n".join(lines)
@@ -230,6 +251,12 @@ def _avg(values):
     return sum(values) / len(values) if values else None
 
 
+def _llm_failure_rate(metrics) -> float | None:
+    calls = sum(m.llm_calls or 0 for m in metrics)
+    failed = sum(m.llm_failed or 0 for m in metrics)
+    return (100 * failed / calls) if calls else None
+
+
 def render_compare(commit: str, before, after) -> str:
     def side(ms):
         scored = sum(m.scored for m in ms)
@@ -238,6 +265,7 @@ def render_compare(commit: str, before, after) -> str:
             "Searches hitting limit / day": _avg([m.cap_hits for m in ms]),
             "Verification tokens / day": _avg([m.verification_tokens for m in ms]),
             "Share scoring 8+ (%)": (100 * sum(m.high for m in ms) / scored) if scored else None,
+            "LLM failure rate (%)": _llm_failure_rate(ms),
             "Packaged / day": _avg([m.packaged for m in ms]),
         }
     b, a = side(before), side(after)
@@ -255,14 +283,15 @@ def render_compare(commit: str, before, after) -> str:
 
 def render_llm(models, verdicts) -> str:
     lines = ["stage         model                          calls   ok  rate-lim  quota  bad-ans  "
-             "timeout  median  slowest5%  avg in/out"]
+             "timeout   error  median  slowest5%  avg in/out"]
     for m in models:
         calls = m["calls"] or 1
         pct = lambda k: f"{100 * (m[k] or 0) / calls:.0f}%"
         lines.append(
             f"{m['stage']:<13} {short_model(m['model']):<30} {m['calls']:>5} {pct('ok'):>4} "
             f"{pct('rate_limited'):>9} {pct('quota_exhausted'):>6} {pct('invalid_output'):>8} "
-            f"{pct('timeout'):>8} {(m['p50'] or 0) / 1000:>6.1f}s {(m['p95'] or 0) / 1000:>9.1f}s "
+            f"{pct('timeout'):>8} {pct('error'):>6} {(m['p50'] or 0) / 1000:>6.1f}s "
+            f"{(m['p95'] or 0) / 1000:>9.1f}s "
             f"{_or_dash(round(m['avg_in']) if m['avg_in'] else None)}/"
             f"{_or_dash(round(m['avg_out']) if m['avg_out'] else None)}")
     if verdicts:

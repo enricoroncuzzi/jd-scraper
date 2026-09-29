@@ -132,3 +132,65 @@ def test_helpers():
     assert rr.short_model("nvidia/nemotron-3-super-120b-a12b:free") == "nemotron-3-super-120b-a12b"
     assert rr.short_model("openai/gpt-oss-20b") == "gpt-oss-20b"
     assert rr.fmt_tokens(None) == "-" and rr.fmt_tokens(999) == "999" and rr.fmt_tokens(134400) == "134k"
+
+
+def test_a_health_warning_blocks_all_ok():
+    tiers = {n: _tier(n, telemetry_ok=False) for n in (1, 2, 3, 4)}
+    block = rr.render_day(_report(tiers=tiers), settings=SETTINGS)[0]
+    assert "ALL OK" not in block
+    assert "CHECK" in block
+    assert "telemetry incomplete" in block
+
+
+def test_new_code_alone_does_not_block_all_ok():
+    report = _report(previous_commit="b" * 40, commit_subject="per-tier page cap")
+    block = rr.render_day(report, settings=SETTINGS)[0]
+    assert "ALL OK" in block
+    assert "New code live" in block
+
+
+def test_detail_lists_every_attempt():
+    log = [
+        rd.AttemptView(1, 1, 2, "failed", T0, T1, "RuntimeError: first"),
+        rd.AttemptView(1, 2, 2, "ok", T0, T1, None),
+    ]
+    text = rr.render_day_detail(_report(attempt_log=log), settings=SETTINGS)
+    assert "T1 attempt 1 of 2 · failed" in text
+    assert "error: RuntimeError: first" in text
+    assert "T1 attempt 2 of 2 · ok" in text
+
+
+def test_llm_view_shows_generic_errors():
+    text = rr.render_llm([{
+        "stage": "scoring", "model": "no response", "calls": 3,
+        "ok": 0, "rate_limited": 0, "quota_exhausted": 0, "invalid_output": 0,
+        "timeout": 0, "error": 3, "p50": 0, "p95": 0, "avg_in": None, "avg_out": None,
+    }], [])
+    assert "error" in text.splitlines()[0]
+    assert "no response" in text
+    assert "100%" in text
+    assert "   0%" in text or "  0%" in text
+
+
+def test_compare_includes_llm_failure_rate():
+    from datetime import date
+    def day(n, failed):
+        return rd.DailyMetrics(
+            day=date(2026, 10, n), commits=set(), offers_fetched=10, cap_hits=0, queries=2,
+            verification_tokens=100, scored=4, high=1, llm_calls=10, llm_failed=failed, packaged=1)
+    text = rr.render_compare("abcdef1234", [day(1, 1)], [day(2, 4)])
+    assert "LLM failure rate (%)" in text
+
+
+def test_unconfigured_limits_render_as_unknown_and_warn():
+    from src.report_data import LimitUse
+    limits = [
+        LimitUse("groq", "openai/gpt-oss-20b", "tokens", None, 10, {}),
+        LimitUse("groq", "openai/gpt-oss-120b", "tokens", None, 0, {}),
+        LimitUse("openrouter", "*", "requests", None, 0, {}),
+    ]
+    report = _report(limits=limits, limits_unconfigured=True)
+    block = rr.render_day(report, settings=SETTINGS)[0]
+    assert block.count("/ ? ") >= 2
+    assert "Provider limits could not be loaded" in block
+    assert "ALL OK" not in block

@@ -12,10 +12,11 @@ from datetime import date, datetime, timedelta, timezone
 import psycopg2
 import psycopg2.extras
 
-from src.llm_limits import load_limits
+from src.llm_limits import Limit, load_limits
 
 TIER_NAMES = {1: "Italy", 2: "Switzerland", 3: "EU", 4: "UK"}
 TIER_FLAGS = {1: "🇮🇹", 2: "🇨🇭", 3: "🇪🇺", 4: "🇬🇧"}
+NO_RESPONSE_MODEL = "no response"
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,19 @@ class DayReport:
     llm_calls: int
     llm_failed: int
     p95_latency_ms: float | None
+    attempt_log: list = field(default_factory=list)
+    limits_unconfigured: bool = False
+
+
+@dataclass
+class AttemptView:
+    tier: int
+    attempt: int
+    attempts: int
+    status: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    error: str | None
 
 
 @dataclass
@@ -201,9 +215,37 @@ def _limit_usage(cur, limit, day_start, day_end, until) -> int:
     return int(cur.fetchone()["used"])
 
 
+def utc_day_bounds(moment: datetime) -> tuple[datetime, datetime]:
+    """The UTC calendar day that contains moment. Provider limits reset on that boundary."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    start = moment.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+def catalog_for_report() -> tuple[list[Limit], bool]:
+    """Limits to display. An empty catalog is a broken config, shown as unknown ceilings."""
+    loaded = load_limits()
+    if loaded:
+        return loaded, False
+    return [
+        Limit("groq", "openai/gpt-oss-20b", "tokens", None),
+        Limit("groq", "openai/gpt-oss-120b", "tokens", None),
+        Limit("openrouter", "*", "requests", None),
+    ], True
+
+
+def _connect(db_url: str):
+    return psycopg2.connect(
+        db_url,
+        connect_timeout=10,
+        options="-c statement_timeout=15000 -c lock_timeout=5000",
+    )
+
+
 def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: str | None = None,
              day: date | None = None) -> DayReport | None:
-    conn = psycopg2.connect(db_url)
+    conn = _connect(db_url)
     try:
         with _cursor(conn) as cur:
             daily_run_id = daily_run_id or _find_daily_run_id(cur, day)
@@ -215,8 +257,15 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
             if not rows:
                 return None
             tiers: dict[int, TierRun] = {}
+            attempt_log: list[AttemptView] = []
             for row in rows:
-                attempts = sum(1 for r in rows if r["tier"] == row["tier"])
+                tier_rows = [r for r in rows if r["tier"] == row["tier"]]
+                attempts = max((r["attempt"] or 1) for r in tier_rows)
+                attempt_log.append(AttemptView(
+                    tier=row["tier"], attempt=row["attempt"] or 1, attempts=attempts,
+                    status=row["status"] or "running", started_at=row["started_at"],
+                    finished_at=row["finished_at"], error=row["error"],
+                ))
                 tiers[row["tier"]] = TierRun(
                     tier=row["tier"], run_uuid=str(row["run_uuid"]), run_id=row["id"],
                     attempt=row["attempt"] or 1, attempts=attempts, status=row["status"] or "running",
@@ -245,7 +294,7 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
             queries = [QueryRow(**r) for r in cur.fetchall()]
             cur.execute(
                 "SELECT r.tier, c.stage, c.provider, c.request_model, "
-                "COALESCE(c.response_model, c.request_model) AS model, COUNT(*) AS calls, "
+                f"COALESCE(c.response_model, '{NO_RESPONSE_MODEL}') AS model, COUNT(*) AS calls, "
                 "COUNT(*) FILTER (WHERE c.outcome <> 'ok') AS failed, "
                 "COALESCE(SUM(COALESCE(c.input_tokens, 0) + COALESCE(c.output_tokens, 0)), 0) AS tokens "
                 "FROM llm_calls c JOIN runs r ON r.run_uuid = c.run_uuid "
@@ -262,18 +311,21 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
             totals = cur.fetchone()
             started = min(r["started_at"] for r in rows if r["started_at"] is not None)
             finished_values = [r["finished_at"] for r in rows if r["finished_at"] is not None]
-            # Provider limits reset on the UTC day, so usage is measured over the
-            # UTC day the run started in (psycopg2 returns TIMESTAMPTZ as aware).
-            day_start = started.astimezone(timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0)
-            day_end = day_start + timedelta(days=1)
+            # Provider limits reset on UTC midnights. The header is the UTC day
+            # the run closed on. Each tier's "day so far" is that tier's own
+            # UTC day, so a run that crosses midnight does not drop the later calls.
+            end_moment = max(finished_values) if finished_values else started
+            header_start, header_end = utc_day_bounds(end_moment)
+            catalog, limits_unconfigured = catalog_for_report()
             limits = []
-            for limit in load_limits():
+            for limit in catalog:
                 use = LimitUse(limit.provider, limit.model, limit.unit, limit.per_day,
-                               _limit_usage(cur, limit, day_start, day_end, None))
+                               _limit_usage(cur, limit, header_start, header_end, None))
                 for tier in tiers.values():
+                    moment = tier.finished_at or datetime.now(timezone.utc)
+                    tier_start, tier_end = utc_day_bounds(moment)
                     use.used_through_tier[tier.tier] = _limit_usage(
-                        cur, limit, day_start, day_end, tier.finished_at or datetime.now(timezone.utc))
+                        cur, limit, tier_start, tier_end, moment)
                 limits.append(use)
             last = max(rows, key=lambda r: r["started_at"] or started)
             cur.execute(
@@ -291,13 +343,14 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
             tiers=tiers, queries=queries, stages=stages, limits=limits,
             llm_calls=int(totals["calls"]), llm_failed=int(totals["failed"]),
             p95_latency_ms=totals["p95"],
+            attempt_log=attempt_log, limits_unconfigured=limits_unconfigured,
         )
     finally:
         conn.close()
 
 
 def load_daily_metrics(db_url: str, *, since: date, settings: dict[int, TierSettings]) -> list[DailyMetrics]:
-    conn = psycopg2.connect(db_url)
+    conn = _connect(db_url)
     try:
         with _cursor(conn) as cur:
             cur.execute(
@@ -349,11 +402,11 @@ def load_daily_metrics(db_url: str, *, since: date, settings: dict[int, TierSett
 
 
 def load_llm_view(db_url: str, *, since: date, stage: str | None = None):
-    conn = psycopg2.connect(db_url)
+    conn = _connect(db_url)
     try:
         with _cursor(conn) as cur:
             sql = (
-                "SELECT stage, provider, COALESCE(response_model, request_model) AS model, "
+                f"SELECT stage, provider, COALESCE(response_model, '{NO_RESPONSE_MODEL}') AS model, "
                 "COUNT(*) AS calls, "
                 + ", ".join(f"COUNT(*) FILTER (WHERE outcome = '{o}') AS {o}" for o in
                             ("ok", "rate_limited", "quota_exhausted", "invalid_output", "timeout", "error"))
