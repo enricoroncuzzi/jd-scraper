@@ -37,10 +37,23 @@ def _send_morning_report(daily_run_id: str) -> None:
         settings = report_data.load_tier_settings(CONFIGS)
         report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id)
         blocks = report_render.render_day(report, settings=settings)
-        for message in report_render.pack_messages(blocks):
-            send_message(message, os.environ["TELEGRAM_TOKEN"],
-                         os.environ["TELEGRAM_CHAT_ID"], parse_mode=None)
-        print(f"[orchestrator] Morning report sent ({len(blocks)} blocks).")
+        messages = report_render.pack_messages(blocks)
+        failed = []
+        for index, message in enumerate(messages, start=1):
+            try:
+                if send_message(message, os.environ["TELEGRAM_TOKEN"],
+                                os.environ["TELEGRAM_CHAT_ID"], parse_mode=None) is False:
+                    failed.append(index)
+            except Exception as e:
+                failed.append(index)
+                print(f"[orchestrator] Morning report message {index} FAILED: "
+                      f"{type(e).__name__}: {telemetry._redact(str(e))}")
+        if failed:
+            listed = ", ".join(str(n) for n in failed)
+            print(f"[orchestrator] Morning report incomplete: message(s) {listed} "
+                  f"of {len(messages)} failed.")
+        else:
+            print(f"[orchestrator] Morning report sent ({len(blocks)} blocks).")
     except Exception as e:
         print(f"[orchestrator] Morning report FAILED: {type(e).__name__}: {telemetry._redact(str(e))}")
 

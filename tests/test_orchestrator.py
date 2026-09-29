@@ -104,6 +104,22 @@ def test_morning_report_failure_never_raises(monkeypatch):
         orchestrator._send_morning_report("day-1")
 
 
+def test_a_failed_middle_message_does_not_drop_the_rest(monkeypatch, capsys):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    with patch("orchestrator.load_dotenv"), \
+         patch("orchestrator.telemetry.drain_buffers"), \
+         patch("orchestrator.report_data.load_day", return_value=None), \
+         patch("orchestrator.report_render.render_day", return_value=["a", "b", "c"]), \
+         patch("orchestrator.report_render.pack_messages", return_value=["m1", "m2", "m3"]), \
+         patch("orchestrator.send_message", side_effect=[True, RuntimeError("timeout"), False]):
+        orchestrator._send_morning_report("day-1")
+    out = capsys.readouterr().out
+    assert "message(s) 2, 3 of 3 failed" in out
+    assert "Morning report sent" not in out
+
+
 def test_no_database_skips_the_report_quietly(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with patch("orchestrator.load_dotenv"), patch("orchestrator.send_message") as send:
