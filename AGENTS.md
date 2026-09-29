@@ -139,13 +139,14 @@ what the README doesn't (or what has drifted from it).
    rather than importing it, so this stage's correctness does not inherit the
    scorer's pin drift (see `_OPENROUTER_FALLBACK_MODELS`'s comment there for
    a currently-known-stale entry in the scorer's own array - untouched,
-   separate issue). Verdict quality of the OpenRouter fallback versus Groq's
-   has not been empirically benchmarked (no OpenRouter key was available
-   where this was built); treat the first live week of failover verdicts as
-   worth a spot check. `usage["degraded"]` fires once `failed_batches /
-   total_batches >= _DEGRADED_FAILURE_RATIO` (10%), not only at 100% failure -
-   a run where 27 of 28 batches died (2026-09-08 tier 1, attempt 3) used to
-   report itself healthy in the Telegram digest. A `_GROQ_BATCH_PAUSE_SECONDS`
+   separate issue). The OpenRouter fallback is materially more conservative
+   than Groq at this judgement (confirmed tends to drop to unconfirmed, which
+   removes the offer from auto-apply's pool that day) - see that same
+   comment for the spot-check evidence and what it could not measure.
+   `usage["degraded"]` fires once `failed_batches /
+   total_batches >= _DEGRADED_FAILURE_RATIO` (10%), not only at 100% failure,
+   so a mostly-failed run cannot report itself healthy in the Telegram
+   digest. A `_GROQ_BATCH_PAUSE_SECONDS`
    (25s) pause between consecutive Groq batches (not applied once failed over
    to OpenRouter) trades tier runtime for fewer TPM-throttle retries: Groq's
    free-plan 8,000-token/minute ceiling is tight against this stage's
@@ -231,8 +232,9 @@ what the README doesn't (or what has drifted from it).
   paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
   (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
   (`src/remote_verifier.py`, via `main.py`'s call into `verify_offers`). Its absence does not fail the
-  run loudly - `verify_offers` degrades to marking every offer unconfirmed,
-  which then silently blocks auto-apply for tiers with `remote_check.enabled`
+  run loudly - `verify_offers` fails over to OpenRouter (see above), and with
+  no usable `LLM_API_KEY` either it marks every offer unconfirmed (reported as
+  degraded), which then blocks auto-apply for tiers with `remote_check.enabled`
   (the candidate filter in `src/autoapply/pipeline.py` excludes unconfirmed
   offers). Check `src/config.py`, `src/scorer.py`, `main.py`, and `tailor.py`
   for the actual env vars consumed rather than trusting the template.

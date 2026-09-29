@@ -127,11 +127,14 @@ _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # structured output below) on 2026-09-29:
 # - nvidia/nemotron-3-super-120b-a12b:free: same model already proven in
 #   production for scoring's structurally similar judgement task
-#   (src/scorer.py's _OPENROUTER_MODEL), so verdict quality here should track
-#   scoring's, though that has not been independently benchmarked against
-#   Groq's verdicts on real postings - no OpenRouter key was available in the
-#   environment this was built in to run that comparison. Treat the first
-#   week of live failover verdicts as worth a spot check.
+#   (src/scorer.py's _OPENROUTER_MODEL). A 2026-09-29 spot check re-verified
+#   42 Groq-judged production offers through this path only: 57% raw
+#   agreement, and materially more conservative than Groq (only 8 of 21
+#   Groq-confirmed stayed confirmed, most dropping to unconfirmed on an
+#   ambiguous "remote-first"/"100% remote" phrase). The dangerous direction
+#   (wrongly confirming a Groq-rejected offer) could not be measured, since
+#   rejected offers are never persisted to Neon; that needs a labeled golden
+#   set covering all three verdict classes.
 # - google/gemma-4-26b-a4b-it:free: same fallback already proven in
 #   production via the scorer.
 # - thinkingmachines/inkling-small:free: a third provider (neither nvidia nor
