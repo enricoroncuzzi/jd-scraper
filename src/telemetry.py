@@ -17,11 +17,16 @@ import json
 import os
 import re
 import subprocess
+import time
 import uuid
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import groq
+import openai
 import psycopg2
+from pydantic import ValidationError
 
 from src import storage
 
@@ -283,3 +288,107 @@ def set_fields(**fields) -> None:
 def count(name: str, n: int = 1) -> None:
     if _current is not None and _current.enabled:
         _current.counters[name] = _current.counters.get(name, 0) + n
+
+
+OUTCOMES = ("ok", "rate_limited", "quota_exhausted", "invalid_output", "timeout", "error")
+
+
+class InvalidLLMOutput(Exception):
+    """The model answered, but not in a usable shape (e.g. no forced tool call)."""
+
+
+def classify_llm_error(exc: BaseException, is_quota_exhausted=None) -> str:
+    if is_quota_exhausted is not None:
+        try:
+            if is_quota_exhausted(exc):
+                return "quota_exhausted"
+        except Exception:
+            pass
+    if isinstance(exc, (openai.RateLimitError, groq.RateLimitError)):
+        return "rate_limited"
+    if isinstance(exc, (openai.APITimeoutError, groq.APITimeoutError)):
+        return "timeout"
+    if isinstance(exc, (InvalidLLMOutput, ValidationError, json.JSONDecodeError)):
+        return "invalid_output"
+    return "error"
+
+
+@dataclass
+class LLMCall:
+    stage: str
+    provider: str
+    request_model: str
+    batch_size: int
+    attempt: int
+    prompt_version: str
+    response_model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    outcome: str = "ok"
+    error: str | None = None
+    started_at: str = field(default_factory=_utcnow)
+
+    def set_usage(self, *, response_model, input_tokens, output_tokens) -> None:
+        self.response_model = response_model or None
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
+def _emit_llm_call(call: LLMCall, latency_ms: int) -> None:
+    session = _current
+    data = {
+        "id": str(uuid.uuid4()),
+        "run_uuid": session.run_uuid if session is not None and session.enabled else None,
+        "stage": call.stage, "provider": call.provider, "request_model": call.request_model,
+        "response_model": call.response_model, "input_tokens": call.input_tokens,
+        "output_tokens": call.output_tokens, "latency_ms": latency_ms,
+        "batch_size": call.batch_size, "attempt": call.attempt, "outcome": call.outcome,
+        "error": call.error, "prompt_version": call.prompt_version, "started_at": call.started_at,
+    }
+    if session is not None:
+        if session.enabled:
+            session._append("llm_call", data)
+        return
+    manual_db = os.environ.get("DATABASE_URL")
+    if manual_db:
+        # A manual tailoring run outside the pipeline: no session, so write through.
+        flush_records([{"kind": "llm_call", "data": data}], manual_db)
+
+
+@contextmanager
+def llm_call(*, stage: str, provider: str, request_model: str, batch_size: int,
+             attempt: int, prompt_version: str, is_quota_exhausted=None):
+    call = LLMCall(stage=stage, provider=provider, request_model=request_model,
+                   batch_size=batch_size, attempt=attempt, prompt_version=prompt_version)
+    started = time.monotonic()
+    try:
+        yield call
+    except BaseException as exc:
+        try:
+            call.outcome = classify_llm_error(exc, is_quota_exhausted)
+            call.error = f"{type(exc).__name__}: {exc}"[:300]
+        except Exception:
+            call.outcome = "error"
+        raise
+    finally:
+        _safe("llm call record", _emit_llm_call, call, int((time.monotonic() - started) * 1000))
+
+
+def _add_query(fields: dict) -> None:
+    if fields["stop_reason"] not in STOP_REASONS:
+        raise ValueError(f"unknown stop_reason {fields['stop_reason']!r}")
+    session = _current
+    if session is None or not session.enabled:
+        return
+    session._append("query", {"id": str(uuid.uuid4()), "run_uuid": session.run_uuid,
+                              "recorded_at": _utcnow(), **fields})
+
+
+def add_query(*, role, location, work_mode, pages_walked, page_cap, cards_seen,
+              offers_kept, stop_reason) -> None:
+    _safe("query record", _add_query, {
+        "role": role, "location": location, "work_mode": work_mode,
+        "pages_walked": pages_walked, "page_cap": page_cap, "cards_seen": cards_seen,
+        "offers_kept": offers_kept, "stop_reason": stop_reason,
+    })
+

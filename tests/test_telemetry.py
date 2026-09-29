@@ -149,3 +149,146 @@ def test_ensure_run_id_retries_lookup_after_a_successful_flush_deleted_the_buffe
         session.telemetry_ok = True
         assert session.ensure_run_id() == 9
         assert session.telemetry_ok is True
+
+
+import openai
+import groq
+import httpx
+from pydantic import BaseModel, ValidationError
+
+
+def _rate_limit(cls, body):
+    request = httpx.Request("POST", "https://x")
+    return cls(message="429", response=httpx.Response(429, request=request), body=body)
+
+
+def _enabled_session():
+    patches = [patch("src.telemetry.storage.init_db"),
+               patch("src.telemetry.flush_records", side_effect=OSError("keep in buffer"))]
+    for p in patches:
+        p.start()
+    session = telemetry.start_session(tier=1, daily_run_id="d", attempt=1, db_url="postgresql://x")
+    # The open flush failed on purpose (to keep records readable in the buffer),
+    # which marked the session incomplete. Reset that, so each test's own
+    # telemetry_ok assertion measures only what that test did.
+    session.telemetry_ok = True
+    telemetry._warned_sites.clear()
+    return session, patches
+
+
+def _llm_records(session):
+    return [l["data"] for l in _lines(session.buffer_path) if l["kind"] == "llm_call"]
+
+
+def test_classify_llm_error_covers_every_outcome():
+    class M(BaseModel):
+        n: int
+    try:
+        M.model_validate({"n": "x"})
+    except ValidationError as e:
+        validation_error = e
+    assert telemetry.classify_llm_error(_rate_limit(openai.RateLimitError, {})) == "rate_limited"
+    assert telemetry.classify_llm_error(_rate_limit(groq.RateLimitError, {})) == "rate_limited"
+    assert telemetry.classify_llm_error(
+        _rate_limit(groq.RateLimitError, {}), is_quota_exhausted=lambda e: True) == "quota_exhausted"
+    assert telemetry.classify_llm_error(
+        openai.APITimeoutError(request=httpx.Request("POST", "https://x"))) == "timeout"
+    assert telemetry.classify_llm_error(validation_error) == "invalid_output"
+    assert telemetry.classify_llm_error(telemetry.InvalidLLMOutput()) == "invalid_output"
+    assert telemetry.classify_llm_error(KeyError("x")) == "error"
+    assert telemetry.classify_llm_error(
+        KeyError("x"), is_quota_exhausted=lambda e: 1 / 0) == "error"  # a broken checker never escapes
+
+
+def test_llm_call_success_records_usage_and_latency():
+    session, patches = _enabled_session()
+    try:
+        with telemetry.llm_call(stage="scoring", provider="openrouter", request_model="req",
+                                batch_size=5, attempt=1, prompt_version="abc123abc123") as call:
+            call.set_usage(response_model="served", input_tokens=100, output_tokens=20)
+        [record] = _llm_records(session)
+        assert record["outcome"] == "ok" and record["response_model"] == "served"
+        assert record["input_tokens"] == 100 and record["output_tokens"] == 20
+        assert record["run_uuid"] == session.run_uuid and record["latency_ms"] >= 0
+        assert record["stage"] == "scoring" and record["attempt"] == 1
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_llm_call_reraises_the_callers_exception_unchanged_and_records_it():
+    session, patches = _enabled_session()
+    try:
+        boom = _rate_limit(openai.RateLimitError, {})
+        with pytest.raises(openai.RateLimitError) as raised:
+            with telemetry.llm_call(stage="verification", provider="openrouter", request_model="m",
+                                    batch_size=8, attempt=3, prompt_version="p" * 12):
+                raise boom
+        assert raised.value is boom
+        [record] = _llm_records(session)
+        assert record["outcome"] == "rate_limited" and record["attempt"] == 3
+        assert record["error"].startswith("RateLimitError")
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_tokens_spent_on_an_invalid_answer_are_still_recorded():
+    session, patches = _enabled_session()
+    try:
+        with pytest.raises(telemetry.InvalidLLMOutput):
+            with telemetry.llm_call(stage="scoring", provider="openrouter", request_model="m",
+                                    batch_size=5, attempt=1, prompt_version="p" * 12) as call:
+                call.set_usage(response_model="m", input_tokens=900, output_tokens=3)
+                raise telemetry.InvalidLLMOutput()
+        [record] = _llm_records(session)
+        assert record["outcome"] == "invalid_output" and record["input_tokens"] == 900
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_llm_call_with_no_session_and_no_database_is_a_silent_noop():
+    with telemetry.llm_call(stage="tailoring", provider="groq", request_model="m",
+                            batch_size=1, attempt=1, prompt_version="p" * 12) as call:
+        call.set_usage(response_model="m", input_tokens=1, output_tokens=1)
+
+
+def test_llm_call_with_no_session_writes_directly_when_a_database_is_configured(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://manual")
+    with patch("src.telemetry.flush_records") as flush:
+        with telemetry.llm_call(stage="tailoring", provider="groq", request_model="m",
+                                batch_size=1, attempt=1, prompt_version="p" * 12):
+            pass
+    (records, url), _ = flush.call_args
+    assert url == "postgresql://manual"
+    assert records[0]["kind"] == "llm_call" and records[0]["data"]["run_uuid"] is None
+
+
+def test_a_recording_failure_never_masks_or_replaces_the_callers_result():
+    session, patches = _enabled_session()
+    try:
+        with patch("src.telemetry.TierSession._append", side_effect=OSError("disk full")):
+            with telemetry.llm_call(stage="scoring", provider="openrouter", request_model="m",
+                                    batch_size=1, attempt=1, prompt_version="p" * 12):
+                value = 42
+        assert value == 42
+        assert session.telemetry_ok is False
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_add_query_rejects_an_unknown_stop_reason_without_raising():
+    session, patches = _enabled_session()
+    try:
+        telemetry.add_query(role="r", location="l", work_mode=None, pages_walked=1, page_cap=8,
+                            cards_seen=10, offers_kept=9, stop_reason="cap_hit")
+        telemetry.add_query(role="r", location="l", work_mode=None, pages_walked=1, page_cap=8,
+                            cards_seen=10, offers_kept=9, stop_reason="made_up")
+        queries = [l["data"] for l in _lines(session.buffer_path) if l["kind"] == "query"]
+        assert [q["stop_reason"] for q in queries] == ["cap_hit"]
+        assert session.telemetry_ok is False
+    finally:
+        for p in patches:
+            p.stop()
