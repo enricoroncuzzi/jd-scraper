@@ -6,7 +6,8 @@
     "countries": ["Switzerland", "San Marino, San Marino"],
     "allowed_countries": ["Switzerland", "San Marino"],
     "time_range": "r86400",
-    "work_mode": []
+    "work_mode": [],
+    "max_pages_per_query": 12
   },
   "remote_check": { "enabled": false, "require_italy_eligibility": false },
   "scoring": {

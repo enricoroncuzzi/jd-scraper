@@ -333,3 +333,24 @@ def test_every_tier_config_gets_its_own_retry_queue(monkeypatch):
 
     assert len(set(queues)) == 4
     assert queues[0] == "data/unscored_tier1.jsonl"
+
+
+def test_tier_configs_carry_the_captain_approved_page_caps(monkeypatch):
+    # Values approved on the pagination-cap-checkpoint task after 20 days of
+    # production logs showed tiers 3/4 hitting the old shared cap of 8 on
+    # every query-day. Tier 1 gets the widest margin (captain's best market).
+    _set_env(monkeypatch)
+
+    expected = {1: 30, 2: 12, 3: 20, 4: 12}
+    for tier, cap in expected.items():
+        config = load_config(str(_REPO_ROOT / "config" / f"config_tier{tier}.json"))
+        assert config.search.max_pages_per_query == cap
+
+
+def test_max_pages_per_query_absent_from_json_resolves_to_none(tmp_path, monkeypatch):
+    # load_config() itself must not apply the fallback - that is
+    # resolve_max_pages_per_query()'s job (src/scraper.py), invoked by the
+    # caller, so an absent key stays None here rather than silently becoming 8.
+    _set_env(monkeypatch)
+    config = load_config(str(_write_config(tmp_path)))
+    assert config.search.max_pages_per_query is None

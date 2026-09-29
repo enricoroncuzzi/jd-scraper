@@ -748,3 +748,80 @@ def test_a_single_page_query_never_sleeps_before_its_only_request(monkeypatch):
     fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     assert log == ["search"]
+
+
+# --- per-tier configurable page cap ---------------------------------------
+
+
+def test_resolve_max_pages_per_query_returns_a_valid_value():
+    from src.scraper import resolve_max_pages_per_query
+    assert resolve_max_pages_per_query(30) == 30
+
+
+def test_resolve_max_pages_per_query_falls_back_to_default_when_absent():
+    from src.scraper import resolve_max_pages_per_query, _MAX_PAGES_PER_QUERY
+    assert resolve_max_pages_per_query(None) == _MAX_PAGES_PER_QUERY
+
+
+@pytest.mark.parametrize("bad_value", [0, -1, "30", 3.5, True, False])
+def test_resolve_max_pages_per_query_falls_back_to_default_when_invalid(bad_value):
+    from src.scraper import resolve_max_pages_per_query, _MAX_PAGES_PER_QUERY
+    assert resolve_max_pages_per_query(bad_value) == _MAX_PAGES_PER_QUERY
+
+
+def test_pagination_honours_a_custom_max_pages_per_query(monkeypatch):
+    pages = {
+        start: _search_html([(start + 1, "AI Engineer", "Berlin, Germany")])
+        for start in range(40)
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400", max_pages_per_query=3)
+
+    assert len(calls["search_starts"]) == 3
+
+
+def test_pagination_ends_before_a_generous_cap_when_results_run_out(monkeypatch):
+    # The early-stop conditions (empty page / all-duplicate page / end-of-
+    # results) must still end a shallow query well short of a large cap - a
+    # generous cap is only safe because a shallow search still costs nothing.
+    pages = {
+        0: _search_html([(1, "AI Engineer", "Berlin, Germany"), (2, "ML Engineer", "Paris, France")]),
+        2: EMPTY_PAGE_HTML,
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400", max_pages_per_query=30)
+
+    assert len(offers) == 2
+    assert calls["search_starts"] == [0, 2]
+
+
+def test_page_cap_hit_message_reports_the_custom_cap(monkeypatch, capsys):
+    mock_get, calls = _paging_mock_get(_capped_pages(_ENDPOINT_PAGE_LEN))
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    from src.scraper import _MAX_PAGES_PER_QUERY
+    fetch_offers(["AI Engineer"], "Europe", "r86400", max_pages_per_query=_MAX_PAGES_PER_QUERY)
+
+    assert f"Hit the page cap ({_MAX_PAGES_PER_QUERY} pages)" in capsys.readouterr().out
+
+
+def test_per_query_page_count_is_logged(monkeypatch, capsys):
+    pages = {
+        0: _search_html([(1, "AI Engineer", "Berlin, Germany")]),
+        1: EMPTY_PAGE_HTML,
+    }
+    mock_get, calls = _paging_mock_get(pages)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
+
+    fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    out = capsys.readouterr().out
+    assert "AI Engineer/Europe/None: 2/8 pages, 1 offers kept." in out

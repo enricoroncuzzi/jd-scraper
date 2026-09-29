@@ -7,13 +7,22 @@ what the README doesn't (or what has drifted from it).
 ## Subsystems
 
 1. **Scraper -> verifier -> scoring -> corpus** (`main.py`, `orchestrator.py`,
-   `src/`): a 4-tier LinkedIn scraper (paginated per query up to a page cap,
-   see `_MAX_PAGES_PER_QUERY` in `src/scraper.py` - a *card* budget, not a
-   page-count one, because `_fetch_for_query` advances `start` by the number
-   of cards each response actually returned; the guest endpoint served 25
-   cards per request until 2026-09 and 10 now, and a constant 25 stride
-   silently skipped ~60% of every window, so never re-introduce a page-size
-   assumption here), language filter, dedup,
+   `src/`): a 4-tier LinkedIn scraper (paginated per query up to a page cap -
+   a *card* budget, not a page-count one, because `_fetch_for_query` advances
+   `start` by the number of cards each response actually returned; the guest
+   endpoint served 25 cards per request until 2026-09 and 10 now, and a
+   constant 25 stride silently skipped ~60% of every window, so never
+   re-introduce a page-size assumption here. The cap is config-driven per
+   tier (`search.max_pages_per_query` in each `config_tier*.json`, resolved
+   by `src/scraper.py`'s `resolve_max_pages_per_query`, which falls back to
+   the conservative `_MAX_PAGES_PER_QUERY` default on an absent or invalid
+   value so a malformed config can never mean unbounded pagination); the
+   values in place (tier 1: 30, tier 2/4: 12, tier 3: 20) were the captain's
+   call after 20 days of production logs showed tiers 3/4 hitting the old
+   shared cap of 8 on every query-day - see the `pagination-cap-checkpoint`
+   task. `_fetch_for_query` logs each query's actual page count at the point
+   pagination stops, so a review no longer needs to infer it from the
+   cap-hit warning), language filter, dedup,
    remote verification, LLM scoring (OpenRouter, free-tier models with a
    native model fallback array - see `_OPENROUTER_MODEL`/
    `_OPENROUTER_FALLBACK_MODELS` in `src/scorer.py`), Postgres (Neon) storage,

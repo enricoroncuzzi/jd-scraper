@@ -26,13 +26,28 @@ _DESC_MAX_RETRIES = 8
 _DESC_BASE_WAIT = 30
 _DESC_WAIT_CAP = 300
 
-# Deliberately conservative. The captain asked to revisit this against real
-# observed page counts after the first production run of the reshaped tiers -
-# raising it multiplies requests per query and therefore rate-limit exposure.
+# Deliberately conservative default, used only as the safety fallback below.
+# The captain has since reviewed real observed page counts (20 days of
+# production logs, see data/scraper-coverage-check/report.md in the firstmate
+# home) and set per-tier caps in each tier's config - see
+# SearchConfig.max_pages_per_query in src/config.py and each config_tier*.json.
 # Since pagination steps by the cards actually returned (see _fetch_for_query),
 # this cap is a card budget, not a page-size-dependent one: 8 pages of the
 # endpoint's current 10 cards is ~80 offers per query.
 _MAX_PAGES_PER_QUERY = 8
+
+
+def resolve_max_pages_per_query(value: int | None) -> int:
+    """Translate a tier config's max_pages_per_query into the cap
+    _fetch_for_query() paginates against.
+
+    Returns the deliberately conservative _MAX_PAGES_PER_QUERY default when
+    `value` is absent (None) or not a positive int, so a malformed or older
+    config can never turn into unbounded pagination.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return _MAX_PAGES_PER_QUERY
+    return value
 
 
 class _EndOfResults(RuntimeError):
@@ -51,6 +66,7 @@ def fetch_offers(
     work_modes: list[str] = None,
     countries: list[str] = None,
     allowed_countries: frozenset[str] | None = None,
+    max_pages_per_query: int = _MAX_PAGES_PER_QUERY,
 ) -> list[JobOffer]:
     work_modes = work_modes or []
     modes = work_modes if work_modes else [None]
@@ -67,6 +83,7 @@ def fetch_offers(
                     role, loc, time_range, mode,
                     start_id=offer_id,
                     allowed_countries=allowed_countries,
+                    max_pages_per_query=max_pages_per_query,
                 )
                 for offer in offers:
                     if offer.link not in seen_links:
@@ -137,6 +154,7 @@ def _fetch_for_query(
     work_mode: str | None,
     start_id: int = 0,
     allowed_countries: frozenset[str] | None = None,
+    max_pages_per_query: int = _MAX_PAGES_PER_QUERY,
 ) -> list[JobOffer]:
     offers: list[JobOffer] = []
     seen_links: set[str] = set()
@@ -149,8 +167,10 @@ def _fetch_for_query(
     next_start = 0
     widest_page = 0
     last_page_was_full = False
+    pages_walked = 0
 
-    for page in range(_MAX_PAGES_PER_QUERY):
+    for page in range(max_pages_per_query):
+        pages_walked = page + 1
         if page:
             # A page whose cards are all out of scope fetches no descriptions,
             # so without this the loop can fire every search request back to
@@ -219,8 +239,14 @@ def _fetch_for_query(
         # positives - hence "full" meaning "as wide as this query's other
         # pages", never "== some hardcoded page size".
         if last_page_was_full:
-            print(f"[scraper] Hit the page cap ({_MAX_PAGES_PER_QUERY} pages) for "
+            print(f"[scraper] Hit the page cap ({max_pages_per_query} pages) for "
                   f"{role}/{location}/{work_mode} - there may be more results beyond this.")
+
+    # One line per query, printed regardless of how pagination stopped, so
+    # "did this query hit its cap" is answerable from the cron log alone
+    # rather than by inferring it from the (cap-hit-only) warning above.
+    print(f"[scraper] Paginated {role}/{location}/{work_mode}: "
+          f"{pages_walked}/{max_pages_per_query} pages, {len(offers)} offers kept.")
 
     return offers
 
