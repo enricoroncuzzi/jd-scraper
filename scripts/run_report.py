@@ -10,7 +10,7 @@ Uses the same code as the morning Telegram report, so the two never disagree.
 import argparse
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
