@@ -306,6 +306,11 @@ plan. Treat them as historical context only, not binding scope.
 - **Where data lives:** Neon tables `runs`, `run_queries`, and `llm_calls`
   (`src/storage.py` schema; written by `src/telemetry.py`), with a local
   write-ahead buffer under `data/telemetry/` (`telemetry.buffer_dir()`).
+- **Search records:** `run_queries.offers_kept` is every offer a search returned;
+  `cross_query_duplicates` is the subset that reused a description an earlier search
+  of the same `fetch_offers` run already fetched (run-scoped cache keyed by link, see
+  `src/scraper.py`), so real description requests = `offers_kept - cross_query_duplicates`.
+  NULL on rows written before that column existed.
 - **Never break a run:** telemetry failures must not raise into pipeline code
   or stall a tier; see `src/telemetry.py`'s module docstring and how
   `orchestrator.py` wraps the morning report the same way.

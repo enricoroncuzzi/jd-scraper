@@ -160,6 +160,15 @@ def test_detail_lists_every_attempt():
     assert "T1 attempt 2 of 2 · ok" in text
 
 
+def test_detail_marks_searches_that_reused_an_earlier_fetch():
+    reused = rd.QueryRow(3, "ML Engineer", "Europe", "remote", 5, 20, 50, 40, "empty_page",
+                         cross_query_duplicates=12)
+    plain = rd.QueryRow(3, "AI Engineer", "Europe", "remote", 5, 20, 50, 40, "empty_page")
+    text = rr.render_day_detail(_report(queries=[plain, reused]), settings=SETTINGS)
+    assert "40 kept (12 reused from an earlier search), stopped: empty_page" in text
+    assert "AI Engineer / Europe / remote: 5/20 pages, 50 cards, 40 kept, stopped: empty_page" in text
+
+
 def test_llm_view_shows_generic_errors():
     text = rr.render_llm([{
         "stage": "scoring", "model": "no response", "calls": 3,

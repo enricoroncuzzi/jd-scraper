@@ -61,6 +61,7 @@ class QueryRow:
     cards_seen: int
     offers_kept: int
     stop_reason: str
+    cross_query_duplicates: int = 0
 
 
 @dataclass
@@ -288,7 +289,8 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
                 tier.scored, tier.high = int(counts["scored"]), int(counts["high"])
             cur.execute(
                 "SELECT r.tier, q.role, q.location, q.work_mode, q.pages_walked, q.page_cap, "
-                "q.cards_seen, q.offers_kept, q.stop_reason FROM run_queries q "
+                "q.cards_seen, q.offers_kept, q.stop_reason, "
+                "COALESCE(q.cross_query_duplicates, 0) AS cross_query_duplicates FROM run_queries q "
                 "JOIN runs r ON r.run_uuid = q.run_uuid WHERE r.run_uuid = ANY(%s::uuid[]) "
                 "ORDER BY r.tier, q.recorded_at", (latest_uuids,))
             queries = [QueryRow(**r) for r in cur.fetchall()]
