@@ -75,6 +75,12 @@ def fetch_offers(
 
     all_offers: list[JobOffer] = []
     seen_links: set[str] = set()
+    # Run-scoped description cache, shared by every query of this call and keyed
+    # by the same normalized link the merge below dedups on. The merge keeps the
+    # first query's offer per link, so a later query's copy of that offer is
+    # discarded anyway; the cache just stops it costing a description request
+    # (plus its pacing sleep) first.
+    fetched_descriptions: dict[str, tuple[str, str]] = {}
     offer_id = 0
 
     for loc in locations:
@@ -85,6 +91,7 @@ def fetch_offers(
                     start_id=offer_id,
                     allowed_countries=allowed_countries,
                     max_pages_per_query=max_pages_per_query,
+                    fetched_descriptions=fetched_descriptions,
                 )
                 for offer in offers:
                     if offer.link not in seen_links:
@@ -158,9 +165,28 @@ def _fetch_for_query(
     start_id: int = 0,
     allowed_countries: frozenset[str] | None = None,
     max_pages_per_query: int = _MAX_PAGES_PER_QUERY,
+    fetched_descriptions: dict[str, tuple[str, str]] | None = None,
 ) -> list[JobOffer]:
+    """Paginate one search and return its in-scope offers.
+
+    `fetched_descriptions` maps link -> (description, status) for every
+    description already fetched earlier in the same fetch_offers() run. A card
+    whose link is in it still becomes a JobOffer here (so ids and this query's
+    offer count are exactly what they were before the cache existed), but its
+    description is reused instead of requested. That is what the telemetry
+    record's two counts mean: `offers_kept` is every offer this query returned,
+    `cross_query_duplicates` is the subset of those that reused an earlier
+    query's fetch, so the description requests this query actually made are
+    `offers_kept - cross_query_duplicates`.
+
+    This is separate from the per-query `seen_links` below, which only drives
+    the duplicate-page stop and must never see other queries' links.
+    """
+    if fetched_descriptions is None:
+        fetched_descriptions = {}
     offers: list[JobOffer] = []
     seen_links: set[str] = set()
+    cross_query_duplicates = 0
     next_id = start_id
     # The endpoint's page size is not ours to assume: it returned 25 cards per
     # request until 2026-09 and 10 now, and a constant stride larger than the
@@ -226,10 +252,16 @@ def _fetch_for_query(
                 # must never cost one.
                 if not is_in_scope(card["location"], allowed_countries):
                     continue
-                description, description_status = _fetch_description(
-                    card["link"], card["title"], card["company"]
-                )
-                time.sleep(random.uniform(1.5, 3.0))
+                cached = fetched_descriptions.get(card["link"])
+                if cached is not None:
+                    description, description_status = cached
+                    cross_query_duplicates += 1
+                else:
+                    description, description_status = _fetch_description(
+                        card["link"], card["title"], card["company"]
+                    )
+                    fetched_descriptions[card["link"]] = (description, description_status)
+                    time.sleep(random.uniform(1.5, 3.0))
                 offers.append(JobOffer(
                     id=next_id,
                     title=card["title"],
@@ -256,14 +288,17 @@ def _fetch_for_query(
         telemetry.add_query(
             role=role, location=location, work_mode=work_mode,
             pages_walked=pages_walked, page_cap=max_pages_per_query,
-            cards_seen=cards_seen, offers_kept=len(offers), stop_reason=stop_reason,
+            cards_seen=cards_seen, offers_kept=len(offers),
+            cross_query_duplicates=cross_query_duplicates, stop_reason=stop_reason,
         )
 
     # One line per query, printed regardless of how pagination stopped, so
     # "did this query hit its cap" is answerable from the cron log alone
     # rather than by inferring it from the (cap-hit-only) warning above.
+    reused = (f" ({cross_query_duplicates} reused from an earlier query)"
+              if cross_query_duplicates else "")
     print(f"[scraper] Paginated {role}/{location}/{work_mode}: "
-          f"{pages_walked}/{max_pages_per_query} pages, {len(offers)} offers kept.")
+          f"{pages_walked}/{max_pages_per_query} pages, {len(offers)} offers kept{reused}.")
 
     return offers
 

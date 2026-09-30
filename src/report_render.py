@@ -175,9 +175,11 @@ def render_day_detail(report, *, settings) -> str:
         return "No run recorded for that day."
     lines = ["\n\n".join(render_day(report, settings=settings)), "", "Searches:"]
     for q in report.queries:
+        reused = getattr(q, "cross_query_duplicates", 0)
+        reused_note = f" ({reused} reused from an earlier search)" if reused else ""
         lines.append(f"  T{q.tier} {q.role} / {q.location} / {q.work_mode or '-'}: "
                      f"{q.pages_walked}/{q.page_cap} pages, {q.cards_seen} cards, "
-                     f"{q.offers_kept} kept, stopped: {q.stop_reason}")
+                     f"{q.offers_kept} kept{reused_note}, stopped: {q.stop_reason}")
     lines.append("Tiers:")
     entries = list(getattr(report, "attempt_log", None) or [])
     if not entries:

@@ -99,6 +99,8 @@ def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
                         recorded_at  TIMESTAMPTZ NOT NULL
                     )
                 """)
+                # Added after the table shipped; NULL on older rows.
+                cur.execute("ALTER TABLE run_queries ADD COLUMN IF NOT EXISTS cross_query_duplicates INTEGER")
                 cur.execute("CREATE INDEX IF NOT EXISTS run_queries_run_uuid_idx ON run_queries (run_uuid)")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS llm_calls (

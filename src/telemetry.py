@@ -45,7 +45,8 @@ _RUN_CLOSE_COLUMNS = (
     "telemetry_ok",
 )
 _QUERY_COLUMNS = ("id", "run_uuid", "role", "location", "work_mode", "pages_walked",
-                  "page_cap", "cards_seen", "offers_kept", "stop_reason", "recorded_at")
+                  "page_cap", "cards_seen", "offers_kept", "cross_query_duplicates",
+                  "stop_reason", "recorded_at")
 _LLM_COLUMNS = ("id", "run_uuid", "stage", "provider", "request_model", "response_model",
                 "input_tokens", "output_tokens", "latency_ms", "batch_size", "attempt",
                 "outcome", "error", "prompt_version", "started_at")
@@ -451,10 +452,15 @@ def _add_query(fields: dict) -> None:
 
 
 def add_query(*, role, location, work_mode, pages_walked, page_cap, cards_seen,
-              offers_kept, stop_reason) -> None:
+              offers_kept, stop_reason, cross_query_duplicates=0) -> None:
+    """offers_kept: every offer the search returned. cross_query_duplicates: the
+    subset that reused a description an earlier search of the same run had
+    already fetched, so this search made offers_kept - cross_query_duplicates
+    description requests."""
     _safe("query record", _add_query, {
         "role": role, "location": location, "work_mode": work_mode,
         "pages_walked": pages_walked, "page_cap": page_cap, "cards_seen": cards_seen,
-        "offers_kept": offers_kept, "stop_reason": stop_reason,
+        "offers_kept": offers_kept, "cross_query_duplicates": cross_query_duplicates,
+        "stop_reason": stop_reason,
     })
 

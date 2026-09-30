@@ -906,3 +906,119 @@ def test_description_429s_are_counted_but_503s_are_not():
          patch("src.scraper.telemetry.count") as count:
         scraper._fetch_description("https://example.com/j", "T", "C")
     count.assert_called_once_with("description_rate_limits")
+
+
+# --- cross-query description dedup ---------------------------------------
+
+_OVERLAP_FIXTURE = {
+    "Role A": [1, 2, 3],
+    "Role B": [2, 4, 3, 5],
+    "Role C": [5, 1, 6],
+}
+
+
+def _run_overlap_fixture(fresh_cache_per_query=False):
+    """Run fetch_offers over overlapping queries; return (offers, fetched links,
+    the add_query record kwargs per query in call order).
+
+    fresh_cache_per_query=True hands every query its own empty cache, which is
+    exactly the pre-change behaviour (each query fetches every card it sees)."""
+    fetched = []
+
+    def fake_page(role, location, time_range, work_mode, start):
+        cards = _OVERLAP_FIXTURE[role] if start == 0 else []
+        return type("R", (), {"text": _search_html(
+            [(i, f"Job {i}", "Berlin, Germany") for i in cards])})()
+
+    def fake_description(url, title, company):
+        fetched.append(url)
+        return f"description of {url}", "ok"
+
+    real = scraper._fetch_for_query
+
+    def per_query_cache(*args, **kwargs):
+        kwargs["fetched_descriptions"] = {}
+        return real(*args, **kwargs)
+
+    target = per_query_cache if fresh_cache_per_query else real
+    with patch("src.scraper._fetch_search_page", side_effect=fake_page), \
+         patch("src.scraper._fetch_description", side_effect=fake_description), \
+         patch("src.scraper._fetch_for_query", side_effect=target), \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.add_query") as add_query:
+        offers = fetch_offers(list(_OVERLAP_FIXTURE), "Europe", "r86400")
+    return offers, fetched, [c.kwargs for c in add_query.call_args_list]
+
+
+def test_a_link_surfaced_by_two_queries_is_fetched_once():
+    _, fetched, _ = _run_overlap_fixture()
+
+    assert len(fetched) == len(set(fetched)) == 6
+    assert sorted(fetched) == sorted(
+        f"https://www.linkedin.com/jobs/view/{i}" for i in range(1, 7))
+
+
+def test_returned_offers_equal_the_pre_change_result():
+    new_offers, new_fetched, _ = _run_overlap_fixture()
+    old_offers, old_fetched, _ = _run_overlap_fixture(fresh_cache_per_query=True)
+
+    assert [o.model_dump() for o in new_offers] == [o.model_dump() for o in old_offers]
+    # Same fixture, so the reference really did pay for the duplicates.
+    assert len(old_fetched) == 10 and len(new_fetched) == 6
+    # First occurrence wins, ids keep the gaps the discarded duplicates leave.
+    assert [(o.id, o.link.rsplit("/", 1)[1]) for o in new_offers] == [
+        (0, "1"), (1, "2"), (2, "3"), (4, "4"), (6, "5"), (9, "6")]
+
+
+def test_per_search_records_stay_consistent_with_cross_query_reuse():
+    offers, fetched, records = _run_overlap_fixture()
+
+    assert [(r["role"], r["cards_seen"], r["offers_kept"], r["cross_query_duplicates"])
+            for r in records] == [
+        ("Role A", 3, 3, 0),
+        ("Role B", 4, 4, 2),
+        ("Role C", 3, 3, 2),
+    ]
+    # Every kept offer is either a real fetch or a counted reuse, never both.
+    assert sum(r["offers_kept"] - r["cross_query_duplicates"] for r in records) == len(fetched)
+    assert all(r["stop_reason"] == "empty_page" for r in records)
+    assert len(offers) == len(fetched)
+
+
+def test_reused_duplicate_costs_no_pacing_sleep():
+    sleeps = []
+    responses = {"Role A": [1, 2], "Role B": [1, 2]}
+
+    def fake_page(role, location, time_range, work_mode, start):
+        cards = responses[role] if start == 0 else []
+        return type("R", (), {"text": _search_html([(i, f"Job {i}", "Berlin, Germany") for i in cards])})()
+
+    with patch("src.scraper._fetch_search_page", side_effect=fake_page), \
+         patch("src.scraper._fetch_description", return_value=("d", "ok")), \
+         patch("src.scraper.time.sleep", side_effect=sleeps.append), \
+         patch("src.scraper.random.uniform", return_value=2.0), \
+         patch("src.scraper.telemetry.add_query"):
+        fetch_offers(["Role A", "Role B"], "Europe", "r86400")
+
+    # Role A: 2 description sleeps + 1 page sleep (page 1). Role B: only its page sleep.
+    assert len(sleeps) == 3 + 1
+
+
+def test_duplicate_page_stop_ignores_other_queries_links():
+    # Role B's first page is entirely made of links Role A already fetched. The
+    # per-query duplicate-page stop must not treat that as a repeated page.
+    pages = {"Role A": {0: [1, 2], 2: []}, "Role B": {0: [1, 2], 2: []}}
+
+    def fake_page(role, location, time_range, work_mode, start):
+        cards = pages[role][start]
+        return type("R", (), {"text": _search_html([(i, f"Job {i}", "Berlin, Germany") for i in cards])})()
+
+    with patch("src.scraper._fetch_search_page", side_effect=fake_page), \
+         patch("src.scraper._fetch_description", return_value=("d", "ok")), \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.add_query") as add_query:
+        fetch_offers(["Role A", "Role B"], "Europe", "r86400")
+
+    role_b = add_query.call_args_list[1].kwargs
+    assert role_b["stop_reason"] == "empty_page" and role_b["pages_walked"] == 2
+    assert role_b["offers_kept"] == 2 and role_b["cross_query_duplicates"] == 2

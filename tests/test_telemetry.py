@@ -357,6 +357,22 @@ def test_add_query_rejects_an_unknown_stop_reason_without_raising():
             p.stop()
 
 
+def test_add_query_records_cross_query_duplicates_and_defaults_it_to_zero():
+    session, patches = _enabled_session()
+    try:
+        telemetry.add_query(role="r", location="l", work_mode=None, pages_walked=1, page_cap=8,
+                            cards_seen=10, offers_kept=9, stop_reason="cap_hit",
+                            cross_query_duplicates=4)
+        telemetry.add_query(role="r", location="l", work_mode=None, pages_walked=1, page_cap=8,
+                            cards_seen=10, offers_kept=9, stop_reason="cap_hit")
+        queries = [l["data"] for l in _lines(session.buffer_path) if l["kind"] == "query"]
+        assert [q["cross_query_duplicates"] for q in queries] == [4, 0]
+        assert "cross_query_duplicates" in telemetry._QUERY_COLUMNS
+    finally:
+        for p in patches:
+            p.stop()
+
+
 def test_redact_masks_telegram_bot_token_in_request_errors():
     from src import telemetry
     msg = "Max retries exceeded with url: /bot123456:AAE-x_y/sendMessage (Caused by ...)"
