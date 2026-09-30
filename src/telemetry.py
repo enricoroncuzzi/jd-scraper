@@ -69,7 +69,8 @@ def buffer_dir() -> str:
 
 
 def _redact(text: str) -> str:
-    return re.sub(r"postgres(?:ql)?://\S+", "[redacted]", text)
+    text = re.sub(r"postgres(?:ql)?://\S+", "[redacted]", text)
+    return re.sub(r"/bot\d+:[\w-]+", "/bot[redacted]", text)
 
 
 def _warn(site: str, exc: BaseException) -> None:

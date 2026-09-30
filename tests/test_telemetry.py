@@ -355,3 +355,10 @@ def test_add_query_rejects_an_unknown_stop_reason_without_raising():
     finally:
         for p in patches:
             p.stop()
+
+
+def test_redact_masks_telegram_bot_token_in_request_errors():
+    from src import telemetry
+    msg = "Max retries exceeded with url: /bot123456:AAE-x_y/sendMessage (Caused by ...)"
+    out = telemetry._redact(msg)
+    assert "AAE-x_y" not in out and "/sendMessage" in out

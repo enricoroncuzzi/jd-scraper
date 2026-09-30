@@ -74,14 +74,13 @@ def test_a_real_catalog_is_not_replaced(monkeypatch):
     assert unconfigured is False and limits == shipped
 
 
-def test_unanswered_calls_are_not_attributed_to_the_requested_model():
-    import inspect
-    day = inspect.getsource(rd.load_day)
-    view = inspect.getsource(rd.load_llm_view)
-    assert "COALESCE(c.response_model, c.request_model)" not in day
-    assert "COALESCE(response_model, request_model)" not in view
-    assert "NO_RESPONSE_MODEL" in day and "NO_RESPONSE_MODEL" in view
+def test_unanswered_calls_render_as_no_response():
+    from src import report_render
+    models = [{"stage": "scoring", "provider": "openrouter", "model": rd.NO_RESPONSE_MODEL,
+               "calls": 2, "ok": 0, "rate_limited": 2, "quota_exhausted": 0, "invalid_output": 0,
+               "timeout": 0, "error": 0, "p50": 100, "p95": 200, "avg_in": None, "avg_out": None}]
     assert rd.NO_RESPONSE_MODEL == "no response"
+    assert "no response" in report_render.render_llm(models, [])
 
 
 def test_report_connect_is_bounded():

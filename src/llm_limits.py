@@ -6,9 +6,11 @@ Nothing here may raise: a missing or malformed file means "no limits known",
 and callers fall back to their own safe defaults.
 """
 import json
+import os
 from dataclasses import dataclass
 
-DEFAULT_PATH = "config/llm_limits.json"
+DEFAULT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "llm_limits.json")
 _UNITS = ("tokens", "requests")
 
 

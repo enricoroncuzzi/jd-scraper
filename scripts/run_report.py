@@ -10,7 +10,8 @@ Uses the same code as the morning Telegram report, so the two never disagree.
 import argparse
 import os
 import sys
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -48,17 +49,17 @@ def main() -> int:
         report = report_data.load_day(db_url, settings=settings, day=args.date)
         print(report_render.render_day_detail(report, settings=settings))
     elif args.command == "trend":
-        since = date.today() - timedelta(days=args.days)
+        since = datetime.now(ZoneInfo("Europe/Rome")).date() - timedelta(days=args.days)
         print(report_render.render_trend(
             report_data.load_daily_metrics(db_url, since=since, settings=settings)))
     elif args.command == "compare":
-        since = date.today() - timedelta(days=args.days)
+        since = datetime.now(ZoneInfo("Europe/Rome")).date() - timedelta(days=args.days)
         metrics = report_data.load_daily_metrics(db_url, since=since, settings=settings)
         before, after = report_data.split_before_after(
             metrics, args.commit, report_data.git_is_ancestor)
         print(report_render.render_compare(args.commit, before, after))
     elif args.command == "llm":
-        since = date.today() - timedelta(days=args.days)
+        since = datetime.now(ZoneInfo("Europe/Rome")).date() - timedelta(days=args.days)
         models, verdicts = report_data.load_llm_view(db_url, since=since, stage=args.stage)
         print(report_render.render_llm(models, verdicts))
     return 0

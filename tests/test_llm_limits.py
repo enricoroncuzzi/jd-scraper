@@ -45,3 +45,8 @@ def test_limit_for_prefers_exact_model_over_wildcard():
 def test_shipped_config_parses_and_keeps_the_verifier_budget():
     limit = limit_for("groq", "openai/gpt-oss-20b", load_limits())
     assert limit == Limit("groq", "openai/gpt-oss-20b", "tokens", 200000)
+
+
+def test_default_path_loads_from_any_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert load_limits() != []
