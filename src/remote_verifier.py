@@ -34,6 +34,8 @@ _DEGRADED_FAILURE_RATIO) - a run where 27 of 28 batches died used to report
 itself healthy.
 """
 
+import functools
+import inspect
 import json
 import time
 
@@ -43,11 +45,14 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ValidationError, field_validator
 
+from src import telemetry
+from src.llm_limits import limit_for
 from src.models import JobOffer
 from src.scorer import (
     _EmptyStructuredOutput,
     _is_quota_exceeded,
     _is_retryable_upstream_value_error,
+    _openrouter_quota_exhausted,
     _TokenCounter,
 )
 
@@ -74,7 +79,13 @@ _GROQ_MODEL = "openai/gpt-oss-20b"
 # here rather than in main.py because the proactive failover check below
 # needs it; main.py imports it rather than keeping its own copy so the two
 # never drift apart.
-GROQ_DAILY_TOKEN_LIMIT = 200_000
+# Sourced from config/llm_limits.json; the literal is only the safety fallback
+# when that file is missing or the entry is unknown, so a config problem can
+# never leave the stage without a budget.
+_GROQ_DAILY_TOKEN_LIMIT_FALLBACK = 200_000
+_groq_limit = limit_for("groq", _GROQ_MODEL)
+GROQ_DAILY_TOKEN_LIMIT = (_groq_limit.per_day if _groq_limit and _groq_limit.per_day
+                          else _GROQ_DAILY_TOKEN_LIMIT_FALLBACK)
 # Failing over BEFORE the cap is hit (main.py already tracks the day's
 # running Groq total and passes it in as groq_tokens_used_today) needs a
 # safety margin at least as large as one worst-case batch, so a proactive
@@ -155,11 +166,11 @@ _OPENROUTER_FALLBACK_MODELS = [
     "google/gemma-4-26b-a4b-it:free",
     "thinkingmachines/inkling-small:free",
 ]
-# OpenRouter's $0 tier caps the whole account at 50 requests per UTC day, and
-# scoring - which runs after this stage in every tier - spends that same
-# budget. The failover may use at most this many of them per UTC day
-# (retries included), so a Groq-exhausted day still leaves scoring its half
-# instead of verification starving it. main.py passes the day's running
+# The failover may use at most this many OpenRouter requests per UTC day
+# (retries included). 25 is the verifier's own share of the account's daily
+# request budget. Scoring runs after this stage in every tier and spends
+# that same budget, so once this share is used the remaining batches go
+# unconfirmed and scoring keeps the rest. main.py passes the day's running
 # count in as openrouter_requests_used_today.
 OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP = 25
 
@@ -322,19 +333,36 @@ def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str
     )
 
 
+@functools.lru_cache(maxsize=2)
+def _prompt_version(require_italy_eligibility: bool) -> str:
+    try:
+        rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
+        return telemetry.prompt_version(inspect.getsource(_build_prompt), rule)
+    except Exception:
+        return "unknown"
+
+
 def _verify_batch(client, batch: list[JobOffer], require_italy_eligibility: bool) -> tuple[dict, dict]:
     """Return (verdicts by offer id, token usage). Raises when every retry fails."""
     prompt = _build_prompt(batch, require_italy_eligibility)
     last_error = None
     for attempt in range(_MAX_RETRIES):
         try:
-            response = client.chat.completions.create(
-                model=_GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-            )
-            parsed = _VerdictOutput.model_validate_json(response.choices[0].message.content)
+            with telemetry.llm_call(stage="verification", provider="groq",
+                                    request_model=_GROQ_MODEL, batch_size=len(batch),
+                                    attempt=attempt + 1,
+                                    prompt_version=_prompt_version(require_italy_eligibility),
+                                    is_quota_exhausted=_is_daily_quota_exceeded) as call:
+                response = client.chat.completions.create(
+                    model=_GROQ_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.0,
+                )
+                call.set_usage(response_model=getattr(response, "model", None),
+                               input_tokens=getattr(response.usage, "prompt_tokens", None),
+                               output_tokens=getattr(response.usage, "completion_tokens", None))
+                parsed = _VerdictOutput.model_validate_json(response.choices[0].message.content)
             usage = {
                 "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
                 "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
@@ -420,9 +448,18 @@ def _verify_batch_openrouter(
             raise _OpenRouterShareSpent()
         usage["openrouter_requests"] += 1
         try:
-            result = chain.invoke({"prompt": prompt}, config={"callbacks": [counter]})
-            if result is None:
-                raise _EmptyStructuredOutput()
+            counter.begin_call()
+            with telemetry.llm_call(stage="verification", provider="openrouter",
+                                    request_model=_OPENROUTER_MODEL, batch_size=len(batch),
+                                    attempt=attempt + 1,
+                                    prompt_version=_prompt_version(require_italy_eligibility),
+                                    is_quota_exhausted=_openrouter_quota_exhausted) as call:
+                result = chain.invoke({"prompt": prompt}, config={"callbacks": [counter]})
+                call.set_usage(response_model=counter.last_model,
+                               input_tokens=counter.last_prompt_tokens,
+                               output_tokens=counter.last_completion_tokens)
+                if result is None:
+                    raise _EmptyStructuredOutput()
             verdicts = {
                 item.id: item
                 for item in result.offers
@@ -496,6 +533,7 @@ def verify_offers(
         "openrouter_prompt_tokens": 0, "openrouter_completion_tokens": 0,
         "openrouter_total_tokens": 0, "openrouter_requests": 0,
         "degraded": False, "provider": "none",
+        "failed_batches": 0, "total_batches": 0,
     }
     if not offers:
         return [], usage
@@ -655,4 +693,6 @@ def verify_offers(
     usage["degraded"] = (
         total_batches > 0 and failed_batches / total_batches >= _DEGRADED_FAILURE_RATIO
     )
+    usage["failed_batches"] = failed_batches
+    usage["total_batches"] = total_batches
     return offers, usage

@@ -2,7 +2,7 @@
 
 > A production pipeline that scrapes AI/ML job postings across four EU/UK regions daily, verifies remote eligibility and scores fit with structured LLM output, stores everything in a Postgres corpus, and tailors a CV, cover letter, and recruiter message per posting on demand, without inventing a single claim that isn't on the real CV.
 
-Built solo, test-driven (354 tests), running unattended in production.
+Built solo, test-driven (459 tests), running unattended in production.
 
 ## The interesting part: grounded generation, enforced in code
 
@@ -15,11 +15,12 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 ## What runs daily, zero-touch
 
 1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to a per-tier page cap (`search.max_pages_per_query` in each tier config, resolved by `src/scraper.py`), where each page advances `start` by the number of cards the endpoint actually returned rather than by an assumed page size: tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote, tier 4 United Kingdom full-remote. A tier narrows its results to the countries listed in its config's `search.allowed_countries` (enforced by `src/tier_scope.py`); tiers 1 and 4 list none and do no narrowing.
-2. **Verify** - `src/remote_verifier.py` runs an LLM (Groq primarily, failing over to OpenRouter once Groq's daily verification budget runs out, capped at 25 OpenRouter requests per UTC day so scoring keeps the other half of OpenRouter's 50-request free-tier cap) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
+2. **Verify** - `src/remote_verifier.py` runs an LLM (Groq primarily, failing over to OpenRouter once Groq's daily verification budget runs out, capped at 25 OpenRouter requests per UTC day so scoring keeps the rest of the account's daily request budget) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
 3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a 3-model native fallback array that includes `liquid/lfm-2.5-2.6b:free`), returning structured Pydantic output with a one-line rationale.
 4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included.
 5. **Digest** - a ranked `digest.md` per tier lands in Obsidian, alongside a `rejected.md` audit trail of what verification screened out and why, plus a Telegram summary.
 6. **Tailor** - one click on any offer in the digest runs the CV tailoring engine end to end.
+7. **Morning health report** - when the four-tier cron run finishes, `orchestrator.py` sends a Telegram run-health summary; on the server, `python scripts/run_report.py day` prints the same view (`trend`, `compare`, and `llm` in `scripts/run_report.py`).
 
 `LinkedIn -> scrape/dedup/filter -> remote verifier (Groq) -> LLM scorer (OpenRouter) -> Postgres corpus -> digest.md + Telegram -> [tailor] -> Groq generation + validation gate -> PDF`
 

@@ -6,6 +6,7 @@
 config/config.json
 
 # runtime data
+data/telemetry/
 data/seen_*.txt
 data/unscored_*.jsonl
 data/unscored_*.jsonl.tmp

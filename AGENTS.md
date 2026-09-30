@@ -70,8 +70,9 @@ what the README doesn't (or what has drifted from it).
    prevent. Scoring
    migrated from Cerebras to OpenRouter in
    2026-08 after Cerebras killed its permanent free tier; OpenRouter's $0 tier
-   caps at 50 requests/day account-wide (not per-model, not per-key - the
-   whole account), and its 429 error body has no Cerebras-style string code to
+   caps at one account-wide daily request limit (not per-model, not per-key -
+   the whole account; the live figure is in `config/llm_limits.json`, 1000
+   on 2026-09-29, and it is perishable), and its 429 error body has no Cerebras-style string code to
    tell a same-day cap exhaustion apart from a transient per-minute/upstream
    throttle - see `_is_quota_exceeded` in `src/scorer.py` for the actual
    distinguishing signal (how far away `X-RateLimit-Reset` is). `_invoke_batch`'s
@@ -127,8 +128,8 @@ what the README doesn't (or what has drifted from it).
    where `_is_quota_exceeded` is true sets its own `openrouter_exhausted`
    flag and gets the identical stage-stop treatment, instead of repeating a
    doomed call for every remaining batch. Short of that, the failover may
-   spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (25, half the
-   account cap, retries included; the verifier's own SDK clients run with
+   spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (25, the
+   verifier's own share, retries included; the verifier's own SDK clients run with
    `max_retries=0` so each counted attempt is exactly one HTTP request)
    OpenRouter requests per UTC day - `main.py`
    passes the day's running count from the usage log as
@@ -299,6 +300,25 @@ to fix by adding a secret to the workflow.
 hold phase-by-phase design docs from this project's earlier, pre-Firstmate
 workflow, including an unimplemented "Phase 4 autonomous application agent"
 plan. Treat them as historical context only, not binding scope.
+
+## Run observability
+
+- **Where data lives:** Neon tables `runs`, `run_queries`, and `llm_calls`
+  (`src/storage.py` schema; written by `src/telemetry.py`), with a local
+  write-ahead buffer under `data/telemetry/` (`telemetry.buffer_dir()`).
+- **Never break a run:** telemetry failures must not raise into pipeline code
+  or stall a tier; see `src/telemetry.py`'s module docstring and how
+  `orchestrator.py` wraps the morning report the same way.
+- **Operator reports:** `scripts/run_report.py` subcommands `day`, `trend`,
+  `compare`, and `llm` (usage in that file's docstring) share
+  `src/report_data.py` / `src/report_render.py` with the morning Telegram
+  report so the two never disagree.
+- **LLM caps:** daily provider limits live in `config/llm_limits.json` and are
+  perishable; re-check live against the provider when you change them
+  (`src/llm_limits.py`).
+- **Integration tests:** `tests/test_telemetry_integration.py` needs
+  `JDS_TEST_DATABASE_URL` pointing at a throwaway Neon branch, never
+  production (`tests/integration_db.py`).
 
 ## Maintaining this file
 

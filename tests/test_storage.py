@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch, call
 from src.models import ScoredOffer
 from src.storage import (
-    init_db, save_run, save_offers,
+    init_db, save_offers,
     save_application_channel, is_application_packaged,
     save_application, count_applications_packaged_today,
 )
@@ -19,7 +19,7 @@ def test_init_db_creates_runs_and_offers_tables():
     mock_conn, mock_cur = _mock_conn_cur()
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
         init_db("postgresql://test")
-    assert mock_cur.execute.call_count == 7
+    assert mock_cur.execute.call_count >= 7
     sqls = [call[0][0] for call in mock_cur.execute.call_args_list]
     assert any("CREATE TABLE IF NOT EXISTS runs" in s for s in sqls)
     assert any("CREATE TABLE IF NOT EXISTS offers" in s for s in sqls)
@@ -39,22 +39,32 @@ def test_init_db_adds_the_verdict_columns():
     assert any("ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_reason TEXT" in s for s in sqls)
 
 
-def test_save_run_inserts_row_and_returns_id():
+def test_init_db_evolves_runs_and_adds_telemetry_tables():
     mock_conn, mock_cur = _mock_conn_cur()
-    mock_cur.fetchone.return_value = (42,)
     with patch("src.storage.psycopg2.connect", return_value=mock_conn):
-        run_id = save_run(
-            "postgresql://test",
-            tier=1, offers_fetched=97, offers_new=97,
-            prompt_tokens=83962, completion_tokens=24454, total_tokens=108416,
-        )
-    assert run_id == 42
-    mock_cur.execute.assert_called_once()
-    sql, params = mock_cur.execute.call_args[0]
-    assert "INSERT INTO runs" in sql
-    assert params == (1, 97, 97, 83962, 24454, 108416)
-    mock_conn.commit.assert_called_once()
-    mock_conn.close.assert_called_once()
+        init_db("postgresql://test")
+    sql = "\n".join(call[0][0] for call in mock_cur.execute.call_args_list)
+    for column in (
+        "run_uuid UUID", "daily_run_id TEXT", "attempt INTEGER", "git_commit TEXT",
+        "git_dirty BOOLEAN", "status VARCHAR(10)", "started_at TIMESTAMPTZ",
+        "finished_at TIMESTAMPTZ", "error TEXT", "offers_deferred INTEGER",
+        "offers_packaged INTEGER", "verification_provider TEXT",
+        "verification_tokens INTEGER", "verification_batches_failed INTEGER",
+        "verification_batches_total INTEGER", "verification_degraded BOOLEAN",
+        "verification_confirmed INTEGER", "verification_unconfirmed INTEGER",
+        "verification_rejected INTEGER", "search_rate_limits INTEGER",
+        "description_rate_limits INTEGER", "telemetry_ok BOOLEAN",
+    ):
+        assert f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {column}" in sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS runs_run_uuid_key ON runs (run_uuid)" in sql
+    assert "CREATE TABLE IF NOT EXISTS run_queries" in sql
+    assert "CREATE TABLE IF NOT EXISTS llm_calls" in sql
+    assert "CREATE INDEX IF NOT EXISTS llm_calls_started_at_idx" in sql
+
+
+def test_save_run_is_gone():
+    import src.storage as storage
+    assert not hasattr(storage, "save_run")
 
 
 def test_save_offers_inserts_one_row_per_offer():
@@ -107,8 +117,26 @@ def test_save_offers_persists_the_verdict():
 
 def test_save_offers_does_nothing_on_empty_list():
     with patch("src.storage.psycopg2.connect") as mock_connect:
-        save_offers("postgresql://test", [], run_id=42, tier=1)
+        assert save_offers("postgresql://test", [], run_id=42, tier=1) is True
     mock_connect.assert_not_called()
+
+
+def test_save_offers_returns_false_when_the_write_fails():
+    offers = [
+        ScoredOffer(id=0, title="AI Engineer", company="Acme", location="Remote",
+                    link="https://li.com/0", description="text",
+                    description_status="ok", work_mode="remote", score=9, comment="c", summary="s"),
+    ]
+    with patch("src.storage.psycopg2.connect", side_effect=OSError("neon down")):
+        assert save_offers("postgresql://test", offers, run_id=1, tier=1) is False
+
+
+def test_telemetry_init_db_bounds_the_connection():
+    mock_conn, _ = _mock_conn_cur()
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn) as connect:
+        init_db("postgresql://test", connect_timeout=10)
+    assert connect.call_args.kwargs["connect_timeout"] == 10
+    assert "statement_timeout" in connect.call_args.kwargs["options"]
 
 
 def test_init_db_skips_when_db_url_is_none():
@@ -117,26 +145,9 @@ def test_init_db_skips_when_db_url_is_none():
     mock_connect.assert_not_called()
 
 
-def test_save_run_returns_zero_when_db_url_is_none():
-    with patch("src.storage.psycopg2.connect") as mock_connect:
-        result = save_run(None, tier=1, offers_fetched=10, offers_new=5,
-                          prompt_tokens=100, completion_tokens=50, total_tokens=150)
-    assert result == 0
-    mock_connect.assert_not_called()
-
-
 def test_init_db_swallows_connect_error(capsys):
     with patch("src.storage.psycopg2.connect", side_effect=Exception("connection refused")):
         init_db("postgresql://bad-url")
-    captured = capsys.readouterr()
-    assert "[storage]" in captured.out
-
-
-def test_save_run_swallows_connect_error(capsys):
-    with patch("src.storage.psycopg2.connect", side_effect=Exception("connection refused")):
-        result = save_run("postgresql://bad-url", tier=1, offers_fetched=10, offers_new=5,
-                          prompt_tokens=100, completion_tokens=50, total_tokens=150)
-    assert result == 0
     captured = capsys.readouterr()
     assert "[storage]" in captured.out
 

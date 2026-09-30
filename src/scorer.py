@@ -4,6 +4,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field
+from src import telemetry
 from src.models import JobOffer, ScoredOffer
 
 BATCH_SIZE = 5
@@ -21,7 +22,7 @@ class _ScoringOutput(BaseModel):
     offers: list[_ScoringItem]
 
 
-class _EmptyStructuredOutput(Exception):
+class _EmptyStructuredOutput(telemetry.InvalidLLMOutput):
     """Raised when the model responds without the forced tool call.
 
     langchain_openai's with_structured_output(method="function_calling")
@@ -36,11 +37,26 @@ class _TokenCounter(BaseCallbackHandler):
     def __init__(self):
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.begin_call()
+
+    def begin_call(self) -> None:
+        """Forget the previous call, so a failed call can't report a stale model."""
+        self.last_model = None
+        self.last_prompt_tokens = None
+        self.last_completion_tokens = None
 
     def on_llm_end(self, response, **kwargs):
-        usage = (response.llm_output or {}).get("token_usage", {})
-        self.prompt_tokens += usage.get("prompt_tokens", 0)
-        self.completion_tokens += usage.get("completion_tokens", 0)
+        llm_output = response.llm_output or {}
+        usage = llm_output.get("token_usage", {}) or {}
+        prompt = usage.get("prompt_tokens", 0) or 0
+        completion = usage.get("completion_tokens", 0) or 0
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.last_prompt_tokens = prompt
+        self.last_completion_tokens = completion
+        # OpenRouter's fallback chain can answer with a different model than the
+        # one requested; this is the model that actually did.
+        self.last_model = llm_output.get("model_name")
 
     @property
     def total_tokens(self) -> int:
@@ -91,6 +107,12 @@ _OPENROUTER_FALLBACK_MODELS = [
     "z-ai/glm-5.2:free",
     "liquid/lfm-2.5-2.6b:free",
 ]
+
+_PROMPT_VERSION = telemetry.prompt_version(_SYSTEM, _HUMAN)
+
+
+def _openrouter_quota_exhausted(exc) -> bool:
+    return isinstance(exc, openai.RateLimitError) and _is_quota_exceeded(exc)
 
 # OpenRouter's 429 body has no Cerebras-style string "code" to tell a same-day quota
 # exhaustion apart from a transient per-minute throttle - both come back as
@@ -180,9 +202,17 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
     }
     for attempt in range(max_retries):
         try:
-            result: _ScoringOutput = chain.invoke(payload, config={"callbacks": [counter]})
-            if result is None:
-                raise _EmptyStructuredOutput()
+            counter.begin_call()
+            with telemetry.llm_call(stage="scoring", provider="openrouter",
+                                    request_model=_OPENROUTER_MODEL, batch_size=len(batch),
+                                    attempt=attempt + 1, prompt_version=_PROMPT_VERSION,
+                                    is_quota_exhausted=_openrouter_quota_exhausted) as call:
+                result: _ScoringOutput = chain.invoke(payload, config={"callbacks": [counter]})
+                call.set_usage(response_model=counter.last_model,
+                               input_tokens=counter.last_prompt_tokens,
+                               output_tokens=counter.last_completion_tokens)
+                if result is None:
+                    raise _EmptyStructuredOutput()
             return result.offers
         except _EmptyStructuredOutput:
             if attempt == max_retries - 1:

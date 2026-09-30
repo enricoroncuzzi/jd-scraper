@@ -2,6 +2,7 @@ import random
 import time
 import requests
 from bs4 import BeautifulSoup
+from src import telemetry
 from src.models import JobOffer
 from src.tier_scope import is_in_scope
 
@@ -115,6 +116,8 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
             break
 
         if response.status_code in (429, 503, 504):
+            if response.status_code == 429:
+                telemetry.count("search_rate_limits")
             if attempt == _SEARCH_MAX_RETRIES - 1:
                 raise RuntimeError(f"LinkedIn search returned {response.status_code} after {_SEARCH_MAX_RETRIES} retries")
             wait = _wait_with_jitter(_SEARCH_BASE_WAIT * (2 ** min(attempt, 4)), _SEARCH_WAIT_CAP)
@@ -168,79 +171,93 @@ def _fetch_for_query(
     widest_page = 0
     last_page_was_full = False
     pages_walked = 0
+    stop_reason = "error"
+    cards_seen = 0
 
-    for page in range(max_pages_per_query):
-        pages_walked = page + 1
-        if page:
-            # A page whose cards are all out of scope fetches no descriptions,
-            # so without this the loop can fire every search request back to
-            # back. Same pacing the card loop already applies.
-            time.sleep(random.uniform(1.5, 3.0))
-        try:
-            response = _fetch_search_page(role, location, time_range, work_mode, next_start)
-        except _EndOfResults:
-            if page == 0:
-                raise
-            # LinkedIn answers a start offset past the end of the result set
-            # with HTTP 400 instead of an empty page, and only that status
-            # raises _EndOfResults. Treat it as end-of-results on any page
-            # after the first, rather than discarding every offer this query
-            # already fetched and forcing a full tier restart from page 0.
-            # Every other non-retriable status (403, 404, ...) and retry-ladder
-            # exhaustion raise a plain RuntimeError instead and keep
-            # propagating, so a block or a real outage still reaches the tier
-            # retry rather than silently truncating the query.
-            print(f"[scraper] Hard error on page {page} ({role}/{location}/{work_mode}) "
-                  f"- ending pagination here, keeping {len(offers)} offers already fetched.")
-            break
-        cards = _parse_cards(response.text)
-        if not cards:
-            break
+    try:
+        for page in range(max_pages_per_query):
+            pages_walked = page + 1
+            if page:
+                # A page whose cards are all out of scope fetches no descriptions,
+                # so without this the loop can fire every search request back to
+                # back. Same pacing the card loop already applies.
+                time.sleep(random.uniform(1.5, 3.0))
+            try:
+                response = _fetch_search_page(role, location, time_range, work_mode, next_start)
+            except _EndOfResults:
+                if page == 0:
+                    raise
+                # LinkedIn answers a start offset past the end of the result set
+                # with HTTP 400 instead of an empty page, and only that status
+                # raises _EndOfResults. Treat it as end-of-results on any page
+                # after the first, rather than discarding every offer this query
+                # already fetched and forcing a full tier restart from page 0.
+                # Every other non-retriable status (403, 404, ...) and retry-ladder
+                # exhaustion raise a plain RuntimeError instead and keep
+                # propagating, so a block or a real outage still reaches the tier
+                # retry rather than silently truncating the query.
+                print(f"[scraper] Hard error on page {page} ({role}/{location}/{work_mode}) "
+                      f"- ending pagination here, keeping {len(offers)} offers already fetched.")
+                stop_reason = "end_of_results"
+                break
+            cards = _parse_cards(response.text)
+            cards_seen += len(cards)
+            if not cards:
+                stop_reason = "empty_page"
+                break
 
-        new_cards = [c for c in cards if c["link"] not in seen_links]
-        if not new_cards:
-            # LinkedIn repeats the last page instead of returning an empty one
-            # once a query is exhausted, so a page with nothing new ends it.
-            break
-        # "Full" is measured against the widest page this query has actually
-        # seen, i.e. the endpoint's own page size as observed right now, so
-        # the cap-hit report below keeps working when that size moves again.
-        last_page_was_full = len(cards) >= widest_page
-        widest_page = max(widest_page, len(cards))
-        next_start += len(cards)
+            new_cards = [c for c in cards if c["link"] not in seen_links]
+            if not new_cards:
+                # LinkedIn repeats the last page instead of returning an empty one
+                # once a query is exhausted, so a page with nothing new ends it.
+                stop_reason = "duplicate_page"
+                break
+            # "Full" is measured against the widest page this query has actually
+            # seen, i.e. the endpoint's own page size as observed right now, so
+            # the cap-hit report below keeps working when that size moves again.
+            last_page_was_full = len(cards) >= widest_page
+            widest_page = max(widest_page, len(cards))
+            next_start += len(cards)
 
-        for card in new_cards:
-            seen_links.add(card["link"])
-            # Scope is decided BEFORE the description fetch: that fetch is an
-            # extra request plus a multi-second sleep, and a discarded card
-            # must never cost one.
-            if not is_in_scope(card["location"], allowed_countries):
-                continue
-            description, description_status = _fetch_description(
-                card["link"], card["title"], card["company"]
-            )
-            time.sleep(random.uniform(1.5, 3.0))
-            offers.append(JobOffer(
-                id=next_id,
-                title=card["title"],
-                company=card["company"],
-                location=card["location"],
-                link=card["link"],
-                description=description,
-                description_status=description_status,
-                work_mode=work_mode or "",
-            ))
-            next_id += 1
-    else:
-        # An under-full final page exhausted the result set on its own, so only
-        # a full last page leaves it ambiguous whether the cap truncated this
-        # query. The cap stays where it is until production shows real page
-        # depth, and that observation needs this line to be free of false
-        # positives - hence "full" meaning "as wide as this query's other
-        # pages", never "== some hardcoded page size".
-        if last_page_was_full:
-            print(f"[scraper] Hit the page cap ({max_pages_per_query} pages) for "
-                  f"{role}/{location}/{work_mode} - there may be more results beyond this.")
+            for card in new_cards:
+                seen_links.add(card["link"])
+                # Scope is decided BEFORE the description fetch: that fetch is an
+                # extra request plus a multi-second sleep, and a discarded card
+                # must never cost one.
+                if not is_in_scope(card["location"], allowed_countries):
+                    continue
+                description, description_status = _fetch_description(
+                    card["link"], card["title"], card["company"]
+                )
+                time.sleep(random.uniform(1.5, 3.0))
+                offers.append(JobOffer(
+                    id=next_id,
+                    title=card["title"],
+                    company=card["company"],
+                    location=card["location"],
+                    link=card["link"],
+                    description=description,
+                    description_status=description_status,
+                    work_mode=work_mode or "",
+                ))
+                next_id += 1
+        else:
+            stop_reason = "cap_hit" if last_page_was_full else "exhausted_underfull"
+            # An under-full final page exhausted the result set on its own, so only
+            # a full last page leaves it ambiguous whether the cap truncated this
+            # query. The cap stays where it is until production shows real page
+            # depth, and that observation needs this line to be free of false
+            # positives - hence "full" meaning "as wide as this query's other
+            # pages", never "== some hardcoded page size".
+            if last_page_was_full:
+                print(f"[scraper] Hit the page cap ({max_pages_per_query} pages) for "
+                      f"{role}/{location}/{work_mode} - there may be more results beyond this.")
+    finally:
+        telemetry.add_query(
+            role=role, location=location, work_mode=work_mode,
+            pages_walked=pages_walked, page_cap=max_pages_per_query,
+            cards_seen=cards_seen, offers_kept=len(offers), stop_reason=stop_reason,
+        )
 
     # One line per query, printed regardless of how pagination stopped, so
     # "did this query hit its cap" is answerable from the cron log alone
@@ -289,6 +306,8 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             return fallback, "partial"
 
         if response.status_code in (429, 503, 504):
+            if response.status_code == 429:
+                telemetry.count("description_rate_limits")
             if attempt == _DESC_MAX_RETRIES - 1:
                 return "", "failed"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)

@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+from src import scraper
 from src.scraper import fetch_offers
 
 SEARCH_HTML = """
@@ -806,10 +807,9 @@ def test_page_cap_hit_message_reports_the_custom_cap(monkeypatch, capsys):
     monkeypatch.setattr("src.scraper.requests.get", mock_get)
     monkeypatch.setattr("src.scraper.time.sleep", lambda s: None)
 
-    from src.scraper import _MAX_PAGES_PER_QUERY
-    fetch_offers(["AI Engineer"], "Europe", "r86400", max_pages_per_query=_MAX_PAGES_PER_QUERY)
+    fetch_offers(["AI Engineer"], "Europe", "r86400", max_pages_per_query=3)
 
-    assert f"Hit the page cap ({_MAX_PAGES_PER_QUERY} pages)" in capsys.readouterr().out
+    assert "Hit the page cap (3 pages)" in capsys.readouterr().out
 
 
 def test_per_query_page_count_is_logged(monkeypatch, capsys):
@@ -825,3 +825,84 @@ def test_per_query_page_count_is_logged(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "AI Engineer/Europe/None: 2/8 pages, 1 offers kept." in out
+
+
+def _page(n, start=0):
+    """Search HTML holding `n` distinct cards whose job ids begin at `start`."""
+    return _search_html([(start + i, "AI Engineer", "Berlin, Germany") for i in range(n)])
+
+
+def _run_query(pages, cap=3):
+    responses = iter(pages)
+
+    def fake_page(role, location, time_range, work_mode, start):
+        item = next(responses)
+        if isinstance(item, Exception):
+            raise item
+        return type("R", (), {"text": item})()
+
+    with patch("src.scraper._fetch_search_page", side_effect=fake_page), \
+         patch("src.scraper._fetch_description", return_value=("desc", "ok")), \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.add_query") as add_query:
+        try:
+            scraper._fetch_for_query("AI Engineer", "Italy", "r86400", "remote",
+                                     max_pages_per_query=cap)
+        except Exception:
+            pass
+    return add_query.call_args.kwargs
+
+
+def test_stop_reason_cap_hit_when_the_last_allowed_page_is_full():
+    rec = _run_query([_page(10, 0), _page(10, 10), _page(10, 20)], cap=3)
+    assert rec["stop_reason"] == "cap_hit" and rec["pages_walked"] == 3 and rec["page_cap"] == 3
+
+
+def test_stop_reason_exhausted_underfull_when_the_cap_page_is_short():
+    rec = _run_query([_page(10, 0), _page(10, 10), _page(4, 20)], cap=3)
+    assert rec["stop_reason"] == "exhausted_underfull"
+
+
+def test_results_ending_exactly_at_the_cap_are_not_a_cap_hit():
+    rec = _run_query([_page(10, 0), _page(10, 10), ""], cap=3)
+    assert rec["stop_reason"] == "empty_page" and rec["cards_seen"] == 20
+
+
+def test_stop_reason_duplicate_page():
+    rec = _run_query([_page(10, 0), _page(10, 0)], cap=5)
+    assert rec["stop_reason"] == "duplicate_page"
+
+
+def test_stop_reason_end_of_results_after_page_zero():
+    rec = _run_query([_page(10, 0), scraper._EndOfResults("400")], cap=5)
+    assert rec["stop_reason"] == "end_of_results" and rec["offers_kept"] == 10
+
+
+def test_stop_reason_error_is_recorded_and_the_error_still_propagates():
+    with patch("src.scraper._fetch_search_page", side_effect=RuntimeError("403")), \
+         patch("src.scraper.telemetry.add_query") as add_query:
+        with pytest.raises(RuntimeError):
+            scraper._fetch_for_query("AI Engineer", "Italy", "r86400", "remote", max_pages_per_query=3)
+    assert add_query.call_args.kwargs["stop_reason"] == "error"
+
+
+def test_search_429s_are_counted_but_503s_are_not():
+    ok = type("R", (), {"status_code": 200, "text": ""})()
+    limited = type("R", (), {"status_code": 429, "text": ""})()
+    unavailable = type("R", (), {"status_code": 503, "text": ""})()
+    with patch("src.scraper.requests.get", side_effect=[limited, unavailable, ok]), \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.count") as count:
+        scraper._fetch_search_page("r", "l", "t", None, 0)
+    count.assert_called_once_with("search_rate_limits")
+
+
+def test_description_429s_are_counted_but_503s_are_not():
+    ok = type("R", (), {"status_code": 200, "text": "<p></p>"})()
+    limited = type("R", (), {"status_code": 429, "text": ""})()
+    unavailable = type("R", (), {"status_code": 503, "text": ""})()
+    with patch("src.scraper.requests.get", side_effect=[limited, unavailable, ok]), \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.count") as count:
+        scraper._fetch_description("https://example.com/j", "T", "C")
+    count.assert_called_once_with("description_rate_limits")

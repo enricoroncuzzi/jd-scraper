@@ -23,7 +23,7 @@ def send_summary(
     send_message(text, token, chat_id)
 
 
-def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "Markdown") -> None:
+def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "Markdown") -> bool:
     url = _API_URL.format(token=token)
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
@@ -35,6 +35,8 @@ def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "
     )
     if not response.ok:
         print(f"[telegram] Send failed: {response.status_code} {response.text}")
+        return False
+    return True
 
 
 def _offer_block(o: ScoredOffer) -> list[str]:
