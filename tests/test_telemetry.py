@@ -182,11 +182,15 @@ def test_drain_stops_after_the_first_connectivity_failure(tmp_path):
 
 def test_observability_connects_are_bounded():
     conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
     with patch("src.telemetry.psycopg2.connect", return_value=conn) as connect:
         telemetry.flush_records([], "postgresql://x")
     assert connect.call_args.kwargs["connect_timeout"] == 10
-    assert "statement_timeout" in connect.call_args.kwargs["options"]
-    assert "lock_timeout" in connect.call_args.kwargs["options"]
+    assert "options" not in connect.call_args.kwargs
+    assert [call.args[0] for call in cur.execute.call_args_list[:2]] == [
+        "SET LOCAL statement_timeout = '15000ms'",
+        "SET LOCAL lock_timeout = '5000ms'",
+    ]
 
 
 def test_end_session_degrades_when_offers_were_not_saved():

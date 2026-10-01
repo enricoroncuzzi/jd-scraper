@@ -86,6 +86,11 @@ def test_unanswered_calls_render_as_no_response():
 def test_report_connect_is_bounded():
     from unittest.mock import patch
     with patch("src.report_data.psycopg2.connect") as connect:
-        rd._connect("postgresql://x")
+        conn = rd._connect("postgresql://x")
     assert connect.call_args.kwargs["connect_timeout"] == 10
-    assert "statement_timeout" in connect.call_args.kwargs["options"]
+    assert "options" not in connect.call_args.kwargs
+    cur = conn.cursor.return_value.__enter__.return_value
+    assert [call.args[0] for call in cur.execute.call_args_list] == [
+        "SET LOCAL statement_timeout = '15000ms'",
+        "SET LOCAL lock_timeout = '5000ms'",
+    ]

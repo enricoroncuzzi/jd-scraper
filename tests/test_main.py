@@ -92,7 +92,8 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_filter = MagicMock(return_value=new_offers)
     mock_score = MagicMock(return_value=(scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}))
     mock_session = MagicMock()
-    mock_session.ensure_run_id.return_value = 42
+    mock_session.run_id = 42
+    mock_session.open_record = {"run_uuid": "run-1"}
     mock_telemetry = MagicMock()
     mock_telemetry.current.return_value = mock_session
     mock_save_offers = MagicMock()
@@ -136,7 +137,10 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_telemetry.set_fields.assert_any_call(
         prompt_tokens=0, completion_tokens=0, total_tokens=0, offers_deferred=0,
     )
-    mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
+    mock_save_offers.assert_called_once_with(
+        "postgresql://test", scored_offers, 42, 1,
+        run_data=mock_session.open_record,
+    )
     mock_write_notes.assert_called_once_with(scored_offers, "/output", 8, 1)
     mock_write_rejected.assert_called_once()
     mock_write_digest.assert_called_once_with(scored_offers, "/output", 8, tier=1,
@@ -176,13 +180,58 @@ def test_scored_offers_are_saved_when_the_telemetry_buffer_cannot_be_written(mon
          patch("src.telemetry.flush_records"), \
          patch("src.telemetry._lookup_run_id", return_value=42), \
          patch("src.telemetry.TierSession._append", side_effect=OSError("disk full")):
-        telemetry.start_session(tier=1, daily_run_id="d", attempt=1,
-                                db_url="postgresql://test", buffer_directory=str(tmp_path))
+        session = telemetry.start_session(tier=1, daily_run_id="d", attempt=1,
+                                          db_url="postgresql://test", buffer_directory=str(tmp_path))
         try:
             main.handler({}, None)
         finally:
             telemetry.end_session()
-    mock_save_offers.assert_called_once_with("postgresql://test", scored_offers, 42, 1)
+    mock_save_offers.assert_called_once_with(
+        "postgresql://test", scored_offers, 42, 1,
+        run_data=session.open_record,
+    )
+
+
+def test_scored_offers_are_saved_when_telemetry_cannot_create_its_run_row(monkeypatch):
+    raw_offers = [JobOffer(id=0, title="AI Eng", company="Acme", link="https://li.com/0")]
+    scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
+                                  link="https://li.com/0", score=9,
+                                  comment="great", summary="LLM role")]
+    config = _mock_config()
+    session = MagicMock()
+    session.run_id = None
+    session.open_record = {
+        "run_uuid": "ad6e15b9-b4c8-4784-8937-0be274350bf3",
+        "tier": 1,
+        "status": "running",
+    }
+    session.ensure_run_id.side_effect = AssertionError(
+        "offer persistence must not retry the telemetry connection",
+    )
+    mock_telemetry = MagicMock()
+    mock_telemetry.current.return_value = session
+    mock_save_offers = MagicMock(return_value=True)
+    monkeypatch.setattr("main.load_config", MagicMock(return_value=config))
+    monkeypatch.setattr("main.fetch_offers", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.filter_by_language", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.filter_new", MagicMock(return_value=raw_offers))
+    monkeypatch.setattr("main.score_offers", MagicMock(return_value=(
+        scored_offers, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})))
+    monkeypatch.setattr("main.telemetry", mock_telemetry)
+    monkeypatch.setattr("main.save_offers", mock_save_offers)
+    monkeypatch.setattr("main.write_notes", MagicMock())
+    monkeypatch.setattr("main.write_digest", MagicMock())
+    monkeypatch.setattr("main.write_rejected", MagicMock())
+    monkeypatch.setattr("main.send_summary", MagicMock())
+    monkeypatch.setattr("main.mark_seen", MagicMock())
+
+    import main
+    main.handler({}, None)
+
+    mock_save_offers.assert_called_once_with(
+        "postgresql://test", scored_offers, None, 1,
+        run_data=session.open_record,
+    )
 
 
 def test_a_failed_offer_save_marks_the_session(monkeypatch):
@@ -192,7 +241,8 @@ def test_a_failed_offer_save_marks_the_session(monkeypatch):
                                   comment="great", summary="LLM role")]
     config = _mock_config()
     session = MagicMock()
-    session.ensure_run_id.return_value = 42
+    session.run_id = 42
+    session.open_record = {"run_uuid": "run-1"}
     session.storage_failed = False
     telemetry = MagicMock()
     telemetry.current.return_value = session
