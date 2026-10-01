@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 import psycopg2
 import psycopg2.extras
 
+from src.database import apply_transaction_timeouts
 from src.llm_limits import Limit, load_limits
 
 TIER_NAMES = {1: "Italy", 2: "Switzerland", 3: "EU", 4: "UK"}
@@ -237,11 +238,8 @@ def catalog_for_report() -> tuple[list[Limit], bool]:
 
 
 def _connect(db_url: str):
-    return psycopg2.connect(
-        db_url,
-        connect_timeout=10,
-        options="-c statement_timeout=15000 -c lock_timeout=5000",
-    )
+    conn = psycopg2.connect(db_url, connect_timeout=10)
+    return apply_transaction_timeouts(conn)
 
 
 def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: str | None = None,

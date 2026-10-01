@@ -1,11 +1,34 @@
 import psycopg2
 from tests.integration_db import requires_test_db, test_db_url
-from src.storage import init_db
+from src.models import ScoredOffer
+from src.storage import init_db, save_offers
+from src import report_data, telemetry
 
 
 def _columns(cur, table):
     cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table,))
     return {row[0] for row in cur.fetchall()}
+
+
+@requires_test_db
+def test_bounded_connections_work_through_the_pooled_endpoint(capsys):
+    url = test_db_url()
+    assert "-pooler." in url
+
+    init_db(url, connect_timeout=10)
+    assert "[storage] init_db failed" not in capsys.readouterr().out
+
+    for connect in (telemetry._connect, report_data._connect):
+        conn = connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SHOW statement_timeout")
+                assert cur.fetchone()[0] == "15s"
+                cur.execute("SHOW lock_timeout")
+                assert cur.fetchone()[0] == "5s"
+        finally:
+            conn.rollback()
+            conn.close()
 
 
 @requires_test_db
@@ -29,7 +52,6 @@ def test_init_db_evolves_a_production_shaped_database_and_is_rerunnable():
 import json
 import os
 import uuid
-import src.telemetry as telemetry
 
 
 def _cleanup(url, run_uuid):
@@ -38,10 +60,70 @@ def _cleanup(url, run_uuid):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM run_queries WHERE run_uuid = %s", (run_uuid,))
             cur.execute("DELETE FROM llm_calls WHERE run_uuid = %s", (run_uuid,))
+            cur.execute("DELETE FROM offers WHERE run_id IN "
+                        "(SELECT id FROM runs WHERE run_uuid = %s)", (run_uuid,))
             cur.execute("DELETE FROM runs WHERE run_uuid = %s", (run_uuid,))
         conn.commit()
     finally:
         conn.close()
+
+
+@requires_test_db
+def test_offer_storage_survives_a_telemetry_connection_failure(tmp_path, monkeypatch):
+    from unittest.mock import patch
+
+    url = test_db_url()
+    monkeypatch.setenv("JDS_TELEMETRY_DIR", str(tmp_path))
+    telemetry._reset_for_tests()
+    with patch("src.telemetry.flush_records",
+               side_effect=psycopg2.OperationalError("telemetry connection failed")):
+        session = telemetry.start_session(
+            tier=9,
+            daily_run_id="it-" + uuid.uuid4().hex,
+            attempt=1,
+            db_url=url,
+        )
+    assert session.run_id is None
+    offer = ScoredOffer(
+        id=0,
+        title="AI Engineer",
+        company="Acme",
+        location="Remote",
+        link=f"https://example.test/{uuid.uuid4()}",
+        description="description",
+        description_status="ok",
+        work_mode="remote",
+        score=9,
+        comment="strong match",
+        summary="summary",
+    )
+
+    try:
+        assert save_offers(
+            url,
+            [offer],
+            run_id=None,
+            tier=9,
+            run_data=session.open_record,
+        )
+        telemetry.end_session(status="ok")
+
+        conn = psycopg2.connect(url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT r.status, COUNT(o.id) FROM runs r "
+                    "LEFT JOIN offers o ON o.run_id = r.id "
+                    "WHERE r.run_uuid = %s GROUP BY r.status",
+                    (session.run_uuid,),
+                )
+                assert cur.fetchall() == [("ok", 1)]
+        finally:
+            conn.close()
+        assert not os.path.exists(session.buffer_path)
+    finally:
+        telemetry._reset_for_tests()
+        _cleanup(url, session.run_uuid)
 
 
 @requires_test_db
@@ -133,9 +215,6 @@ def test_draining_a_hand_written_run_open_twice_inserts_one_running_row(tmp_path
 
 
 from datetime import date, timedelta
-from src import report_data
-
-
 @requires_test_db
 def test_load_day_and_metrics_read_back_a_recorded_run(tmp_path, monkeypatch):
     url = test_db_url()

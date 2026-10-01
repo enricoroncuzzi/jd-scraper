@@ -29,6 +29,7 @@ import psycopg2
 from pydantic import ValidationError
 
 from src import storage
+from src.database import apply_transaction_timeouts
 
 STOP_REASONS = ("exhausted_underfull", "empty_page", "duplicate_page",
                 "end_of_results", "cap_hit", "error")
@@ -126,11 +127,8 @@ def _insert(cur, table: str, columns: tuple, data: dict, conflict: str) -> None:
 
 def _connect(db_url: str):
     """Bound an observability connection so a dead database cannot stall a run."""
-    return psycopg2.connect(
-        db_url,
-        connect_timeout=10,
-        options="-c statement_timeout=15000 -c lock_timeout=5000",
-    )
+    conn = psycopg2.connect(db_url, connect_timeout=10)
+    return apply_transaction_timeouts(conn)
 
 
 def flush_records(records: list[dict], db_url: str) -> None:
@@ -262,6 +260,12 @@ class TierSession:
         self.fields: dict = {}
         self.counters = {"search_rate_limits": 0, "description_rate_limits": 0}
         self.telemetry_ok = True
+        self.open_record = {
+            "run_uuid": self.run_uuid, "run_at": self.started_at, "tier": self.tier,
+            "daily_run_id": self.daily_run_id, "attempt": self.attempt,
+            "git_commit": self.git.commit, "git_dirty": self.git.dirty,
+            "status": "running", "started_at": self.started_at,
+        }
 
     def _append(self, kind: str, data: dict) -> None:
         os.makedirs(self.buffer_dir, exist_ok=True)
@@ -273,12 +277,7 @@ class TierSession:
             self.run_id = _safe("run id lookup", _lookup_run_id, self.db_url, self.run_uuid)
 
     def open(self) -> None:
-        data = {
-            "run_uuid": self.run_uuid, "run_at": self.started_at, "tier": self.tier,
-            "daily_run_id": self.daily_run_id, "attempt": self.attempt,
-            "git_commit": self.git.commit, "git_dirty": self.git.dirty,
-            "status": "running", "started_at": self.started_at,
-        }
+        data = dict(self.open_record)
         try:
             self._append("run_open", data)
         except Exception as exc:

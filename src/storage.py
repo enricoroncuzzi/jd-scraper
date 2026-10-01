@@ -9,6 +9,7 @@ except ImportError:
     psycopg2.connect = None
 
 from src.models import ScoredOffer
+from src.database import apply_transaction_timeouts
 
 
 def _link_hash(link: str) -> str:
@@ -22,8 +23,9 @@ def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
         kwargs = {}
         if connect_timeout is not None:
             kwargs["connect_timeout"] = connect_timeout
-            kwargs["options"] = "-c statement_timeout=15000 -c lock_timeout=5000"
         conn = psycopg2.connect(db_url, **kwargs)
+        if connect_timeout is not None:
+            apply_transaction_timeouts(conn)
         try:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -142,7 +144,42 @@ def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
         print(f"[storage] init_db failed: {e}")
 
 
-def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) -> bool:
+_OFFER_RUN_COLUMNS = (
+    "run_uuid", "run_at", "tier", "daily_run_id", "attempt",
+    "git_commit", "git_dirty", "status", "started_at",
+)
+
+
+def _ensure_offer_run(cur, run_id: int | None, tier: int, run_data: dict | None, now) -> int:
+    if run_id is not None:
+        return run_id
+
+    data = {
+        "run_at": now,
+        "tier": tier,
+        "status": "running",
+        "started_at": now,
+        **(run_data or {}),
+    }
+    data["tier"] = tier
+    placeholders = ", ".join(["%s"] * len(_OFFER_RUN_COLUMNS))
+    cur.execute(
+        f"INSERT INTO runs ({', '.join(_OFFER_RUN_COLUMNS)}) VALUES ({placeholders}) "
+        "ON CONFLICT (run_uuid) DO UPDATE SET run_uuid = EXCLUDED.run_uuid "
+        "RETURNING id",
+        [data.get(column) for column in _OFFER_RUN_COLUMNS],
+    )
+    return cur.fetchone()[0]
+
+
+def save_offers(
+    db_url: str,
+    offers: list[ScoredOffer],
+    run_id: int | None,
+    tier: int,
+    *,
+    run_data: dict | None = None,
+) -> bool:
     """Persist scored offers. False means the rows were not written.
 
     Callers that ignore the return keep the old behaviour: a storage error is
@@ -156,6 +193,7 @@ def save_offers(db_url: str, offers: list[ScoredOffer], run_id: int, tier: int) 
         conn = psycopg2.connect(db_url)
         try:
             with conn.cursor() as cur:
+                run_id = _ensure_offer_run(cur, run_id, tier, run_data, now)
                 for offer in offers:
                     cur.execute(
                         """

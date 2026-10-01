@@ -131,12 +131,50 @@ def test_save_offers_returns_false_when_the_write_fails():
         assert save_offers("postgresql://test", offers, run_id=1, tier=1) is False
 
 
+def test_save_offers_creates_its_own_run_when_telemetry_has_no_run_id():
+    offers = [
+        ScoredOffer(id=0, title="AI Engineer", company="Acme", location="Remote",
+                    link="https://li.com/0", description="text",
+                    description_status="ok", work_mode="remote", score=9, comment="c", summary="s"),
+    ]
+    run_data = {
+        "run_uuid": "ad6e15b9-b4c8-4784-8937-0be274350bf3",
+        "run_at": "2026-10-01T08:00:00+00:00",
+        "daily_run_id": "day-1",
+        "attempt": 1,
+        "git_commit": "a" * 40,
+        "git_dirty": False,
+        "status": "running",
+        "started_at": "2026-10-01T08:00:00+00:00",
+    }
+    mock_conn, mock_cur = _mock_conn_cur()
+    mock_cur.fetchone.return_value = (73,)
+
+    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
+        assert save_offers(
+            "postgresql://test", offers, run_id=None, tier=1, run_data=run_data,
+        ) is True
+
+    run_sql, run_params = mock_cur.execute.call_args_list[0].args
+    assert "INSERT INTO runs" in run_sql and "RETURNING id" in run_sql
+    assert run_data["run_uuid"] in run_params
+    offer_sql, offer_params = mock_cur.execute.call_args_list[1].args
+    assert "INSERT INTO offers" in offer_sql
+    assert offer_params[0] == 73
+    mock_conn.commit.assert_called_once()
+
+
 def test_telemetry_init_db_bounds_the_connection():
-    mock_conn, _ = _mock_conn_cur()
+    mock_conn, mock_cur = _mock_conn_cur()
     with patch("src.storage.psycopg2.connect", return_value=mock_conn) as connect:
         init_db("postgresql://test", connect_timeout=10)
     assert connect.call_args.kwargs["connect_timeout"] == 10
-    assert "statement_timeout" in connect.call_args.kwargs["options"]
+    assert "options" not in connect.call_args.kwargs
+    sqls = [call.args[0] for call in mock_cur.execute.call_args_list]
+    assert sqls[:2] == [
+        "SET LOCAL statement_timeout = '15000ms'",
+        "SET LOCAL lock_timeout = '5000ms'",
+    ]
 
 
 def test_init_db_skips_when_db_url_is_none():
