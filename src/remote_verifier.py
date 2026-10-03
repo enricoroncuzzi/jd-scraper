@@ -328,6 +328,15 @@ def _is_daily_quota_exceeded(e: Exception) -> bool:
     return "tokens per day" in (body + " " + message).lower()
 
 
+def _is_malformed_output_error(e: Exception) -> bool:
+    """Recognize Groq's two observed malformed structured-output failures."""
+    if isinstance(e, (ValidationError, json.JSONDecodeError)):
+        return True
+    body = str(getattr(e, "body", "") or "")
+    message = str(getattr(e, "message", "") or "")
+    return "json_validate_failed" in (body + " " + message + " " + str(e)).lower()
+
+
 def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str:
     rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
     offers_text = "\n\n".join(
@@ -395,13 +404,6 @@ def _verify_batch(
                 if item.verdict in ("confirmed", "rejected", "unconfirmed")
             }
             return verdicts, usage
-        except (ValidationError, json.JSONDecodeError) as e:
-            # A malformed body is worth one more try at temperature 0, but it is
-            # not an outage - do not spend the full ladder on it.
-            last_error = e
-            if attempt >= 1:
-                raise
-            time.sleep(2)
         except groq.RateLimitError as e:
             if _is_daily_quota_exceeded(e):
                 # Genuinely exhausted for the day - resets at the next UTC day
@@ -418,6 +420,14 @@ def _verify_batch(
             time.sleep(wait)
         except Exception as e:
             last_error = e
+            if _is_malformed_output_error(e):
+                # A malformed body is worth exactly one more try at
+                # temperature 0, but it is not an outage and must not spend
+                # the full four-attempt transient-error ladder.
+                if attempt >= 1:
+                    raise
+                time.sleep(2)
+                continue
             if attempt == _MAX_RETRIES - 1:
                 raise
             wait = min(5 * (2 ** attempt), 60)
@@ -645,10 +655,15 @@ def verify_offers(
                     verdicts = {}
                     failed_batches += 1
             except Exception as e:
-                print(f"[verifier] Batch {batch_num}/{total_batches} failed "
-                      f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
-                verdicts = {}
-                failed_batches += 1
+                if _is_malformed_output_error(e):
+                    print(f"[verifier] Batch {batch_num}/{total_batches} returned malformed "
+                          f"structured output after one retry - failing over to OpenRouter.")
+                    verdicts = None
+                else:
+                    print(f"[verifier] Batch {batch_num}/{total_batches} failed "
+                          f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
+                    verdicts = {}
+                    failed_batches += 1
             finally:
                 for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                     usage[key] += batch_usage[key]

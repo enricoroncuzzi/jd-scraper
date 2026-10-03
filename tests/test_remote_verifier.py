@@ -336,6 +336,15 @@ def _rate_limit_error(message: str) -> groq.RateLimitError:
     )
 
 
+def _json_validate_error() -> groq.BadRequestError:
+    message = "Failed to validate JSON. Please adjust your prompt. json_validate_failed"
+    return groq.BadRequestError(
+        message,
+        response=MagicMock(status_code=400, headers={}),
+        body={"error": {"message": message, "code": "json_validate_failed"}},
+    )
+
+
 _TPD_MESSAGE = (
     "Rate limit reached for model `openai/gpt-oss-20b` ... on tokens per day "
     "(TPD): Limit 200000, Used 199999, Requested 5000. Please try again in 4h32m."
@@ -414,6 +423,47 @@ def test_failed_malformed_batch_still_counts_every_token_bearing_response(monkey
     _, usage = verify_offers([_offer(1)], True, "key")
 
     assert usage["total_tokens"] == 30
+
+
+def test_json_validate_failed_retries_groq_only_once_then_succeeds(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [
+        _json_validate_error(),
+        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]},
+    ])
+
+    verified, usage = verify_offers([_offer(1)], True, "key")
+
+    assert calls["count"] == 2
+    assert verified[0].remote_verdict == "confirmed"
+    assert usage["degraded"] is False
+
+
+def test_structured_validation_failure_falls_back_to_openrouter_after_two_groq_calls(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [{"offers": [{}]}])
+    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "rejected")])])
+
+    verified, usage = verify_offers(
+        [_offer(1)], True, "groq-key", llm_api_key="or-key",
+    )
+
+    assert calls["count"] == 2
+    assert or_chain.invoke.call_count == 1
+    assert verified[0].remote_verdict == "rejected"
+    assert usage["degraded"] is False
+
+
+def test_json_validate_failed_falls_back_to_openrouter_after_two_groq_calls(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [_json_validate_error()])
+    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
+
+    verified, _ = verify_offers([_offer(1)], True, "groq-key", llm_api_key="or-key")
+
+    assert calls["count"] == 2
+    assert or_chain.invoke.call_count == 1
+    assert verified[0].remote_verdict == "confirmed"
 
 
 # --- OpenRouter failover -----------------------------------------------------

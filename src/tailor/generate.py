@@ -4,7 +4,7 @@ import json
 
 from pydantic import BaseModel
 from src import telemetry
-from src.remote_verifier import _is_daily_quota_exceeded
+from src.remote_verifier import _is_daily_quota_exceeded, _is_malformed_output_error
 from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import CanonicalCV
 
@@ -127,17 +127,23 @@ def generate(
         "Respond with ONLY a single JSON object matching this schema (no prose, no "
         f"markdown fences):\n{Selection.model_json_schema()}"
     )
-    with telemetry.llm_call(stage="tailoring", provider="groq", request_model=model,
-                            batch_size=1, attempt=1, prompt_version=_prompt_version(),
-                            is_quota_exhausted=_is_daily_quota_exceeded) as call:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.4,
-        )
-        call.set_usage(response_model=getattr(response, "model", None),
-                       input_tokens=getattr(response.usage, "prompt_tokens", None),
-                       output_tokens=getattr(response.usage, "completion_tokens", None))
-        selection = Selection.model_validate_json(response.choices[0].message.content)
-    return selection
+    for attempt in range(2):
+        try:
+            with telemetry.llm_call(stage="tailoring", provider="groq", request_model=model,
+                                    batch_size=1, attempt=attempt + 1,
+                                    prompt_version=_prompt_version(),
+                                    is_quota_exhausted=_is_daily_quota_exceeded) as call:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                    temperature=0.4,
+                )
+                call.set_usage(response_model=getattr(response, "model", None),
+                               input_tokens=getattr(response.usage, "prompt_tokens", None),
+                               output_tokens=getattr(response.usage, "completion_tokens", None))
+                return Selection.model_validate_json(response.choices[0].message.content)
+        except Exception as e:
+            if attempt == 0 and _is_malformed_output_error(e):
+                continue
+            raise
