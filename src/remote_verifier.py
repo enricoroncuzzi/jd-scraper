@@ -166,13 +166,27 @@ _OPENROUTER_FALLBACK_MODELS = [
     "google/gemma-4-26b-a4b-it:free",
     "thinkingmachines/inkling-small:free",
 ]
+_OPENROUTER_SCORING_DAILY_REQUEST_RESERVE = 200
+_OPENROUTER_VERIFICATION_DAILY_REQUEST_MAX = 400
+_OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK = 25
+
+
+def _openrouter_verification_daily_request_cap(limit) -> int:
+    """Derive this stage's share while preserving scoring's fixed reserve."""
+    if limit is None or limit.unit != "requests" or limit.per_day is None:
+        return _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK
+    available = max(0, limit.per_day - _OPENROUTER_SCORING_DAILY_REQUEST_RESERVE)
+    return min(_OPENROUTER_VERIFICATION_DAILY_REQUEST_MAX, available)
+
+
 # The failover may use at most this many OpenRouter requests per UTC day
-# (retries included). 25 is the verifier's own share of the account's daily
-# request budget. Scoring runs after this stage in every tier and spends
-# that same budget, so once this share is used the remaining batches go
-# unconfirmed and scoring keeps the rest. main.py passes the day's running
-# count in as openrouter_requests_used_today.
-OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP = 25
+# (retries included). The share follows the live account allowance in
+# config/llm_limits.json, preserves 200 requests for scoring, and is capped at
+# 400. A missing or malformed limit keeps the old safe 25-request share.
+_openrouter_limit = limit_for("openrouter", "*")
+OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP = (
+    _openrouter_verification_daily_request_cap(_openrouter_limit)
+)
 
 
 def _keyword_anchors(lower: str) -> list[tuple[int, int]]:

@@ -18,9 +18,11 @@ from src.remote_verifier import (
     _VerdictOutput,
     _extract_policy_excerpt,
     _is_daily_quota_exceeded,
+    _openrouter_verification_daily_request_cap,
     _verify_batch,
     verify_offers,
 )
+from src.llm_limits import Limit
 
 
 def _offer(offer_id, description="We are fully remote across the EU.", status="ok"):
@@ -539,6 +541,27 @@ def test_openrouters_own_daily_cap_stops_further_openrouter_calls(monkeypatch):
 
 
 # --- Verification's daily share of OpenRouter requests ----------------------
+
+def test_openrouter_verification_share_uses_live_allowance_and_reserves_scoring():
+    limit = Limit("openrouter", "*", "requests", 1000)
+
+    assert _openrouter_verification_daily_request_cap(limit) == 400
+
+
+def test_openrouter_verification_share_shrinks_before_scoring_reserve():
+    limit = Limit("openrouter", "*", "requests", 500)
+
+    assert _openrouter_verification_daily_request_cap(limit) == 300
+
+
+@pytest.mark.parametrize("limit", [
+    None,
+    Limit("openrouter", "*", "tokens", 1000),
+    Limit("openrouter", "*", "requests", None),
+])
+def test_openrouter_verification_share_has_safe_fallback_for_missing_or_invalid_limit(limit):
+    assert _openrouter_verification_daily_request_cap(limit) == 25
+
 
 def test_openrouter_failover_stops_at_its_daily_request_share(monkeypatch):
     """Scoring spends the same OpenRouter account cap later in the tier, so
