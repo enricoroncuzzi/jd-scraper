@@ -17,8 +17,8 @@ what the README doesn't (or what has drifted from it).
    by `src/scraper.py`'s `resolve_max_pages_per_query`, which falls back to
    the conservative `_MAX_PAGES_PER_QUERY` default on an absent or invalid
    value so a malformed config can never mean unbounded pagination); the
-   per-tier values are a captain decision (task `pagination-cap-checkpoint`),
-   not a worker judgment call. `_fetch_for_query` logs each query's actual
+   per-tier values are captain decisions, not a worker judgment call.
+   `_fetch_for_query` logs each query's actual
    page count when pagination stops), language filter, dedup,
    remote verification, LLM scoring (OpenRouter, free-tier models with a
    native model fallback array - see `_OPENROUTER_MODEL`/

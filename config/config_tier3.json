@@ -13,7 +13,7 @@
     ],
     "time_range": "r86400",
     "work_mode": ["remote"],
-    "max_pages_per_query": 20
+    "max_pages_per_query": 30
   },
   "remote_check": { "enabled": true, "require_italy_eligibility": true },
   "scoring": {

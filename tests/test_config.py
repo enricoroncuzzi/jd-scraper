@@ -336,12 +336,11 @@ def test_every_tier_config_gets_its_own_retry_queue(monkeypatch):
 
 
 def test_tier_configs_carry_the_captain_approved_page_caps(monkeypatch):
-    # Values approved on the pagination-cap-checkpoint task after 20 days of
-    # production logs showed tiers 3/4 hitting the old shared cap of 8 on
-    # every query-day. Tier 1 gets the widest margin (captain's best market).
+    # Expanded after the 2026-10-03 run still hit every tier 3/4 query cap and
+    # half of tier 2's caps, with enough runtime and throttle headroom.
     _set_env(monkeypatch)
 
-    expected = {1: 30, 2: 12, 3: 20, 4: 12}
+    expected = {1: 30, 2: 16, 3: 30, 4: 20}
     for tier, cap in expected.items():
         config = load_config(str(_REPO_ROOT / "config" / f"config_tier{tier}.json"))
         assert config.search.max_pages_per_query == cap
