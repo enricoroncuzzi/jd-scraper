@@ -1,7 +1,8 @@
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
-import groq
 import pytest
 
 from src.tailor.generate import build_prompt, Selection, CoverLetterParts
@@ -118,23 +119,23 @@ def test_selection_schema_shape():
     assert s.hr_message.startswith("Hi")
 
 
+def _selection():
+    return Selection(
+        included_bullet_ids=["exp.0.b0"],
+        skill_order=["skill.languages", "skill.ai_stack"],
+        cover_letter=CoverLetterParts(
+            hook="I focus on agents.", bridge="I built pipelines.", proof_id="exp.0.b0",
+        ),
+        hr_message="Hi, I saw the role.",
+    )
+
+
 def test_tailoring_generation_is_recorded(tmp_path):
     from src import telemetry
     from src.tailor.generate import generate
 
-    response = MagicMock()
-    response.model = "openai/gpt-oss-120b"
-    response.usage = MagicMock(prompt_tokens=40, completion_tokens=12)
-    response.choices = [MagicMock()]
-    response.choices[0].message.content = json.dumps({
-        "included_bullet_ids": ["exp.0.b0"],
-        "skill_order": ["skill.languages", "skill.ai_stack"],
-        "cover_letter": {"hook": "I focus on agents.", "bridge": "I built pipelines.", "proof_id": "exp.0.b0"},
-        "hr_message": "Hi, I saw the role.",
-    })
-    client = MagicMock()
-    client.chat.completions.create.return_value = response
-
+    chain = MagicMock()
+    chain.invoke.return_value = _selection()
     recorded = []
     real = telemetry.llm_call
 
@@ -143,7 +144,7 @@ def test_tailoring_generation_is_recorded(tmp_path):
         recorded.append(kwargs)
         return cm
 
-    with patch("groq.Groq", return_value=client), patch(
+    with patch("src.tailor.generate._build_chain", return_value=chain), patch(
         "src.tailor.generate.telemetry.llm_call", side_effect=spy
     ):
         selection = generate(_jd(), _canon(tmp_path), api_key="k")
@@ -151,68 +152,110 @@ def test_tailoring_generation_is_recorded(tmp_path):
     assert selection.cover_letter.proof_id == "exp.0.b0"
     assert len(recorded) == 1
     assert recorded[0]["stage"] == "tailoring"
+    assert recorded[0]["provider"] == "openrouter"
+    assert recorded[0]["request_model"] == "qwen/qwen3.8-27b:free"
     assert recorded[0]["batch_size"] == 1
     assert recorded[0]["attempt"] == 1
 
 
-def _selection_response(payload):
-    response = MagicMock()
-    response.model = "openai/gpt-oss-120b"
-    response.usage = MagicMock(prompt_tokens=40, completion_tokens=12)
-    response.choices = [MagicMock()]
-    response.choices[0].message.content = json.dumps(payload)
-    return response
-
-
-def _valid_selection_payload():
-    return {
-        "included_bullet_ids": ["exp.0.b0"],
-        "skill_order": ["skill.languages", "skill.ai_stack"],
-        "cover_letter": {
-            "hook": "I focus on agents.",
-            "bridge": "I built pipelines.",
-            "proof_id": "exp.0.b0",
-        },
-        "hr_message": "Hi, I saw the role.",
-    }
-
-
-def _json_validate_error():
-    message = "Failed to validate JSON. json_validate_failed"
-    return groq.BadRequestError(
-        message,
-        response=MagicMock(status_code=400, headers={}),
-        body={"error": {"message": message, "code": "json_validate_failed"}},
-    )
-
-
-@pytest.mark.parametrize("first_result", [
-    _selection_response({}),
-    _json_validate_error(),
-])
-def test_tailoring_retries_malformed_output_once(tmp_path, first_result):
+def test_tailoring_retries_empty_structured_output_once(tmp_path):
     from src.tailor.generate import generate
 
-    client = MagicMock()
-    client.chat.completions.create.side_effect = [
-        first_result,
-        _selection_response(_valid_selection_payload()),
-    ]
+    chain = MagicMock()
+    chain.invoke.side_effect = [None, _selection()]
 
-    with patch("groq.Groq", return_value=client):
+    with patch("src.tailor.generate._build_chain", return_value=chain):
         selection = generate(_jd(), _canon(tmp_path), api_key="k")
 
-    assert client.chat.completions.create.call_count == 2
+    assert chain.invoke.call_count == 2
     assert selection.cover_letter.proof_id == "exp.0.b0"
 
 
-def test_tailoring_malformed_output_retry_is_bounded(tmp_path):
+def test_tailoring_empty_structured_output_retry_is_bounded(tmp_path):
+    from src.scorer import _EmptyStructuredOutput
     from src.tailor.generate import generate
 
-    client = MagicMock()
-    client.chat.completions.create.side_effect = _json_validate_error()
+    chain = MagicMock()
+    chain.invoke.return_value = None
 
-    with patch("groq.Groq", return_value=client), pytest.raises(groq.BadRequestError):
+    with patch("src.tailor.generate._build_chain", return_value=chain), pytest.raises(
+        _EmptyStructuredOutput
+    ):
         generate(_jd(), _canon(tmp_path), api_key="k")
 
-    assert client.chat.completions.create.call_count == 2
+    assert chain.invoke.call_count == 2
+
+
+def test_tailoring_request_routes_qwen_with_structured_fallbacks(tmp_path, monkeypatch):
+    from src.tailor.generate import generate
+
+    captured = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            captured.append(body)
+            tool_name = body["tools"][0]["function"]["name"]
+            payload = {
+                "id": "gen-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body["model"],
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps({
+                                    "included_bullet_ids": ["exp.0.b0"],
+                                    "skill_order": ["skill.languages", "skill.ai_stack"],
+                                    "cover_letter": {
+                                        "hook": "I focus on agents.",
+                                        "bridge": "I built pipelines.",
+                                        "proof_id": "exp.0.b0",
+                                    },
+                                    "hr_message": "Hi, I saw the role.",
+                                }),
+                            },
+                        }],
+                    },
+                }],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 12, "total_tokens": 52},
+            }
+            raw = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        "src.tailor.generate._OPENROUTER_BASE_URL",
+        f"http://127.0.0.1:{server.server_port}/api/v1",
+    )
+    try:
+        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+    finally:
+        server.shutdown()
+
+    assert selection.cover_letter.proof_id == "exp.0.b0"
+    request = captured[0]
+    assert request["model"] == "qwen/qwen3.8-27b:free"
+    assert request["models"] == [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "dots-studio/dots-3-note-preview:free",
+        "liquid/lfm-2.5-2.6b:free",
+    ]
+    assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]

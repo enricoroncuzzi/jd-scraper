@@ -70,7 +70,7 @@ def test_run_autoapply_skips_offers_below_threshold(monkeypatch, cv_paths):
     offers = [_offer(1, score=5)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -83,7 +83,7 @@ def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch, c
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -99,7 +99,7 @@ def test_run_autoapply_dry_run_skips_notify_but_still_tracks(monkeypatch, cv_pat
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=True,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -120,7 +120,7 @@ def test_run_autoapply_respects_already_packaged_dedup(monkeypatch, cv_paths):
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -134,7 +134,7 @@ def test_run_autoapply_stops_at_daily_cap(monkeypatch, cv_paths):
     offers = [_offer(1, score=9), _offer(2, score=9), _offer(3, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=2, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -147,7 +147,7 @@ def test_run_autoapply_cap_accounts_for_already_packaged_today(monkeypatch, cv_p
     offers = [_offer(1, score=9), _offer(2, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=2, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -165,7 +165,7 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch, cv_paths):
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -181,7 +181,7 @@ def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch
     )
     results = run_autoapply(
         [], threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -196,7 +196,7 @@ def test_run_autoapply_raises_when_cv_master_path_missing(monkeypatch, tmp_path,
     with pytest.raises(FileNotFoundError, match="CV_MASTER_PATH"):
         run_autoapply(
             offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-            cv_master_path=missing, css_path=cv_paths[1], groq_api_key="k",
+            cv_master_path=missing, css_path=cv_paths[1], llm_api_key="k",
             daily_cap=5, dry_run=False,
             telegram_token="tok", telegram_chat_id="chat1",
         )
@@ -209,7 +209,7 @@ def test_run_autoapply_raises_when_css_path_missing(monkeypatch, tmp_path, cv_pa
     with pytest.raises(FileNotFoundError, match="CV_CSS_PATH"):
         run_autoapply(
             offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-            cv_master_path=cv_paths[0], css_path=missing, groq_api_key="k",
+            cv_master_path=cv_paths[0], css_path=missing, llm_api_key="k",
             daily_cap=5, dry_run=False,
             telegram_token="tok", telegram_chat_id="chat1",
         )
@@ -220,7 +220,7 @@ def test_run_autoapply_below_threshold_short_circuits_before_path_check(monkeypa
     offers = [_offer(1, score=5)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path=str(tmp_path / "does-not-exist.md"), css_path="", groq_api_key="k",
+        cv_master_path=str(tmp_path / "does-not-exist.md"), css_path="", llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -236,7 +236,7 @@ def test_only_confirmed_and_not_checked_offers_are_packaged(monkeypatch, cv_path
     ]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], groq_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
         daily_cap=5, dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )

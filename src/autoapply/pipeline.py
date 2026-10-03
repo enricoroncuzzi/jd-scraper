@@ -20,7 +20,7 @@ def run_autoapply(
     db_url: str | None,
     cv_master_path: str,
     css_path: str,
-    groq_api_key: str,
+    llm_api_key: str,
     daily_cap: int,
     dry_run: bool,
     telegram_token: str,
@@ -70,7 +70,7 @@ def run_autoapply(
 
         note_path = _note_path(offer, output_path, tier, today)
         try:
-            directory = tailor_cli.run(note_path, output_path, cv_master_path, css_path, groq_api_key)
+            directory = tailor_cli.run(note_path, output_path, cv_master_path, css_path, llm_api_key)
         except Exception as e:
             print(f"[autoapply] tailoring failed for {offer.company}: {e}")
             continue
