@@ -28,3 +28,11 @@ def _block_production_database_url(monkeypatch):
     value, if the process was started with one, is kept on
     tests.conftest._PROCESS_DATABASE_URL for the integration guard."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_usage_log(tmp_path, monkeypatch):
+    """Handler tests that forget to redirect this path used to append to the
+    checkout's data/usage_log.jsonl, which is the file the daily budget reads."""
+    import main
+    monkeypatch.setattr(main, "_USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))

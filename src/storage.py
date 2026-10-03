@@ -289,7 +289,7 @@ def save_application(
 
 def count_applications_packaged_today(db_url: str) -> int:
     """Counts packages regardless of dry_run so the daily cap actually limits
-    tailoring calls (and their Groq cost) while dry-run stays on, not just once
+    tailoring calls (and their OpenRouter quota) while dry-run stays on, not just once
     notifications go live."""
     if db_url is None:
         return 0

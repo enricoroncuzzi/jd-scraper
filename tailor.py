@@ -137,9 +137,9 @@ def handle_uri(
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--uri" and len(args) >= 2:
-        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GROQ_API_KEY"])
+        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["LLM_API_KEY"])
     elif args and args[0] != "--uri":
-        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["GROQ_API_KEY"])
+        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["LLM_API_KEY"])
     else:
         print("Usage: python tailor.py <note_path> | --uri <tailor:...>")
         sys.exit(1)

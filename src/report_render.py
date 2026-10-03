@@ -237,8 +237,22 @@ def _or_dash(v) -> str:
     return "-" if v is None else str(v)
 
 
-def render_trend(metrics) -> str:
-    lines = ["date    cap-hits  verif-tok  8+ share  llm-fail  packaged"]
+def _high_share_label(settings: dict | None) -> str:
+    """The cutoff the share numbers were computed with.
+
+    One number when every loaded tier uses it. A mixed set cannot be named
+    with a single cutoff, so the header says so instead of the code default.
+    """
+    thresholds = sorted({int(s.threshold) for s in (settings or {}).values()})
+    if len(thresholds) == 1:
+        return f"{thresholds[0]}+"
+    if len(thresholds) > 1:
+        return ">=threshold"
+    return f"{TierSettings().threshold}+"
+
+
+def render_trend(metrics, settings: dict | None = None) -> str:
+    lines = [f"date    cap-hits  verif-tok  {_high_share_label(settings)} share  llm-fail  packaged"]
     for m in metrics:
         share = f"{100 * m.high / m.scored:.1f}%" if m.scored else "-"
         caps = f"{m.cap_hits}/{m.queries}" if m.queries is not None else "-"
@@ -259,14 +273,15 @@ def _llm_failure_rate(metrics) -> float | None:
     return (100 * failed / calls) if calls else None
 
 
-def render_compare(commit: str, before, after) -> str:
+def render_compare(commit: str, before, after, settings: dict | None = None) -> str:
+    label = _high_share_label(settings)
     def side(ms):
         scored = sum(m.scored for m in ms)
         return {
             "Offers found / day": _avg([m.offers_fetched for m in ms]),
             "Searches hitting limit / day": _avg([m.cap_hits for m in ms]),
             "Verification tokens / day": _avg([m.verification_tokens for m in ms]),
-            "Share scoring 8+ (%)": (100 * sum(m.high for m in ms) / scored) if scored else None,
+            f"Share scoring {label} (%)": (100 * sum(m.high for m in ms) / scored) if scored else None,
             "LLM failure rate (%)": _llm_failure_rate(ms),
             "Packaged / day": _avg([m.packaged for m in ms]),
         }

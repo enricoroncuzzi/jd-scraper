@@ -1,10 +1,8 @@
 {
   "limits": [
     {"provider": "groq", "model": "openai/gpt-oss-20b", "unit": "tokens", "per_day": 200000,
-     "note": "verification; free-plan TPD 200K on https://console.groq.com/docs/rate-limits; 2026-09-29"},
-    {"provider": "groq", "model": "openai/gpt-oss-120b", "unit": "tokens", "per_day": 200000,
-     "note": "tailoring; free-plan TPD 200K on https://console.groq.com/docs/rate-limits; 2026-09-29"},
+     "note": "verification fallback; free-plan TPD 200K on https://console.groq.com/docs/rate-limits; 2026-10-03"},
     {"provider": "openrouter", "model": "*", "unit": "requests", "per_day": 1000,
-     "note": "all :free models, account-wide; https://openrouter.ai/api/v1/key free_model_daily_requests.limit 1000 (is_free_tier false); https://openrouter.ai/docs/api-reference/limits; 2026-09-29"}
+     "note": "all :free models, account-wide; https://openrouter.ai/api/v1/key free_model_daily_requests.limit 1000 (is_free_tier false); https://openrouter.ai/docs/api-reference/limits; 2026-10-03"}
   ]
 }

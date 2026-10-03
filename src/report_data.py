@@ -22,7 +22,7 @@ NO_RESPONSE_MODEL = "no response"
 
 @dataclass(frozen=True)
 class TierSettings:
-    threshold: int = 8
+    threshold: int = 7
     verification_enabled: bool = False
 
 
@@ -169,7 +169,7 @@ def load_tier_settings(paths: list[str]) -> dict[int, TierSettings]:
             with open(path) as f:
                 data = json.load(f)
             settings[int(data.get("tier", 0))] = TierSettings(
-                threshold=int((data.get("scoring") or {}).get("threshold", 8)),
+                threshold=int((data.get("scoring") or {}).get("threshold", TierSettings().threshold)),
                 verification_enabled=bool((data.get("remote_check") or {}).get("enabled", False)),
             )
         except Exception:
@@ -207,7 +207,8 @@ def split_before_after(metrics: list[DailyMetrics], commit: str, is_ancestor):
 
 def _threshold_case(settings: dict[int, TierSettings]) -> str:
     whens = " ".join(f"WHEN {int(t)} THEN {int(s.threshold)}" for t, s in sorted(settings.items()))
-    return f"CASE tier {whens} ELSE 8 END" if whens else "8"
+    fallback = TierSettings().threshold
+    return f"CASE tier {whens} ELSE {fallback} END" if whens else str(fallback)
 
 
 def _cursor(conn):
@@ -261,7 +262,6 @@ def catalog_for_report() -> tuple[list[Limit], bool]:
         return loaded, False
     return [
         Limit("groq", "openai/gpt-oss-20b", "tokens", None),
-        Limit("groq", "openai/gpt-oss-120b", "tokens", None),
         Limit("openrouter", "*", "requests", None),
     ], True
 

@@ -439,31 +439,55 @@ def test_json_validate_failed_retries_groq_only_once_then_succeeds(monkeypatch):
     assert usage["degraded"] is False
 
 
-def test_structured_validation_failure_falls_back_to_openrouter_after_two_groq_calls(monkeypatch):
+def test_openrouter_failure_falls_back_to_groq(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
-    calls = _mock_groq(monkeypatch, [{"offers": [{}]}])
-    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "rejected")])])
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": 1, "verdict": "rejected", "reason": "On site."}]},
+    ])
+    or_chain = _mock_openrouter(monkeypatch, RuntimeError("openrouter down"))
 
     verified, usage = verify_offers(
         [_offer(1)], True, "groq-key", llm_api_key="or-key",
     )
 
-    assert calls["count"] == 2
-    assert or_chain.invoke.call_count == 1
+    assert or_chain.invoke.call_count == 1  # a non-retryable failure falls straight through to Groq
+    assert calls["count"] == 1
     assert verified[0].remote_verdict == "rejected"
+    assert usage["provider"] == "openrouter+groq"
     assert usage["degraded"] is False
 
 
-def test_json_validate_failed_falls_back_to_openrouter_after_two_groq_calls(monkeypatch):
+def test_one_openrouter_batch_failure_does_not_stick(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
-    calls = _mock_groq(monkeypatch, [_json_validate_error()])
-    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": i, "verdict": "confirmed", "reason": "Remote."} for i in range(1, 9)]},
+    ])
+    or_chain = _mock_openrouter(monkeypatch, [
+        RuntimeError("openrouter down"),
+        _verdict_output([(i, "confirmed") for i in range(9, 17)]),
+    ])
 
-    verified, _ = verify_offers([_offer(1)], True, "groq-key", llm_api_key="or-key")
+    verify_offers(
+        [_offer(i) for i in range(1, 17)], True, "groq-key", llm_api_key="or-key",
+    )
 
-    assert calls["count"] == 2
-    assert or_chain.invoke.call_count == 1
-    assert verified[0].remote_verdict == "confirmed"
+    assert or_chain.invoke.call_count == 2
+    assert calls["count"] == 1
+
+
+def test_two_consecutive_openrouter_failures_stop_openrouter(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": i, "verdict": "rejected", "reason": "On site."} for i in range(1, 9)]},
+    ])
+    or_chain = _mock_openrouter(monkeypatch, RuntimeError("openrouter down"))
+
+    verify_offers(
+        [_offer(i) for i in range(1, 25)], True, "groq-key", llm_api_key="or-key",
+    )
+
+    assert or_chain.invoke.call_count == 2
+    assert calls["count"] == 3
 
 
 # --- OpenRouter failover -----------------------------------------------------
@@ -483,46 +507,65 @@ def _verdict_output(items):
     ])
 
 
-def test_tpd_exhaustion_fails_over_the_rest_of_the_run_to_openrouter(monkeypatch):
+def test_openrouter_quota_fails_over_the_rest_of_the_run_to_groq(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
-    # Batch 1 (offers 1-8) succeeds on Groq. Batch 2 (offers 9-16) hits the
-    # daily cap immediately. Batch 3 (offers 17-20) must never call Groq at
-    # all - proving the STAGE stopped, not just that one batch.
-    _mock_groq(monkeypatch, [
-        {"offers": [{"id": i, "verdict": "confirmed", "reason": "r"} for i in range(1, 9)]},
+    # Batch 1 succeeds on OpenRouter. Batch 2 hits OpenRouter's daily cap.
+    # Batches 2 and 3 must go to Groq, and Groq must not be called again once
+    # its own TPD 429 lands: the stage stops that provider, not just the batch.
+    or_chain = _mock_openrouter(monkeypatch, [
+        _verdict_output([(i, "confirmed") for i in range(1, 9)]),
+        _openrouter_daily_cap_error(),
+    ])
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": i, "verdict": "rejected", "reason": "r"} for i in range(9, 17)]},
         _rate_limit_error(_TPD_MESSAGE),
     ])
-    or_chain = _mock_openrouter(monkeypatch, [
-        _verdict_output([(i, "rejected") for i in range(9, 17)]),
-        _verdict_output([(i, "unconfirmed") for i in range(17, 21)]),
-    ])
 
-    offers = [_offer(i) for i in range(1, 21)]
+    offers = [_offer(i) for i in range(1, 25)]  # 3 batches
     verified, usage = verify_offers(offers, True, "groq-key", llm_api_key="or-key")
 
     by_id = {o.id: o for o in verified}
     assert all(by_id[i].remote_verdict == "confirmed" for i in range(1, 9))
     assert all(by_id[i].remote_verdict == "rejected" for i in range(9, 17))
-    assert all(by_id[i].remote_verdict == "unconfirmed" for i in range(17, 21))
-    assert usage["provider"] == "groq+openrouter"
-    assert usage["degraded"] is False
+    assert all(by_id[i].remote_verdict == "unconfirmed" for i in range(17, 25))
     assert or_chain.invoke.call_count == 2
+    assert calls["count"] == 2  # batch 2 succeeds, batch 3 hits TPD and stops
+    assert usage["provider"] == "openrouter+groq"
+    assert usage["degraded"] is True
 
 
-def test_proactive_failover_happens_before_the_cap_is_hit(monkeypatch):
+def test_proactive_groq_ceiling_blocks_the_fallback(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": []}])
-    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
+    or_chain = _mock_openrouter(monkeypatch, [])
 
-    groq_tokens_used_today = _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
     verified, usage = verify_offers(
         [_offer(1)], True, "groq-key", llm_api_key="or-key",
-        groq_tokens_used_today=groq_tokens_used_today,
+        groq_tokens_used_today=_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS,
+        openrouter_requests_used_today=OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP,
     )
 
-    assert calls["count"] == 0  # Groq never called - already inside the headroom
-    assert or_chain.invoke.call_count == 1
+    assert or_chain.invoke.call_count == 0
+    assert calls["count"] == 0
+    assert verified[0].remote_verdict == "unconfirmed"
+    assert usage["provider"] == "none"
+    assert usage["degraded"] is True
+
+
+def test_spent_openrouter_share_falls_back_to_groq(monkeypatch):
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]},
+    ])
+    or_chain = _mock_openrouter(monkeypatch, [])
+
+    verified, usage = verify_offers(
+        [_offer(1)], True, "groq-key", llm_api_key="or-key",
+        openrouter_requests_used_today=OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP,
+    )
+
+    assert or_chain.invoke.call_count == 0
+    assert calls["count"] == 1
     assert verified[0].remote_verdict == "confirmed"
-    assert usage["provider"] == "openrouter"
+    assert usage["provider"] == "groq"
     assert usage["degraded"] is False
 
 
@@ -571,9 +614,8 @@ def _openrouter_daily_cap_error() -> openai.RateLimitError:
     )
 
 
-def test_missing_groq_key_fails_over_to_openrouter_when_configured(monkeypatch):
-    """A missing Groq key is a form of "Groq unavailable", not just a
-    daily-budget case - it must not skip a working OpenRouter fallback."""
+def test_missing_groq_key_still_verifies_on_openrouter(monkeypatch):
+    """A missing Groq key disables the fallback only. OpenRouter is primary."""
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
 
     verified, usage = verify_offers([_offer(1)], True, "", llm_api_key="or-key")
@@ -593,7 +635,7 @@ def test_missing_groq_key_without_openrouter_key_still_just_degrades(monkeypatch
     assert usage["provider"] == "none"  # neither provider was called
 
 
-def test_groq_client_build_failure_fails_over_to_openrouter_when_configured(monkeypatch):
+def test_groq_client_build_failure_still_verifies_on_openrouter(monkeypatch):
     monkeypatch.setattr("src.remote_verifier._client",
                         lambda key: (_ for _ in ()).throw(ImportError("no groq")))
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "rejected")])])
@@ -628,16 +670,16 @@ def test_openrouters_own_daily_cap_stops_further_openrouter_calls(monkeypatch):
 
 # --- Verification's daily share of OpenRouter requests ----------------------
 
-def test_openrouter_verification_share_uses_live_allowance_and_reserves_scoring():
+def test_openrouter_verification_share_is_four_tenths_of_the_allowance():
     limit = Limit("openrouter", "*", "requests", 1000)
 
     assert _openrouter_verification_daily_request_cap(limit) == 400
 
 
-def test_openrouter_verification_share_shrinks_before_scoring_reserve():
+def test_openrouter_verification_share_shrinks_with_the_allowance():
     limit = Limit("openrouter", "*", "requests", 500)
 
-    assert _openrouter_verification_daily_request_cap(limit) == 300
+    assert _openrouter_verification_daily_request_cap(limit) == 200
 
 
 @pytest.mark.parametrize("limit", [
@@ -770,17 +812,18 @@ def test_a_single_stray_batch_failure_in_a_large_tier_does_not_flip_degraded(mon
 
 # --- No regression in the normal, budget-healthy path -----------------------
 
-def test_healthy_run_never_touches_openrouter(monkeypatch):
+def test_healthy_run_uses_openrouter_and_does_not_call_groq(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": [
         {"id": 1, "verdict": "confirmed", "reason": "r"},
     ]}])
-    or_chain = _mock_openrouter(monkeypatch, [])
+    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
 
     verified, usage = verify_offers([_offer(1)], True, "groq-key", llm_api_key="or-key")
 
-    assert calls["count"] == 1
-    assert or_chain.invoke.call_count == 0
-    assert usage["provider"] == "groq"
+    assert calls["count"] == 0
+    assert or_chain.invoke.call_count == 1
+    assert verified[0].remote_verdict == "confirmed"
+    assert usage["provider"] == "openrouter"
     assert usage["degraded"] is False
 
 

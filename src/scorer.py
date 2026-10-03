@@ -84,27 +84,24 @@ Return all {count} offers. Each must have: id (same as input), score (1-10), com
 
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# These pins are perishable: nvidia/nemotron-3-nano-30b-a3b:free, an earlier primary,
-# was delisted from OpenRouter as of 2026-09-03 (only a paid, non-":free"
-# nvidia/nemotron-3-nano-30b-a3b remains). The primary is now
-# nvidia/nemotron-3-super-120b-a12b:free and liquid/lfm-2.5-2.6b:free is a fallback
-# entry; both were verified as listed on /api/v1/models with tool-calling ("tools" in
-# supported_parameters), which scoring requires via
+# These pins are perishable. The primary is qwen/qwen3.8-27b:free, chosen after
+# a 2026-10-03 comparison on real offers. Fallbacks are free models that list
+# structured outputs, one provider each. z-ai/glm-5.2:free is delisted and
+# google/gemma-4-26b-a4b-it:free does not advertise structured outputs, so
+# neither is pinned. Scoring requires tool-calling via
 # with_structured_output(method="function_calling") below.
-_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+_OPENROUTER_MODEL = "qwen/qwen3.8-27b:free"
 # OpenRouter's native fallback mechanism: if the primary model is busy/rate-limited,
 # OpenRouter itself retries the request against the next model in this list before
 # ever returning an error to us. OpenRouter rejects extra_body["models"] with a 400
 # ("'models' array must have 3 items or fewer") above 3 entries - a 6-entry list
 # landed in 2026-09-01's diversification (#9) and broke every scoring request for
-# 2 days before being caught; keep this at 3 items, one per provider, so a repeat
-# of the 2026-09-01 all-NVIDIA-and-Z.ai-down outage still has two other providers
-# to fall back to. All entries verified to support tool-calling ("tools" in
-# supported_parameters on OpenRouter's /api/v1/models) as of 2026-09-03, since
-# scoring uses with_structured_output(method="function_calling") below.
+# 2 days before being caught; keep this at 3 items, one per provider.
 _OPENROUTER_FALLBACK_MODELS = [
-    "google/gemma-4-26b-a4b-it:free",
-    "z-ai/glm-5.2:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
+    # an unknown models entry can 400 the whole request.
+    "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
 ]
 

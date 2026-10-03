@@ -181,6 +181,15 @@ def test_llm_view_shows_generic_errors():
     assert "   0%" in text or "  0%" in text
 
 
+def test_share_label_follows_loaded_tier_settings():
+    one = {1: rd.TierSettings(threshold=6), 2: rd.TierSettings(threshold=6)}
+    mixed = {1: rd.TierSettings(threshold=6), 2: rd.TierSettings(threshold=7)}
+    assert "6+ share" in rr.render_trend([], settings=one)
+    assert ">=threshold share" in rr.render_trend([], settings=mixed)
+    assert "Share scoring 6+ (%)" in rr.render_compare("abc", [], [], settings=one)
+    assert "Share scoring >=threshold (%)" in rr.render_compare("abc", [], [], settings=mixed)
+
+
 def test_compare_includes_llm_failure_rate():
     from datetime import date
     def day(n, failed):

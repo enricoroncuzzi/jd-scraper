@@ -51,13 +51,14 @@ def main() -> int:
     elif args.command == "trend":
         since = datetime.now(ZoneInfo("Europe/Rome")).date() - timedelta(days=args.days)
         print(report_render.render_trend(
-            report_data.load_daily_metrics(db_url, since=since, settings=settings)))
+            report_data.load_daily_metrics(db_url, since=since, settings=settings),
+            settings=settings))
     elif args.command == "compare":
         since = datetime.now(ZoneInfo("Europe/Rome")).date() - timedelta(days=args.days)
         metrics = report_data.load_daily_metrics(db_url, since=since, settings=settings)
         before, after = report_data.split_before_after(
             metrics, args.commit, report_data.git_is_ancestor)
-        print(report_render.render_compare(args.commit, before, after))
+        print(report_render.render_compare(args.commit, before, after, settings=settings))
     elif args.command == "llm":
         since = datetime.now(ZoneInfo("Europe/Rome")).date() - timedelta(days=args.days)
         models, verdicts = report_data.load_llm_view(db_url, since=since, stage=args.stage)

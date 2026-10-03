@@ -1,10 +1,19 @@
 import functools
 import inspect
 import json
+import time
 
+import openai
 from pydantic import BaseModel
 from src import telemetry
-from src.remote_verifier import _is_daily_quota_exceeded, _is_malformed_output_error
+from src.remote_verifier import _is_malformed_output_error
+from src.scorer import (
+    _EmptyStructuredOutput,
+    _TokenCounter,
+    _is_quota_exceeded,
+    _is_retryable_upstream_value_error,
+    _openrouter_quota_exhausted,
+)
 from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import CanonicalCV
 
@@ -113,37 +122,85 @@ def _prompt_version() -> str:
         return "unknown"
 
 
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# Same perishable pins as scoring and verification, kept as constants here so a
+# scoring pin change cannot silently retarget tailoring. Fallbacks are free
+# models with structured outputs. OpenRouter caps this array at 3 entries.
+_OPENROUTER_MODEL = "qwen/qwen3.8-27b:free"
+_OPENROUTER_FALLBACK_MODELS = [
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
+    # an unknown models entry can 400 the whole request.
+    "dots-studio/dots-3-note-preview:free",
+    "liquid/lfm-2.5-2.6b:free",
+]
+
+
+def _build_chain(api_key: str, model: str = _OPENROUTER_MODEL):
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_openai import ChatOpenAI
+
+    llm = ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=_OPENROUTER_BASE_URL,
+        extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
+        temperature=0.4,
+        max_retries=0,
+    )
+    return (
+        ChatPromptTemplate.from_messages([("human", "{prompt}")])
+        | llm.with_structured_output(Selection, method="function_calling")
+    )
+
+
+_TRANSIENT_ATTEMPTS = 4
+_MALFORMED_ATTEMPTS = 2
+
+
 def generate(
     jd: JobDescription,
     canonical: CanonicalCV,
     api_key: str,
-    model: str = "openai/gpt-oss-120b",
+    model: str = _OPENROUTER_MODEL,
 ) -> Selection:
-    from groq import Groq
-
-    client = Groq(api_key=api_key)
-    prompt = (
-        f"{build_prompt(jd, canonical)}\n\n"
-        "Respond with ONLY a single JSON object matching this schema (no prose, no "
-        f"markdown fences):\n{Selection.model_json_schema()}"
-    )
-    for attempt in range(2):
+    chain = _build_chain(api_key, model)
+    prompt = build_prompt(jd, canonical)
+    counter = _TokenCounter()
+    malformed_attempts = 0
+    for attempt in range(_TRANSIENT_ATTEMPTS):
         try:
-            with telemetry.llm_call(stage="tailoring", provider="groq", request_model=model,
+            counter.begin_call()
+            with telemetry.llm_call(stage="tailoring", provider="openrouter", request_model=model,
                                     batch_size=1, attempt=attempt + 1,
                                     prompt_version=_prompt_version(),
-                                    is_quota_exhausted=_is_daily_quota_exceeded) as call:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
-                    temperature=0.4,
-                )
-                call.set_usage(response_model=getattr(response, "model", None),
-                               input_tokens=getattr(response.usage, "prompt_tokens", None),
-                               output_tokens=getattr(response.usage, "completion_tokens", None))
-                return Selection.model_validate_json(response.choices[0].message.content)
+                                    is_quota_exhausted=_openrouter_quota_exhausted) as call:
+                result = chain.invoke({"prompt": prompt}, config={"callbacks": [counter]})
+                call.set_usage(response_model=counter.last_model,
+                               input_tokens=counter.last_prompt_tokens,
+                               output_tokens=counter.last_completion_tokens)
+                if result is None:
+                    raise _EmptyStructuredOutput()
+                return result
         except Exception as e:
-            if attempt == 0 and _is_malformed_output_error(e):
+            # Empty or malformed output keeps the old one-retry bound. Transient
+            # provider errors use the same ladder as verification: a quota 429
+            # stops immediately, everything else backs off across 4 attempts.
+            if isinstance(e, _EmptyStructuredOutput) or _is_malformed_output_error(e):
+                malformed_attempts += 1
+                if malformed_attempts >= _MALFORMED_ATTEMPTS:
+                    raise
                 continue
-            raise
+            if isinstance(e, openai.RateLimitError) and _is_quota_exceeded(e):
+                raise
+            transient = (
+                isinstance(e, (openai.RateLimitError, openai.InternalServerError,
+                               openai.APIConnectionError))
+                or (isinstance(e, ValueError) and _is_retryable_upstream_value_error(e))
+            )
+            if not transient or attempt == _TRANSIENT_ATTEMPTS - 1:
+                raise
+            wait = min(5 * (2 ** attempt), 60)
+            print(f"[tailor] OpenRouter {type(e).__name__}, retrying in {wait}s "
+                  f"(attempt {attempt + 1}/{_TRANSIENT_ATTEMPTS})...")
+            time.sleep(wait)

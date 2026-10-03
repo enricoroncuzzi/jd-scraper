@@ -55,13 +55,12 @@ def test_utc_day_bounds_split_on_midnight():
     assert start_before != start_after
 
 
-def test_missing_limits_catalog_is_three_unknown_ceilings(monkeypatch):
+def test_missing_limits_catalog_is_two_unknown_ceilings(monkeypatch):
     monkeypatch.setattr(rd, "load_limits", lambda: [])
     limits, unconfigured = rd.catalog_for_report()
     assert unconfigured is True
     assert [(l.provider, l.model, l.per_day) for l in limits] == [
         ("groq", "openai/gpt-oss-20b", None),
-        ("groq", "openai/gpt-oss-120b", None),
         ("openrouter", "*", None),
     ]
 
