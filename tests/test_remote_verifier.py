@@ -614,9 +614,8 @@ def _openrouter_daily_cap_error() -> openai.RateLimitError:
     )
 
 
-def test_missing_groq_key_fails_over_to_openrouter_when_configured(monkeypatch):
-    """A missing Groq key is a form of "Groq unavailable", not just a
-    daily-budget case - it must not skip a working OpenRouter fallback."""
+def test_missing_groq_key_still_verifies_on_openrouter(monkeypatch):
+    """A missing Groq key disables the fallback only. OpenRouter is primary."""
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
 
     verified, usage = verify_offers([_offer(1)], True, "", llm_api_key="or-key")
@@ -636,7 +635,7 @@ def test_missing_groq_key_without_openrouter_key_still_just_degrades(monkeypatch
     assert usage["provider"] == "none"  # neither provider was called
 
 
-def test_groq_client_build_failure_fails_over_to_openrouter_when_configured(monkeypatch):
+def test_groq_client_build_failure_still_verifies_on_openrouter(monkeypatch):
     monkeypatch.setattr("src.remote_verifier._client",
                         lambda key: (_ for _ in ()).throw(ImportError("no groq")))
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "rejected")])])

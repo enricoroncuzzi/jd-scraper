@@ -173,6 +173,24 @@ def test_tailoring_retries_empty_structured_output_once(tmp_path):
     assert selection.cover_letter.proof_id == "exp.0.b0"
 
 
+def test_tailoring_retries_validation_error_once(tmp_path):
+    from pydantic import ValidationError
+    from src.tailor.generate import Selection, generate
+
+    chain = MagicMock()
+    try:
+        Selection.model_validate({})
+        raise AssertionError("expected a validation error")
+    except ValidationError as invalid:
+        chain.invoke.side_effect = [invalid, _selection()]
+
+    with patch("src.tailor.generate._build_chain", return_value=chain):
+        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert chain.invoke.call_count == 2
+    assert selection.cover_letter.proof_id == "exp.0.b0"
+
+
 def test_tailoring_empty_structured_output_retry_is_bounded(tmp_path):
     from src.scorer import _EmptyStructuredOutput
     from src.tailor.generate import generate
