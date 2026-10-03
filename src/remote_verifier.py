@@ -86,11 +86,16 @@ _GROQ_DAILY_TOKEN_LIMIT_FALLBACK = 200_000
 _groq_limit = limit_for("groq", _GROQ_MODEL)
 GROQ_DAILY_TOKEN_LIMIT = (_groq_limit.per_day if _groq_limit and _groq_limit.per_day
                           else _GROQ_DAILY_TOKEN_LIMIT_FALLBACK)
-# Failing over BEFORE the cap is hit (main.py already tracks the day's
-# running Groq total and passes it in as groq_tokens_used_today) needs a
-# safety margin at least as large as one worst-case batch, so a proactive
-# switch can't itself be the call that goes over. Measured worst case for
-# BATCH_SIZE=8 is ~5,500 tokens; kept a bit above that.
+# Groq rejected verification requests at 151k-169k of locally visible usage
+# on three consecutive production days (2026-10-01 through 2026-10-03).
+# Malformed token-bearing responses were one source of under-counting and are
+# now included below, but Groq's 400 json_validate_failed responses expose no
+# usage to the client. Use a conservative evidence-based proactive ceiling
+# just below the lowest observed cutoff rather than pretending the advertised
+# 200k can always be reached.
+_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT = min(GROQ_DAILY_TOKEN_LIMIT, 150_000)
+# Keep one worst-case batch below that effective ceiling. Measured worst case
+# for BATCH_SIZE=8 is ~5,500 tokens; kept a bit above that.
 _GROQ_TPD_HEADROOM_TOKENS = 6_000
 # Free-plan ceiling is 8,000 tokens/minute and one 8-offer batch costs
 # ~4,500-5,500 tokens (Groq rate-limits page, fetched 2026-09-09), so two
@@ -356,10 +361,14 @@ def _prompt_version(require_italy_eligibility: bool) -> str:
         return "unknown"
 
 
-def _verify_batch(client, batch: list[JobOffer], require_italy_eligibility: bool) -> tuple[dict, dict]:
+def _verify_batch(
+    client, batch: list[JobOffer], require_italy_eligibility: bool, usage: dict | None = None,
+) -> tuple[dict, dict]:
     """Return (verdicts by offer id, token usage). Raises when every retry fails."""
     prompt = _build_prompt(batch, require_italy_eligibility)
     last_error = None
+    if usage is None:
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     for attempt in range(_MAX_RETRIES):
         try:
             with telemetry.llm_call(stage="verification", provider="groq",
@@ -376,12 +385,10 @@ def _verify_batch(client, batch: list[JobOffer], require_italy_eligibility: bool
                 call.set_usage(response_model=getattr(response, "model", None),
                                input_tokens=getattr(response.usage, "prompt_tokens", None),
                                output_tokens=getattr(response.usage, "completion_tokens", None))
+                usage["prompt_tokens"] += getattr(response.usage, "prompt_tokens", 0) or 0
+                usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
+                usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
                 parsed = _VerdictOutput.model_validate_json(response.choices[0].message.content)
-            usage = {
-                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
-                "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
-                "total_tokens": getattr(response.usage, "total_tokens", 0) or 0,
-            }
             verdicts = {
                 item.id: item
                 for item in parsed.offers
@@ -603,10 +610,13 @@ def verify_offers(
 
         if not groq_exhausted:
             groq_tokens_so_far = groq_tokens_used_today + usage["total_tokens"]
-            if groq_tokens_so_far >= GROQ_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS:
+            if groq_tokens_so_far >= (
+                _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
+            ):
                 print(f"[verifier] Groq verification budget is within "
-                      f"{_GROQ_TPD_HEADROOM_TOKENS} tokens of the {GROQ_DAILY_TOKEN_LIMIT} "
-                      f"daily cap ({groq_tokens_so_far} used today) - failing over to "
+                      f"{_GROQ_TPD_HEADROOM_TOKENS} tokens of the "
+                      f"{_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT} proactive ceiling "
+                      f"({groq_tokens_so_far} used today) - failing over to "
                       f"OpenRouter before batch {batch_num}/{total_batches} runs.")
                 groq_exhausted = True
 
@@ -617,10 +627,11 @@ def verify_offers(
             print(f"[verifier] Verifying batch {batch_num}/{total_batches} "
                   f"({len(batch)} offers) via Groq...")
             used_groq = True
+            batch_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
             try:
-                verdicts, batch_usage = _verify_batch(client, batch, require_italy_eligibility)
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    usage[key] += batch_usage[key]
+                verdicts, _ = _verify_batch(
+                    client, batch, require_italy_eligibility, usage=batch_usage,
+                )
             except groq.RateLimitError as e:
                 if _is_daily_quota_exceeded(e):
                     print(f"[verifier] Groq daily token budget exhausted at batch "
@@ -638,6 +649,9 @@ def verify_offers(
                       f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
                 verdicts = {}
                 failed_batches += 1
+            finally:
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    usage[key] += batch_usage[key]
 
         if verdicts is None:
             if openrouter_chain is not None and not openrouter_exhausted:

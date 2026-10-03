@@ -109,8 +109,10 @@ what the README doesn't (or what has drifted from it).
    (`_openrouter_chain`, using `_VerdictOutput` via
    `with_structured_output(method="function_calling")`, same shape as the
    scorer) both proactively - `main.py` passes the day's running Groq total
-   as `groq_tokens_used_today`, and a batch switches before it would push
-   past `GROQ_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS` - and reactively,
+   as `groq_tokens_used_today`, malformed token-bearing responses are included
+   in that total, and a batch switches before it would push past the
+   evidence-based `_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT` (150,000, below the
+   observed 151k-169k cutoffs) minus `_GROQ_TPD_HEADROOM_TOKENS` - and reactively,
    on a Groq 429 whose body contains "tokens per day (TPD)"
    (`_is_daily_quota_exceeded`, the same detect-and-propagate-immediately
    pattern as `_is_quota_exceeded` in `src/scorer.py`, but text-matched

@@ -13,6 +13,7 @@ from src.remote_verifier import (
     GROQ_DAILY_TOKEN_LIMIT,
     OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP,
     _DEGRADED_REASON,
+    _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT,
     _GROQ_TPD_HEADROOM_TOKENS,
     _MAX_DESC_CHARS,
     _VerdictOutput,
@@ -385,6 +386,36 @@ def test_verify_batch_still_retries_a_transient_per_minute_throttle(monkeypatch)
     assert verdicts[1].verdict == "confirmed"
 
 
+def test_verify_batch_counts_tokens_from_a_malformed_response_before_retrying(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    client = MagicMock()
+    malformed = MagicMock()
+    malformed.choices = [MagicMock()]
+    malformed.choices[0].message.content = json.dumps({"offers": [{}]})
+    malformed.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    valid = MagicMock()
+    valid.choices = [MagicMock()]
+    valid.choices[0].message.content = json.dumps(
+        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]}
+    )
+    valid.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    client.chat.completions.create.side_effect = [malformed, valid]
+
+    verdicts, usage = _verify_batch(client, [_offer(1)], True)
+
+    assert verdicts[1].verdict == "confirmed"
+    assert usage == {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+
+
+def test_failed_malformed_batch_still_counts_every_token_bearing_response(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    _mock_groq(monkeypatch, [{"offers": [{}]}])
+
+    _, usage = verify_offers([_offer(1)], True, "key")
+
+    assert usage["total_tokens"] == 30
+
+
 # --- OpenRouter failover -----------------------------------------------------
 
 def _mock_openrouter(monkeypatch, side_effects):
@@ -432,7 +463,7 @@ def test_proactive_failover_happens_before_the_cap_is_hit(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": []}])
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
 
-    groq_tokens_used_today = GROQ_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
+    groq_tokens_used_today = _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
     verified, usage = verify_offers(
         [_offer(1)], True, "groq-key", llm_api_key="or-key",
         groq_tokens_used_today=groq_tokens_used_today,
@@ -443,6 +474,11 @@ def test_proactive_failover_happens_before_the_cap_is_hit(monkeypatch):
     assert verified[0].remote_verdict == "confirmed"
     assert usage["provider"] == "openrouter"
     assert usage["degraded"] is False
+
+
+def test_proactive_limit_stays_below_the_lowest_observed_groq_cutoff():
+    assert _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT == 150_000
+    assert _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT < GROQ_DAILY_TOKEN_LIMIT
 
 
 def test_tpd_exhaustion_without_an_openrouter_key_stops_the_stage(monkeypatch):
