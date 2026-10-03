@@ -40,7 +40,7 @@ what the README doesn't (or what has drifted from it).
    uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
    Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's
-   `search`/`remote_check` block for the exact filters.    Remote verification
+   `search`/`remote_check` block for the exact filters. Remote verification
    (`src/remote_verifier.py::verify_offers`) runs after scraping/dedup but
    before scoring, primarily on OpenRouter (`qwen/qwen3.8-27b:free`, pins
    kept independent of the scorer's), with Groq `openai/gpt-oss-20b` as the
@@ -91,7 +91,7 @@ what the README doesn't (or what has drifted from it).
    same backoff shape as the other branches; before 2026-09, this escaped as an
    uncaught `AttributeError` and triggered a full tier restart via
    `run_tier_with_retry` instead of a batch retry (confirmed root cause of
-   repeated tier restarts around 2026-09-06 to 2026-09-08).    Remote verification
+   repeated tier restarts around 2026-09-06 to 2026-09-08). Remote verification
    (`src/remote_verifier.py`) sends the judge a keyword-anchored excerpt of each
    description (`_extract_policy_excerpt`), not a flat character prefix - a
    flat cutoff both overspent Groq's 200,000-token/day account-wide cap at
