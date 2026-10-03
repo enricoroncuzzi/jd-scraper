@@ -4,25 +4,15 @@ LinkedIn's "remote" work-mode filter is not trustworthy for this: plenty of
 listings are tagged remote but require residency in the posting country. This
 stage reads the description itself and rules on it.
 
-It runs on Groq rather than OpenRouter as the PRIMARY provider, deliberately:
-scoring already exhausts the OpenRouter free-tier daily cap on bad days, and
-that has taken whole runs down; putting a second stage on the same key would
-make that worse. Groq is a separate key with a separate quota, already a
-dependency of the CV tailoring path.
-
-Groq's 200,000-token/day account-wide budget is real and gets hit on busy
-days (measured peak: 78% of it on one tier alone). When it runs out mid-run -
-or Groq is unusable for any other reason (no key, a broken client) - this
-stage fails over to OpenRouter rather than marking the rest of the day's
-offers "unconfirmed", and stops calling whichever provider is known
-exhausted for the rest of the run rather than repeating a doomed call per
-batch. See _openrouter_chain and GROQ_DAILY_TOKEN_LIMIT below.
-OpenRouter's own free-tier constraint (daily REQUEST cap, not tokens) is why
-this is safe only as a fallback, not as the primary: see
-_OPENROUTER_FALLBACK_MODELS' comment and src/scorer.py, which already spends
-part of that budget on scoring - and why a RateLimitError from OpenRouter
-during the fallback gets the same "stop hammering it" treatment Groq's TPD
-case does, rather than repeating a doomed request for every remaining batch.
+OpenRouter qwen/qwen3.8-27b:free is the primary judge. Groq gpt-oss-20b is the
+fallback, used when OpenRouter's daily share is spent, its quota is exhausted,
+or a batch fails. Groq keeps its own token budget: a proactive ceiling and the
+TPD 429 both stop further Groq calls for the rest of the run instead of
+repeating a doomed request. See _openrouter_chain and GROQ_DAILY_TOKEN_LIMIT.
+OpenRouter's daily REQUEST cap is shared with scoring and tailoring, so this
+stage stops at its derived share (see openrouter_request_shares) and a
+RateLimitError that means the account cap is exhausted stops further
+OpenRouter calls the same way.
 
 The stage is a filter, never a gate. Every failure mode - an empty
 description, a batch that will not complete, both providers unavailable -
@@ -137,57 +127,75 @@ _EXCERPT_INTRO_CHARS = 200
 _EXCERPT_SEPARATOR = " [...] "
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# Fallback pins are perishable (see data/learnings.md 2026-09-06). Verified
-# listed on OpenRouter's public /api/v1/models, with tool-calling support
-# ("tools" in supported_parameters, required by the function-calling
-# structured output below) on 2026-09-29:
-# - nvidia/nemotron-3-super-120b-a12b:free: same model already proven in
-#   production for scoring's structurally similar judgement task
-#   (src/scorer.py's _OPENROUTER_MODEL). A 2026-09-29 spot check re-verified
-#   42 Groq-judged production offers through this path only: 57% raw
-#   agreement, and materially more conservative than Groq (only 8 of 21
-#   Groq-confirmed stayed confirmed, most dropping to unconfirmed on an
-#   ambiguous "remote-first"/"100% remote" phrase). The dangerous direction
-#   (wrongly confirming a Groq-rejected offer) could not be measured, since
-#   rejected offers are never persisted to Neon; that needs a labeled golden
-#   set covering all three verdict classes.
-# - google/gemma-4-26b-a4b-it:free: same fallback already proven in
-#   production via the scorer.
-# - thinkingmachines/inkling-small:free: a third provider (neither nvidia nor
-#   google), so a single-provider OpenRouter outage still leaves one more
-#   entry to fall back to - the same reasoning as src/scorer.py's "one per
-#   provider" comment. Deliberately NOT poolside/laguna-s-2.1:free, which
-#   OpenRouter's own listing describes as a coding-agent model, a worse fit
-#   for a work-location judgement call.
-# Kept independent of src/scorer.py's own array (rather than importing it):
-# that array is a known-stale pin (z-ai/glm-5.2:free is delisted - a separate
-# tracked issue, out of scope here) and this stage's correctness must not
-# inherit scoring's drift.
-_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-# OpenRouter rejects extra_body["models"] above 3 entries total (primary +
-# this list) - see src/scorer.py's _OPENROUTER_FALLBACK_MODELS comment for
-# the 2026-09-01 outage that taught that lesson.
+# Pins are perishable and kept independent of src/scorer.py so this stage does
+# not inherit a scoring pin change. Primary is qwen/qwen3.8-27b:free (measured
+# against Groq on real offers, 2026-10-03). Fallbacks are free models that list
+# structured outputs, one provider each. The array itself is what OpenRouter
+# caps at 3 entries (a 6-entry list broke scoring on 2026-09-01).
+_OPENROUTER_MODEL = "qwen/qwen3.8-27b:free"
 _OPENROUTER_FALLBACK_MODELS = [
-    "google/gemma-4-26b-a4b-it:free",
-    "thinkingmachines/inkling-small:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "dots-studio/dots-3-note-preview:free",
+    "liquid/lfm-2.5-2.6b:free",
 ]
-_OPENROUTER_SCORING_DAILY_REQUEST_RESERVE = 200
-_OPENROUTER_VERIFICATION_DAILY_REQUEST_MAX = 400
+# Tenths of the account-wide daily request allowance. 4+3+1+2 = 10, so
+# verification, scoring, and tailoring together leave a 2/10 headroom and
+# cannot pin the account at the cap on a day when each stage uses its share.
+_OPENROUTER_SHARE_DENOMINATOR = 10
+_OPENROUTER_VERIFICATION_SHARE_NUMERATOR = 4
+_OPENROUTER_SCORING_SHARE_NUMERATOR = 3
+_OPENROUTER_TAILORING_SHARE_NUMERATOR = 1
+_OPENROUTER_HEADROOM_SHARE_NUMERATOR = 2
 _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK = 25
+_OPENROUTER_SCORING_DAILY_REQUEST_FALLBACK = 25
+_OPENROUTER_TAILORING_DAILY_REQUEST_FALLBACK = 10
+
+
+def _openrouter_request_share(limit, numerator: int, fallback: int) -> int:
+    """One stage's request share. A missing or non-request limit stays small."""
+    if limit is None or limit.unit != "requests" or limit.per_day is None:
+        return fallback
+    return limit.per_day * numerator // _OPENROUTER_SHARE_DENOMINATOR
 
 
 def _openrouter_verification_daily_request_cap(limit) -> int:
-    """Derive this stage's share while preserving scoring's fixed reserve."""
+    return _openrouter_request_share(
+        limit, _OPENROUTER_VERIFICATION_SHARE_NUMERATOR,
+        _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK,
+    )
+
+
+def openrouter_request_shares(limit=None) -> dict[str, int]:
+    """Verification, scoring, and tailoring shares, plus the unallocated headroom.
+
+    `limit` defaults to the live openrouter entry in config/llm_limits.json.
+    """
+    if limit is None:
+        limit = limit_for("openrouter", "*")
+    verification = _openrouter_verification_daily_request_cap(limit)
+    scoring = _openrouter_request_share(
+        limit, _OPENROUTER_SCORING_SHARE_NUMERATOR,
+        _OPENROUTER_SCORING_DAILY_REQUEST_FALLBACK,
+    )
+    tailoring = _openrouter_request_share(
+        limit, _OPENROUTER_TAILORING_SHARE_NUMERATOR,
+        _OPENROUTER_TAILORING_DAILY_REQUEST_FALLBACK,
+    )
     if limit is None or limit.unit != "requests" or limit.per_day is None:
-        return _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK
-    available = max(0, limit.per_day - _OPENROUTER_SCORING_DAILY_REQUEST_RESERVE)
-    return min(_OPENROUTER_VERIFICATION_DAILY_REQUEST_MAX, available)
+        headroom = 0
+    else:
+        headroom = limit.per_day - verification - scoring - tailoring
+    return {
+        "verification": verification,
+        "scoring": scoring,
+        "tailoring": tailoring,
+        "headroom": headroom,
+    }
 
 
-# The failover may use at most this many OpenRouter requests per UTC day
-# (retries included). The share follows the live account allowance in
-# config/llm_limits.json, preserves 200 requests for scoring, and is capped at
-# 400. A missing or malformed limit keeps the old safe 25-request share.
+# This stage may use at most this many OpenRouter requests per UTC day
+# (retries included). The share is 4/10 of the live allowance in
+# config/llm_limits.json. A missing or malformed limit keeps a 25-request share.
 _openrouter_limit = limit_for("openrouter", "*")
 OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP = (
     _openrouter_verification_daily_request_cap(_openrouter_limit)
@@ -461,7 +469,7 @@ def _verify_batch_openrouter(
     chain, batch: list[JobOffer], require_italy_eligibility: bool,
     usage: dict, requests_allowed: int,
 ) -> dict:
-    """OpenRouter fallback for a Groq-exhausted stage. Reuses src/scorer.py's
+    """One OpenRouter batch. Reuses src/scorer.py's
     failure classifiers (_is_quota_exceeded, _is_retryable_upstream_value_error,
     _EmptyStructuredOutput) rather than a second, divergent set: this call
     hits the same provider with the same documented failure shapes
@@ -549,11 +557,10 @@ def verify_offers(
 ) -> tuple[list[JobOffer], dict]:
     """Mark each offer confirmed, rejected or unconfirmed. Never raises.
 
-    llm_api_key (OpenRouter) is optional: without it, the stage keeps its
-    pre-failover behaviour of marking a Groq-unavailable run's offers
-    unconfirmed, just without wasting retries on a dead quota.
+    llm_api_key (OpenRouter) is the primary judge. Without it, the stage
+    uses Groq only, and a Groq-unavailable run's offers stay unconfirmed.
     groq_tokens_used_today lets the caller (main.py, which already tracks the
-    day's running Groq total across tiers) make this run fail over BEFORE it
+    day's running Groq total across tiers) skip the Groq fallback BEFORE it
     contributes to blowing the cap, not only after a 429 proves it already
     has. openrouter_requests_used_today does the same for this stage's
     share of OpenRouter's daily request cap
@@ -582,30 +589,27 @@ def verify_offers(
         else:
             checkable.append(offer)
 
-    # Groq being unusable from the start (no key, or the client fails to
-    # build) is folded into the SAME groq_exhausted flag the daily-budget
-    # cases use below, rather than an early return, so it goes through the
-    # same OpenRouter-fallback path instead of a second, more limited
-    # "unconfirmed and give up" branch. Without this, a missing/broken Groq
-    # key skipped OpenRouter even when it was configured and healthy.
+    # A missing or broken Groq key only disables the fallback. OpenRouter
+    # still runs when it is configured. Both unavailable marks the batch
+    # unconfirmed rather than dropping the offer.
     client = None
     groq_exhausted = False
     if not groq_api_key:
-        print("[verifier] No Groq API key" +
-              (" - failing over to OpenRouter." if llm_api_key else
-               " - marking every offer unconfirmed."))
+        print("[verifier] No Groq API key"
+              + (" - OpenRouter is the only verifier." if llm_api_key else
+                 " - marking every offer unconfirmed."))
         groq_exhausted = True
     else:
         try:
             client = _client(groq_api_key)
         except Exception as e:
-            print(f"[verifier] Could not build the Groq client ({type(e).__name__}: {e})" +
-                  (" - failing over to OpenRouter." if llm_api_key else
-                   " - marking every offer unconfirmed."))
+            print(f"[verifier] Could not build the Groq client ({type(e).__name__}: {e})"
+                  + (" - OpenRouter is the only verifier." if llm_api_key else
+                     " - marking every offer unconfirmed."))
             groq_exhausted = True
 
     openrouter_chain = _openrouter_chain(llm_api_key) if llm_api_key else None
-    openrouter_exhausted = False
+    openrouter_exhausted = openrouter_chain is None
     openrouter_requests_allowed = (
         OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP - openrouter_requests_used_today
     )
@@ -617,8 +621,35 @@ def verify_offers(
     for i in range(0, len(checkable), BATCH_SIZE):
         batch = checkable[i:i + BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
+        verdicts = None
 
-        if not groq_exhausted:
+        if not openrouter_exhausted:
+            print(f"[verifier] Verifying batch {batch_num}/{total_batches} "
+                  f"({len(batch)} offers) via OpenRouter...")
+            try:
+                verdicts = _verify_batch_openrouter(
+                    openrouter_chain, batch, require_italy_eligibility,
+                    usage, openrouter_requests_allowed,
+                )
+            except _OpenRouterShareSpent:
+                print(f"[verifier] Verification's daily share of OpenRouter requests "
+                      f"({OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP}) is spent at batch "
+                      f"{batch_num}/{total_batches} - stopping OpenRouter calls.")
+                openrouter_exhausted = True
+            except openai.RateLimitError as e:
+                if _is_quota_exceeded(e):
+                    print(f"[verifier] OpenRouter's own daily quota exhausted at "
+                          f"batch {batch_num}/{total_batches} - stopping OpenRouter "
+                          f"calls for the rest of this run.")
+                    openrouter_exhausted = True
+                else:
+                    print(f"[verifier] OpenRouter batch {batch_num}/{total_batches} failed "
+                          f"({type(e).__name__}: {e}).")
+            except Exception as e:
+                print(f"[verifier] OpenRouter batch {batch_num}/{total_batches} failed "
+                      f"({type(e).__name__}: {e}).")
+
+        if verdicts is None and not groq_exhausted:
             groq_tokens_so_far = groq_tokens_used_today + usage["total_tokens"]
             if groq_tokens_so_far >= (
                 _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
@@ -626,88 +657,43 @@ def verify_offers(
                 print(f"[verifier] Groq verification budget is within "
                       f"{_GROQ_TPD_HEADROOM_TOKENS} tokens of the "
                       f"{_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT} proactive ceiling "
-                      f"({groq_tokens_so_far} used today) - failing over to "
-                      f"OpenRouter before batch {batch_num}/{total_batches} runs.")
+                      f"({groq_tokens_so_far} used today) - not calling Groq for "
+                      f"batch {batch_num}/{total_batches}.")
                 groq_exhausted = True
-
-        verdicts = None
-        if not groq_exhausted:
-            if used_groq:
-                time.sleep(_GROQ_BATCH_PAUSE_SECONDS)
-            print(f"[verifier] Verifying batch {batch_num}/{total_batches} "
-                  f"({len(batch)} offers) via Groq...")
-            used_groq = True
-            batch_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            try:
-                verdicts, _ = _verify_batch(
-                    client, batch, require_italy_eligibility, usage=batch_usage,
-                )
-            except groq.RateLimitError as e:
-                if _is_daily_quota_exceeded(e):
-                    print(f"[verifier] Groq daily token budget exhausted at batch "
-                          f"{batch_num}/{total_batches} - stopping Groq calls for the "
-                          f"rest of this run (resets at the next UTC day).")
-                    groq_exhausted = True
-                    verdicts = None
-                else:
-                    print(f"[verifier] Batch {batch_num}/{total_batches} failed "
-                          f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
+            else:
+                if used_groq:
+                    time.sleep(_GROQ_BATCH_PAUSE_SECONDS)
+                print(f"[verifier] Verifying batch {batch_num}/{total_batches} "
+                      f"({len(batch)} offers) via Groq...")
+                used_groq = True
+                batch_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                try:
+                    verdicts, _ = _verify_batch(
+                        client, batch, require_italy_eligibility, usage=batch_usage,
+                    )
+                except groq.RateLimitError as e:
+                    if _is_daily_quota_exceeded(e):
+                        print(f"[verifier] Groq daily token budget exhausted at batch "
+                              f"{batch_num}/{total_batches} - stopping Groq calls for the "
+                              f"rest of this run (resets at the next UTC day).")
+                        groq_exhausted = True
+                    else:
+                        print(f"[verifier] Groq batch {batch_num}/{total_batches} failed "
+                              f"({type(e).__name__}: {e}).")
+                        verdicts = {}
+                        failed_batches += 1
+                except Exception as e:
+                    print(f"[verifier] Groq batch {batch_num}/{total_batches} failed "
+                          f"({type(e).__name__}: {e}).")
                     verdicts = {}
                     failed_batches += 1
-            except Exception as e:
-                if _is_malformed_output_error(e):
-                    print(f"[verifier] Batch {batch_num}/{total_batches} returned malformed "
-                          f"structured output after one retry - failing over to OpenRouter.")
-                    verdicts = None
-                else:
-                    print(f"[verifier] Batch {batch_num}/{total_batches} failed "
-                          f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
-                    verdicts = {}
-                    failed_batches += 1
-            finally:
-                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                    usage[key] += batch_usage[key]
+                finally:
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        usage[key] += batch_usage[key]
 
         if verdicts is None:
-            if openrouter_chain is not None and not openrouter_exhausted:
-                print(f"[verifier] Verifying batch {batch_num}/{total_batches} "
-                      f"({len(batch)} offers) via OpenRouter (Groq unavailable)...")
-                try:
-                    verdicts = _verify_batch_openrouter(
-                        openrouter_chain, batch, require_italy_eligibility,
-                        usage, openrouter_requests_allowed,
-                    )
-                except _OpenRouterShareSpent:
-                    print(f"[verifier] Verification's daily share of OpenRouter requests "
-                          f"({OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP}) is spent at batch "
-                          f"{batch_num}/{total_batches} - stopping OpenRouter calls so "
-                          f"scoring keeps the rest of the daily cap.")
-                    openrouter_exhausted = True
-                    verdicts = {}
-                    failed_batches += 1
-                except openai.RateLimitError as e:
-                    if _is_quota_exceeded(e):
-                        # OpenRouter's own account-wide daily cap - shared with
-                        # scoring later in this same tier's run, so stop
-                        # spending it here too rather than repeating this same
-                        # doomed call for every remaining batch.
-                        print(f"[verifier] OpenRouter's own daily quota exhausted at "
-                              f"batch {batch_num}/{total_batches} - stopping OpenRouter "
-                              f"calls for the rest of this run too.")
-                        openrouter_exhausted = True
-                    else:
-                        print(f"[verifier] OpenRouter batch {batch_num}/{total_batches} failed "
-                              f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
-                    verdicts = {}
-                    failed_batches += 1
-                except Exception as e:
-                    print(f"[verifier] OpenRouter batch {batch_num}/{total_batches} failed "
-                          f"({type(e).__name__}: {e}) - marking it unconfirmed and continuing.")
-                    verdicts = {}
-                    failed_batches += 1
-            else:
-                verdicts = {}
-                failed_batches += 1
+            verdicts = {}
+            failed_batches += 1
 
         for offer in batch:
             item = verdicts.get(offer.id)
@@ -720,7 +706,7 @@ def verify_offers(
 
     used_openrouter = usage["openrouter_requests"] > 0
     if used_openrouter and used_groq:
-        usage["provider"] = "groq+openrouter"
+        usage["provider"] = "openrouter+groq"
     elif used_openrouter:
         usage["provider"] = "openrouter"
     elif used_groq:
