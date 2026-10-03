@@ -492,7 +492,7 @@ def _serve_one_openrouter_scoring_request(captured: list) -> tuple[str, threadin
     return f"http://127.0.0.1:{server.server_port}/api/v1", server
 
 
-def test_scoring_request_routes_nemotron_primary_with_liquid_in_fallbacks(monkeypatch):
+def test_scoring_request_routes_qwen_primary_with_liquid_in_fallbacks(monkeypatch):
     captured: list[dict] = []
     base_url, server = _serve_one_openrouter_scoring_request(captured)
     monkeypatch.setattr("src.scorer._OPENROUTER_BASE_URL", base_url)
@@ -508,9 +508,13 @@ def test_scoring_request_routes_nemotron_primary_with_liquid_in_fallbacks(monkey
     assert usage["total_tokens"] == 120
 
     request = captured[0]
-    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert request["model"] == "qwen/qwen3.8-27b:free"
     fallbacks = request["models"]
-    assert "liquid/lfm-2.5-2.6b:free" in fallbacks
+    assert fallbacks == [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "dots-studio/dots-3-note-preview:free",
+        "liquid/lfm-2.5-2.6b:free",
+    ]
     assert request["model"] not in fallbacks
     # OpenRouter 400s on a "models" array above 3 items (a 6-entry list broke
     # every scoring request for two days in 2026-09-01's diversification).
