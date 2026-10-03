@@ -117,8 +117,10 @@ what the README doesn't (or what has drifted from it).
    `main.py` passes the day's running count from the usage log as
    `openrouter_requests_used_today`. An `openai.RateLimitError` where
    `_is_quota_exceeded` is true sets `openrouter_exhausted` and stops further
-   OpenRouter calls for the run. Either of those, or a failed batch, falls
-   through to Groq while Groq's token budget lasts, and the batch is marked
+   OpenRouter calls for the run. A failed batch falls through to Groq for
+   that batch. Two such failures in a row stop further OpenRouter calls for
+   the run. One failure does not: the next batch tries OpenRouter again.
+   The batch is marked
    unconfirmed only when Groq is exhausted too. Groq's own ceiling still
    applies on that fallback path: `main.py` passes the day's running Groq
    total as `groq_tokens_used_today`, malformed token-bearing responses are

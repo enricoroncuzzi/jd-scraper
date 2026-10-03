@@ -457,6 +457,39 @@ def test_openrouter_failure_falls_back_to_groq(monkeypatch):
     assert usage["degraded"] is False
 
 
+def test_one_openrouter_batch_failure_does_not_stick(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": i, "verdict": "confirmed", "reason": "Remote."} for i in range(1, 9)]},
+    ])
+    or_chain = _mock_openrouter(monkeypatch, [
+        RuntimeError("openrouter down"),
+        _verdict_output([(i, "confirmed") for i in range(9, 17)]),
+    ])
+
+    verify_offers(
+        [_offer(i) for i in range(1, 17)], True, "groq-key", llm_api_key="or-key",
+    )
+
+    assert or_chain.invoke.call_count == 2
+    assert calls["count"] == 1
+
+
+def test_two_consecutive_openrouter_failures_stop_openrouter(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [
+        {"offers": [{"id": i, "verdict": "rejected", "reason": "On site."} for i in range(1, 9)]},
+    ])
+    or_chain = _mock_openrouter(monkeypatch, RuntimeError("openrouter down"))
+
+    verify_offers(
+        [_offer(i) for i in range(1, 25)], True, "groq-key", llm_api_key="or-key",
+    )
+
+    assert or_chain.invoke.call_count == 2
+    assert calls["count"] == 3
+
+
 # --- OpenRouter failover -----------------------------------------------------
 
 def _mock_openrouter(monkeypatch, side_effects):

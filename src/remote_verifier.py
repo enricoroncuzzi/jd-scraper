@@ -6,7 +6,8 @@ stage reads the description itself and rules on it.
 
 OpenRouter qwen/qwen3.8-27b:free is the primary judge. Groq gpt-oss-20b is the
 fallback, used when OpenRouter's daily share is spent, its quota is exhausted,
-or a batch fails. Groq keeps its own token budget: a proactive ceiling and the
+or a batch fails. Two OpenRouter batch failures in a row stop further
+OpenRouter calls for that run. Groq keeps its own token budget: a proactive ceiling and the
 TPD 429 both stop further Groq calls for the rest of the run instead of
 repeating a doomed request. See _openrouter_chain and GROQ_DAILY_TOKEN_LIMIT.
 OpenRouter's daily request cap is shared with scoring and tailoring. Only
@@ -579,6 +580,7 @@ def verify_offers(
     total_batches = (len(checkable) - 1) // BATCH_SIZE + 1 if checkable else 0
     failed_batches = 0
     used_groq = False
+    openrouter_failures = 0
 
     for i in range(0, len(checkable), BATCH_SIZE):
         batch = checkable[i:i + BATCH_SIZE]
@@ -607,9 +609,17 @@ def verify_offers(
                 else:
                     print(f"[verifier] OpenRouter batch {batch_num}/{total_batches} failed "
                           f"({type(e).__name__}: {e}).")
+                    openrouter_failures += 1
             except Exception as e:
                 print(f"[verifier] OpenRouter batch {batch_num}/{total_batches} failed "
                       f"({type(e).__name__}: {e}).")
+                openrouter_failures += 1
+            else:
+                openrouter_failures = 0
+            if openrouter_failures >= 2:
+                print(f"[verifier] OpenRouter failed {openrouter_failures} batches in a row "
+                      f"at batch {batch_num}/{total_batches} - stopping OpenRouter calls.")
+                openrouter_exhausted = True
 
         if verdicts is None and not groq_exhausted:
             groq_tokens_so_far = groq_tokens_used_today + usage["total_tokens"]
