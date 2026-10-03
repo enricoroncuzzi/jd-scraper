@@ -1,3 +1,9 @@
+import json
+from unittest.mock import MagicMock, patch
+
+import groq
+import pytest
+
 from src.tailor.generate import build_prompt, Selection, CoverLetterParts
 from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import load_canonical
@@ -113,9 +119,6 @@ def test_selection_schema_shape():
 
 
 def test_tailoring_generation_is_recorded(tmp_path):
-    import json
-    from unittest.mock import MagicMock, patch
-
     from src import telemetry
     from src.tailor.generate import generate
 
@@ -150,3 +153,66 @@ def test_tailoring_generation_is_recorded(tmp_path):
     assert recorded[0]["stage"] == "tailoring"
     assert recorded[0]["batch_size"] == 1
     assert recorded[0]["attempt"] == 1
+
+
+def _selection_response(payload):
+    response = MagicMock()
+    response.model = "openai/gpt-oss-120b"
+    response.usage = MagicMock(prompt_tokens=40, completion_tokens=12)
+    response.choices = [MagicMock()]
+    response.choices[0].message.content = json.dumps(payload)
+    return response
+
+
+def _valid_selection_payload():
+    return {
+        "included_bullet_ids": ["exp.0.b0"],
+        "skill_order": ["skill.languages", "skill.ai_stack"],
+        "cover_letter": {
+            "hook": "I focus on agents.",
+            "bridge": "I built pipelines.",
+            "proof_id": "exp.0.b0",
+        },
+        "hr_message": "Hi, I saw the role.",
+    }
+
+
+def _json_validate_error():
+    message = "Failed to validate JSON. json_validate_failed"
+    return groq.BadRequestError(
+        message,
+        response=MagicMock(status_code=400, headers={}),
+        body={"error": {"message": message, "code": "json_validate_failed"}},
+    )
+
+
+@pytest.mark.parametrize("first_result", [
+    _selection_response({}),
+    _json_validate_error(),
+])
+def test_tailoring_retries_malformed_output_once(tmp_path, first_result):
+    from src.tailor.generate import generate
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        first_result,
+        _selection_response(_valid_selection_payload()),
+    ]
+
+    with patch("groq.Groq", return_value=client):
+        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert client.chat.completions.create.call_count == 2
+    assert selection.cover_letter.proof_id == "exp.0.b0"
+
+
+def test_tailoring_malformed_output_retry_is_bounded(tmp_path):
+    from src.tailor.generate import generate
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = _json_validate_error()
+
+    with patch("groq.Groq", return_value=client), pytest.raises(groq.BadRequestError):
+        generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert client.chat.completions.create.call_count == 2

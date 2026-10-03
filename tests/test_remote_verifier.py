@@ -13,14 +13,17 @@ from src.remote_verifier import (
     GROQ_DAILY_TOKEN_LIMIT,
     OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP,
     _DEGRADED_REASON,
+    _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT,
     _GROQ_TPD_HEADROOM_TOKENS,
     _MAX_DESC_CHARS,
     _VerdictOutput,
     _extract_policy_excerpt,
     _is_daily_quota_exceeded,
+    _openrouter_verification_daily_request_cap,
     _verify_batch,
     verify_offers,
 )
+from src.llm_limits import Limit
 
 
 def _offer(offer_id, description="We are fully remote across the EU.", status="ok"):
@@ -333,6 +336,15 @@ def _rate_limit_error(message: str) -> groq.RateLimitError:
     )
 
 
+def _json_validate_error() -> groq.BadRequestError:
+    message = "Failed to validate JSON. Please adjust your prompt. json_validate_failed"
+    return groq.BadRequestError(
+        message,
+        response=MagicMock(status_code=400, headers={}),
+        body={"error": {"message": message, "code": "json_validate_failed"}},
+    )
+
+
 _TPD_MESSAGE = (
     "Rate limit reached for model `openai/gpt-oss-20b` ... on tokens per day "
     "(TPD): Limit 200000, Used 199999, Requested 5000. Please try again in 4h32m."
@@ -383,6 +395,77 @@ def test_verify_batch_still_retries_a_transient_per_minute_throttle(monkeypatch)
     assert verdicts[1].verdict == "confirmed"
 
 
+def test_verify_batch_counts_tokens_from_a_malformed_response_before_retrying(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    client = MagicMock()
+    malformed = MagicMock()
+    malformed.choices = [MagicMock()]
+    malformed.choices[0].message.content = json.dumps({"offers": [{}]})
+    malformed.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    valid = MagicMock()
+    valid.choices = [MagicMock()]
+    valid.choices[0].message.content = json.dumps(
+        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]}
+    )
+    valid.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    client.chat.completions.create.side_effect = [malformed, valid]
+
+    verdicts, usage = _verify_batch(client, [_offer(1)], True)
+
+    assert verdicts[1].verdict == "confirmed"
+    assert usage == {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+
+
+def test_failed_malformed_batch_still_counts_every_token_bearing_response(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    _mock_groq(monkeypatch, [{"offers": [{}]}])
+
+    _, usage = verify_offers([_offer(1)], True, "key")
+
+    assert usage["total_tokens"] == 30
+
+
+def test_json_validate_failed_retries_groq_only_once_then_succeeds(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [
+        _json_validate_error(),
+        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]},
+    ])
+
+    verified, usage = verify_offers([_offer(1)], True, "key")
+
+    assert calls["count"] == 2
+    assert verified[0].remote_verdict == "confirmed"
+    assert usage["degraded"] is False
+
+
+def test_structured_validation_failure_falls_back_to_openrouter_after_two_groq_calls(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [{"offers": [{}]}])
+    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "rejected")])])
+
+    verified, usage = verify_offers(
+        [_offer(1)], True, "groq-key", llm_api_key="or-key",
+    )
+
+    assert calls["count"] == 2
+    assert or_chain.invoke.call_count == 1
+    assert verified[0].remote_verdict == "rejected"
+    assert usage["degraded"] is False
+
+
+def test_json_validate_failed_falls_back_to_openrouter_after_two_groq_calls(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    calls = _mock_groq(monkeypatch, [_json_validate_error()])
+    or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
+
+    verified, _ = verify_offers([_offer(1)], True, "groq-key", llm_api_key="or-key")
+
+    assert calls["count"] == 2
+    assert or_chain.invoke.call_count == 1
+    assert verified[0].remote_verdict == "confirmed"
+
+
 # --- OpenRouter failover -----------------------------------------------------
 
 def _mock_openrouter(monkeypatch, side_effects):
@@ -430,7 +513,7 @@ def test_proactive_failover_happens_before_the_cap_is_hit(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": []}])
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
 
-    groq_tokens_used_today = GROQ_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
+    groq_tokens_used_today = _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS
     verified, usage = verify_offers(
         [_offer(1)], True, "groq-key", llm_api_key="or-key",
         groq_tokens_used_today=groq_tokens_used_today,
@@ -441,6 +524,11 @@ def test_proactive_failover_happens_before_the_cap_is_hit(monkeypatch):
     assert verified[0].remote_verdict == "confirmed"
     assert usage["provider"] == "openrouter"
     assert usage["degraded"] is False
+
+
+def test_proactive_limit_stays_below_the_lowest_observed_groq_cutoff():
+    assert _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT == 150_000
+    assert _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT < GROQ_DAILY_TOKEN_LIMIT
 
 
 def test_tpd_exhaustion_without_an_openrouter_key_stops_the_stage(monkeypatch):
@@ -539,6 +627,27 @@ def test_openrouters_own_daily_cap_stops_further_openrouter_calls(monkeypatch):
 
 
 # --- Verification's daily share of OpenRouter requests ----------------------
+
+def test_openrouter_verification_share_uses_live_allowance_and_reserves_scoring():
+    limit = Limit("openrouter", "*", "requests", 1000)
+
+    assert _openrouter_verification_daily_request_cap(limit) == 400
+
+
+def test_openrouter_verification_share_shrinks_before_scoring_reserve():
+    limit = Limit("openrouter", "*", "requests", 500)
+
+    assert _openrouter_verification_daily_request_cap(limit) == 300
+
+
+@pytest.mark.parametrize("limit", [
+    None,
+    Limit("openrouter", "*", "tokens", 1000),
+    Limit("openrouter", "*", "requests", None),
+])
+def test_openrouter_verification_share_has_safe_fallback_for_missing_or_invalid_limit(limit):
+    assert _openrouter_verification_daily_request_cap(limit) == 25
+
 
 def test_openrouter_failover_stops_at_its_daily_request_share(monkeypatch):
     """Scoring spends the same OpenRouter account cap later in the tier, so

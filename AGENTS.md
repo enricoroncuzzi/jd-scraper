@@ -17,8 +17,8 @@ what the README doesn't (or what has drifted from it).
    by `src/scraper.py`'s `resolve_max_pages_per_query`, which falls back to
    the conservative `_MAX_PAGES_PER_QUERY` default on an absent or invalid
    value so a malformed config can never mean unbounded pagination); the
-   per-tier values are a captain decision (task `pagination-cap-checkpoint`),
-   not a worker judgment call. `_fetch_for_query` logs each query's actual
+   per-tier values are captain decisions, not a worker judgment call.
+   `_fetch_for_query` logs each query's actual
    page count when pagination stops), language filter, dedup,
    remote verification, LLM scoring (OpenRouter, free-tier models with a
    native model fallback array - see `_OPENROUTER_MODEL`/
@@ -109,8 +109,10 @@ what the README doesn't (or what has drifted from it).
    (`_openrouter_chain`, using `_VerdictOutput` via
    `with_structured_output(method="function_calling")`, same shape as the
    scorer) both proactively - `main.py` passes the day's running Groq total
-   as `groq_tokens_used_today`, and a batch switches before it would push
-   past `GROQ_DAILY_TOKEN_LIMIT - _GROQ_TPD_HEADROOM_TOKENS` - and reactively,
+   as `groq_tokens_used_today`, malformed token-bearing responses are included
+   in that total, and a batch switches before it would push past the
+   evidence-based `_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT` (150,000, below the
+   observed 151k-169k cutoffs) minus `_GROQ_TPD_HEADROOM_TOKENS` - and reactively,
    on a Groq 429 whose body contains "tokens per day (TPD)"
    (`_is_daily_quota_exceeded`, the same detect-and-propagate-immediately
    pattern as `_is_quota_exceeded` in `src/scorer.py`, but text-matched
@@ -128,8 +130,10 @@ what the README doesn't (or what has drifted from it).
    where `_is_quota_exceeded` is true sets its own `openrouter_exhausted`
    flag and gets the identical stage-stop treatment, instead of repeating a
    doomed call for every remaining batch. Short of that, the failover may
-   spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (25, the
-   verifier's own share, retries included; the verifier's own SDK clients run with
+   spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (derived from the
+   live allowance in `config/llm_limits.json`, with 200 requests reserved for
+   scoring, a 400-request verification ceiling, and a safe 25-request fallback;
+   retries are included and the verifier's own SDK clients run with
    `max_retries=0` so each counted attempt is exactly one HTTP request)
    OpenRouter requests per UTC day - `main.py`
    passes the day's running count from the usage log as
