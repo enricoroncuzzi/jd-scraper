@@ -238,7 +238,7 @@ def _or_dash(v) -> str:
 
 
 def render_trend(metrics) -> str:
-    lines = ["date    cap-hits  verif-tok  8+ share  llm-fail  packaged"]
+    lines = [f"date    cap-hits  verif-tok  {TierSettings().threshold}+ share  llm-fail  packaged"]
     for m in metrics:
         share = f"{100 * m.high / m.scored:.1f}%" if m.scored else "-"
         caps = f"{m.cap_hits}/{m.queries}" if m.queries is not None else "-"
@@ -266,7 +266,7 @@ def render_compare(commit: str, before, after) -> str:
             "Offers found / day": _avg([m.offers_fetched for m in ms]),
             "Searches hitting limit / day": _avg([m.cap_hits for m in ms]),
             "Verification tokens / day": _avg([m.verification_tokens for m in ms]),
-            "Share scoring 8+ (%)": (100 * sum(m.high for m in ms) / scored) if scored else None,
+            f"Share scoring {TierSettings().threshold}+ (%)": (100 * sum(m.high for m in ms) / scored) if scored else None,
             "LLM failure rate (%)": _llm_failure_rate(ms),
             "Packaged / day": _avg([m.packaged for m in ms]),
         }
