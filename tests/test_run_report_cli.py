@@ -35,3 +35,4 @@ def test_compare_passes_the_commit_and_prints(monkeypatch, capsys):
          patch("src.report_render.render_compare", return_value="CMP") as render:
         assert _run(["compare", "abc1234"], monkeypatch) == 0
     assert render.call_args.args[0] == "abc1234" and "CMP" in capsys.readouterr().out
+    assert render.call_args.kwargs["settings"]
