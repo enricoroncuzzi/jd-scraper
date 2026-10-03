@@ -77,6 +77,35 @@ class StageRow:
     tokens: int
 
 
+def _merge_no_response_stage_rows(rows: list[StageRow]) -> list[StageRow]:
+    """Collapse unanswered calls across request models/providers per stage."""
+    merged: list[StageRow] = []
+    unanswered: dict[tuple[int, str], StageRow] = {}
+    for row in rows:
+        if row.model != NO_RESPONSE_MODEL:
+            merged.append(row)
+            continue
+        key = (row.tier, row.stage)
+        if key not in unanswered:
+            combined = StageRow(
+                tier=row.tier,
+                stage=row.stage,
+                provider=row.provider,
+                request_model=row.request_model,
+                model=row.model,
+                calls=0,
+                failed=0,
+                tokens=0,
+            )
+            unanswered[key] = combined
+            merged.append(combined)
+        combined = unanswered[key]
+        combined.calls += row.calls
+        combined.failed += row.failed
+        combined.tokens += row.tokens
+    return merged
+
+
 @dataclass
 class LimitUse:
     provider: str
@@ -301,8 +330,12 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
                 "WHERE r.daily_run_id = %s "
                 "GROUP BY r.tier, c.stage, c.provider, c.request_model, model "
                 "ORDER BY r.tier, c.stage, calls DESC", (daily_run_id,))
-            stages = [StageRow(**{**r, "calls": int(r["calls"]), "failed": int(r["failed"]),
-                                  "tokens": int(r["tokens"])}) for r in cur.fetchall()]
+            stage_rows = [
+                StageRow(**{**r, "calls": int(r["calls"]), "failed": int(r["failed"]),
+                            "tokens": int(r["tokens"])})
+                for r in cur.fetchall()
+            ]
+            stages = _merge_no_response_stage_rows(stage_rows)
             cur.execute(
                 "SELECT COUNT(*) AS calls, COUNT(*) FILTER (WHERE c.outcome <> 'ok') AS failed, "
                 "percentile_cont(0.95) WITHIN GROUP (ORDER BY c.latency_ms) AS p95 "

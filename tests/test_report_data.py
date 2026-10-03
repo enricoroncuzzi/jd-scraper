@@ -83,6 +83,24 @@ def test_unanswered_calls_render_as_no_response():
     assert "no response" in report_render.render_llm(models, [])
 
 
+def test_no_response_calls_merge_into_one_group_per_tier_and_stage():
+    rows = [
+        rd.StageRow(4, "verification", "groq", "openai/gpt-oss-20b",
+                    rd.NO_RESPONSE_MODEL, 2, 2, 0),
+        rd.StageRow(4, "verification", "openrouter", "nvidia/model:free",
+                    rd.NO_RESPONSE_MODEL, 1, 1, 0),
+        rd.StageRow(4, "verification", "openrouter", "nvidia/model:free",
+                    "nvidia/model:free", 5, 0, 1200),
+    ]
+
+    merged = rd._merge_no_response_stage_rows(rows)
+
+    unanswered = [row for row in merged if row.model == rd.NO_RESPONSE_MODEL]
+    assert len(unanswered) == 1
+    assert (unanswered[0].calls, unanswered[0].failed, unanswered[0].tokens) == (3, 3, 0)
+    assert len(merged) == 2
+
+
 def test_report_connect_is_bounded():
     from unittest.mock import patch
     with patch("src.report_data.psycopg2.connect") as connect:
