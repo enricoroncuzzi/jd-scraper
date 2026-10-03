@@ -32,7 +32,7 @@ what the README doesn't (or what has drifted from it).
    `src/retry_queue.py`, `data/unscored_tier{N}.jsonl`, its path derived from
    `dedup_log_path` as `AppConfig.retry_queue_path`. The next run feeds that
    queue into scoring ahead of fresh offers, description and remote verdict
-   intact so neither LinkedIn nor Groq is paid twice, and entries expire after
+   intact so neither LinkedIn nor the LLM stages are paid twice, and entries expire after
    `MAX_AGE_DAYS` (3); the deferred count is reported in both the digest and
    the Telegram summary. Why that split is load-bearing (an unconditional
    `mark_seen` is silently lossy, with exit code 0): see `src/retry_queue.py`'s
@@ -40,16 +40,16 @@ what the README doesn't (or what has drifted from it).
    uniform geographic sweep: tier 1 is Italy full-remote, tier 2 is
    Switzerland/San Marino any work mode, tier 3 is EU/EEA full-remote (via a
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's
-   `search`/`remote_check` block for the exact filters. Remote verification
+   `search`/`remote_check` block for the exact filters.    Remote verification
    (`src/remote_verifier.py::verify_offers`) runs after scraping/dedup but
-   before scoring, primarily on Groq (a separate key/quota from the
-   OpenRouter scorer), and rules each offer confirmed/rejected/unconfirmed;
+   before scoring, primarily on OpenRouter (`qwen/qwen3.8-27b:free`, pins
+   kept independent of the scorer's), with Groq `openai/gpt-oss-20b` as the
+   fallback, and rules each offer confirmed/rejected/unconfirmed;
    it is a filter, not a gate - every failure mode (missing key, empty
    description, a batch that won't complete, both providers unavailable)
-   resolves to unconfirmed rather than silently dropping a real job. Since
-   2026-09-29, Groq's 200,000-token/day account-wide budget failing over
-   mid-run means this stage stops feeding Groq's exhausted quota and starts
-   verifying on OpenRouter instead - see the failover paragraph below.
+   resolves to unconfirmed rather than silently dropping a real job. OpenRouter
+   is tried first. Groq runs when that share is spent, the account quota is
+   exhausted, or the batch fails. See the failover paragraph below.
    `orchestrator.py` runs the 4 tier
    configs sequentially via `main.py`. Each tier's CLI entrypoint (`main.py`'s
    `run_tier_with_retry`) retries an uncaught transient failure (scraper/scorer
@@ -91,8 +91,8 @@ what the README doesn't (or what has drifted from it).
    same backoff shape as the other branches; before 2026-09, this escaped as an
    uncaught `AttributeError` and triggered a full tier restart via
    `run_tier_with_retry` instead of a batch retry (confirmed root cause of
-   repeated tier restarts around 2026-09-06 to 2026-09-08). Remote verification
-   (`src/remote_verifier.py`) sends Groq a keyword-anchored excerpt of each
+   repeated tier restarts around 2026-09-06 to 2026-09-08).    Remote verification
+   (`src/remote_verifier.py`) sends the judge a keyword-anchored excerpt of each
    description (`_extract_policy_excerpt`), not a flat character prefix - a
    flat cutoff both overspent Groq's 200,000-token/day account-wide cap at
    post-reshape volume and silently missed the remote/hybrid/on-site sentence
@@ -105,42 +105,34 @@ what the README doesn't (or what has drifted from it).
    spend. When the keyword windows don't fit the budget, the context radius
    shrinks uniformly instead of the excerpt being filled in document order -
    otherwise early remote-flavoured boilerplate crowds out a decisive late
-   on-site sentence. `verify_offers` fails over from Groq to OpenRouter
-   (`_openrouter_chain`, using `_VerdictOutput` via
-   `with_structured_output(method="function_calling")`, same shape as the
-   scorer) both proactively - `main.py` passes the day's running Groq total
-   as `groq_tokens_used_today`, malformed token-bearing responses are included
-   in that total, and a batch switches before it would push past the
-   evidence-based `_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT` (150,000, below the
-   observed 151k-169k cutoffs) minus `_GROQ_TPD_HEADROOM_TOKENS` - and reactively,
-   on a Groq 429 whose body contains "tokens per day (TPD)"
-   (`_is_daily_quota_exceeded`, the same detect-and-propagate-immediately
-   pattern as `_is_quota_exceeded` in `src/scorer.py`, but text-matched
-   rather than reset-timestamp-matched because that is the signal Groq's
-   body actually carries). Groq being unusable from the very start (no key,
-   or `_client` raising) sets the same `groq_exhausted` flag rather than
-   returning early, so it goes through this same OpenRouter path too - a
-   missing/broken Groq key does not skip a working fallback. Once Groq is
-   known exhausted for the run, no further batches call it at all
-   (stage-stop, not just that one batch's retry ladder) - they go to
-   OpenRouter if `llm_api_key` was passed, or are marked unconfirmed
-   immediately if not. OpenRouter is itself a shared, budget-limited
-   fallback (its daily request cap is also what scoring depends on later in
-   the same tier's `handler()` run), so an `openai.RateLimitError` from it
-   where `_is_quota_exceeded` is true sets its own `openrouter_exhausted`
-   flag and gets the identical stage-stop treatment, instead of repeating a
-   doomed call for every remaining batch. Short of that, the failover may
-   spend at most `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP` (derived from the
-   live allowance in `config/llm_limits.json`, with 200 requests reserved for
-   scoring, a 400-request verification ceiling, and a safe 25-request fallback;
-   retries are included and the verifier's own SDK clients run with
-   `max_retries=0` so each counted attempt is exactly one HTTP request)
-   OpenRouter requests per UTC day - `main.py`
-   passes the day's running count from the usage log as
-   `openrouter_requests_used_today` - and once that share is spent, remaining
-   batches go unconfirmed so scoring keeps its half. Both daily counters in
-   `main.py`'s usage log are bucketed by UTC date, the boundary both providers
-   reset on. The OpenRouter batch call itself
+   on-site sentence. The primary call is `_openrouter_chain` (`_VerdictOutput`
+   via `with_structured_output(method="function_calling")`, same shape as the
+   scorer). Its daily request share is
+   `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP`, from `openrouter_request_shares`:
+   tenths of the live `config/llm_limits.json` OpenRouter allowance, 4
+   verification, 3 scoring, 1 tailoring, 2 headroom (400/300/100/200 at the
+   current 1000/day figure). Only the verification share is enforced inside
+   this stage. Scoring and tailoring shares are named so the split stays
+   visible, with small fallbacks (25/25/10) when the file is missing or not a
+   request limit. Retries are included and the verifier's own SDK clients run
+   with `max_retries=0` so each counted attempt is exactly one HTTP request.
+   `main.py` passes the day's running count from the usage log as
+   `openrouter_requests_used_today`. An `openai.RateLimitError` where
+   `_is_quota_exceeded` is true sets `openrouter_exhausted` and stops further
+   OpenRouter calls for the run. Either of those, or a failed batch, falls
+   through to Groq while Groq's token budget lasts, and the batch is marked
+   unconfirmed only when Groq is exhausted too. Groq's own ceiling still
+   applies on that fallback path: `main.py` passes the day's running Groq
+   total as `groq_tokens_used_today`, malformed token-bearing responses are
+   included in that total, and a batch skips Groq before it would push past
+   `_GROQ_PROACTIVE_DAILY_TOKEN_LIMIT` (150,000, below the observed 151k-169k
+   cutoffs) minus `_GROQ_TPD_HEADROOM_TOKENS`. A Groq 429 whose body contains
+   "tokens per day (TPD)" (`_is_daily_quota_exceeded`, text-matched because
+   that is the signal Groq's body actually carries) does the same stage-stop.
+   A missing or broken Groq key sets `groq_exhausted` and leaves OpenRouter
+   as the only verifier. Once Groq is known exhausted, no further batches
+   call it. Both daily counters in `main.py`'s usage log are bucketed by UTC
+   date, the boundary both providers reset on. The OpenRouter batch call
    reuses `src/scorer.py`'s `_is_quota_exceeded`,
    `_is_retryable_upstream_value_error` and `_EmptyStructuredOutput` rather
    than a second, divergent set of failure classifiers, since it is hitting
@@ -148,22 +140,19 @@ what the README doesn't (or what has drifted from it).
    own OpenRouter model pin (`_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS`
    in `src/remote_verifier.py`) is kept independent of the scorer's array
    rather than importing it, so this stage's correctness does not inherit the
-   scorer's pin drift (see `_OPENROUTER_FALLBACK_MODELS`'s comment there for
-   a currently-known-stale entry in the scorer's own array - untouched,
-   separate issue). The OpenRouter fallback is materially more conservative
-   than Groq at this judgement (confirmed tends to drop to unconfirmed, which
-   removes the offer from auto-apply's pool that day) - see that same
-   comment for the spot-check evidence and what it could not measure.
+   scorer's pin drift. A 2026-10-03 comparison on real offers put Qwen's
+   agreement with prior Groq verdicts at 85.5% (Wilson 78.0-90.7%), with zero
+   rejected-to-confirmed flips.
    `usage["degraded"]` fires once `failed_batches /
    total_batches >= _DEGRADED_FAILURE_RATIO` (10%), not only at 100% failure,
    so a mostly-failed run cannot report itself healthy in the Telegram
    digest. A `_GROQ_BATCH_PAUSE_SECONDS`
-   (25s) pause between consecutive Groq batches (not applied once failed over
-   to OpenRouter) trades tier runtime for fewer TPM-throttle retries: Groq's
-   free-plan 8,000-token/minute ceiling is tight against this stage's
-   ~4,500-5,500-token batches, so two back-to-back calls reliably trip it even
-   nowhere near the daily cap; the pause removes most but not all of those
-   (two calls can still land in the same rolling 60s window).
+   (25s) pause between consecutive Groq fallback batches (not applied on the
+   OpenRouter primary path) trades tier runtime for fewer TPM-throttle
+   retries: Groq's free-plan 8,000-token/minute ceiling is tight against this
+   stage's ~4,500-5,500-token batches, so two back-to-back calls reliably trip
+   it even nowhere near the daily cap; the pause removes most but not all of
+   those (two calls can still land in the same rolling 60s window).
 2. **CV tailoring engine** (`tailor.py`, `src/tailor/`): tailors a
    CV/cover-letter/recruiter message per job posting. The CV body is never
    rewritten - `src/tailor/cv_master.py`'s `assemble()` selects and reorders
@@ -172,8 +161,10 @@ what the README doesn't (or what has drifted from it).
    (see the prompt in `src/tailor/generate.py`). `src/tailor/validate.py`
    is the validation gate: it byte-matches the assembled CV against
    `REQUIRED_METRICS` and checks cover-letter claims, halting on a mismatch.
-   Generation uses **Groq** (`openai/gpt-oss-120b`, key read as
-   `GROQ_API_KEY` in `tailor.py`).
+   Generation uses **OpenRouter** (`qwen/qwen3.8-27b:free` with the same
+   three-model structured-output fallback chain, key read as `LLM_API_KEY`
+   in `tailor.py`). The quality guards in `src/tailor/validate.py`, including
+   the concrete-bridge halt, are unchanged.
 3. **Auto-apply v1 (draft-and-notify)** (`src/autoapply/`): a
    **draft-and-notify system, not an auto-submit system - there is no code
    path anywhere that submits an application.** Wired into `main.py` behind
@@ -203,7 +194,7 @@ what the README doesn't (or what has drifted from it).
    `dry_run=true`), because `is_application_packaged`/
    `count_applications_packaged_today` don't distinguish dry-run from live rows:
    without that write, the same still-open offer got re-tailored (and
-   re-billed against the Groq quota) every day dry-run stayed on. One
+   re-billed against the OpenRouter quota) every day dry-run stayed on. One
    consequence: once an offer is dry-run-packaged it stays deduped even after
    `dry_run` flips to `false` - it will never retroactively fire a live
    notification for that offer, only newly-qualifying ones do.
@@ -236,15 +227,13 @@ what the README doesn't (or what has drifted from it).
 - Runtime secrets are read from a gitignored `.env`; `.env.template` lists the
   expected keys. `LLM_API_KEY` is read generically (the `llm_api_key`
   assignment in `src/config.py`'s `load_config`, not provider-specific by
-  name) and currently holds an OpenRouter key consumed by
-  `src/scorer.py`'s scoring calls and, since 2026-09-29, by
-  `src/remote_verifier.py`'s OpenRouter failover once Groq's daily
-  verification budget is exhausted. `GROQ_API_KEY` is consumed by three
-  paths: the tailoring engine (`src/tailor/generate.py`), auto-apply
-  (`src/autoapply/pipeline.py`, via `main.py`), and remote verification
+  name) and currently holds an OpenRouter key consumed by scoring
+  (`src/scorer.py`), remote verification (`src/remote_verifier.py`, primary),
+  and tailoring (`src/tailor/generate.py`, including auto-apply via
+  `main.py`). `GROQ_API_KEY` is the verification fallback only
   (`src/remote_verifier.py`, via `main.py`'s call into `verify_offers`). Its absence does not fail the
-  run loudly - `verify_offers` fails over to OpenRouter (see above), and with
-  no usable `LLM_API_KEY` either it marks every offer unconfirmed (reported as
+  run loudly: OpenRouter still verifies, and with
+  no usable `LLM_API_KEY` either the stage marks every offer unconfirmed (reported as
   degraded), which then blocks auto-apply for tiers with `remote_check.enabled`
   (the candidate filter in `src/autoapply/pipeline.py` excludes unconfirmed
   offers). Check `src/config.py`, `src/scorer.py`, `main.py`, and `tailor.py`

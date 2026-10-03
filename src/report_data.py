@@ -262,7 +262,6 @@ def catalog_for_report() -> tuple[list[Limit], bool]:
         return loaded, False
     return [
         Limit("groq", "openai/gpt-oss-20b", "tokens", None),
-        Limit("groq", "openai/gpt-oss-120b", "tokens", None),
         Limit("openrouter", "*", "requests", None),
     ], True
 

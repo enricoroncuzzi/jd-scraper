@@ -15,20 +15,20 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 ## What runs daily, zero-touch
 
 1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to a per-tier page cap (`search.max_pages_per_query` in each tier config, resolved by `src/scraper.py`), where each page advances `start` by the number of cards the endpoint actually returned rather than by an assumed page size: tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote, tier 4 United Kingdom full-remote. A tier narrows its results to the countries listed in its config's `search.allowed_countries` (enforced by `src/tier_scope.py`); tiers 1 and 4 list none and do no narrowing.
-2. **Verify** - `src/remote_verifier.py` runs an LLM (Groq primarily, failing over to OpenRouter once Groq's daily verification budget runs out, with a daily OpenRouter share derived from `config/llm_limits.json`, capped at 400 requests and reserving 200 for scoring) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
-3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a 3-model native fallback array that includes `liquid/lfm-2.5-2.6b:free`), returning structured Pydantic output with a one-line rationale.
+2. **Verify** - `src/remote_verifier.py` runs an LLM (OpenRouter `qwen/qwen3.8-27b:free` primarily, falling back to Groq `openai/gpt-oss-20b` when that share is spent or a batch fails; the daily OpenRouter share comes from `config/llm_limits.json`, 400 of 1000 requests, with named shares left for scoring, tailoring, and headroom) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
+3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`qwen/qwen3.8-27b:free`, with a 3-model native fallback array: `nvidia/nemotron-3-super-120b-a12b:free`, `dots-studio/dots-3-note-preview:free`, `liquid/lfm-2.5-2.6b:free`), returning structured Pydantic output with a one-line rationale. The shipped score cutoff is 7.
 4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included.
 5. **Digest** - a ranked `digest.md` per tier lands in Obsidian, alongside a `rejected.md` audit trail of what verification screened out and why, plus a Telegram summary.
 6. **Tailor** - one click on any offer in the digest runs the CV tailoring engine end to end.
 7. **Morning health report** - when the four-tier cron run finishes, `orchestrator.py` sends a Telegram run-health summary; on the server, `python scripts/run_report.py day` prints the same view (`trend`, `compare`, and `llm` in `scripts/run_report.py`).
 
-`LinkedIn -> scrape/dedup/filter -> remote verifier (Groq) -> LLM scorer (OpenRouter) -> Postgres corpus -> digest.md + Telegram -> [tailor] -> Groq generation + validation gate -> PDF`
+`LinkedIn -> scrape/dedup/filter -> remote verifier (OpenRouter, Groq fallback) -> LLM scorer (OpenRouter) -> Postgres corpus -> digest.md + Telegram -> [tailor] -> OpenRouter generation + validation gate -> PDF`
 
 The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the digest.
 
 ## CV tailoring, working today
 
-`tailor.py <job>` calls Groq (`openai/gpt-oss-120b`) to select and reorder verbatim bullets and skills from a canonical CV for the specific job description, generating only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte, so the tailored version renders to the same single-page layout as the original. The validation gate in `src/tailor/validate.py` aborts the run if any required metric or claim doesn't match. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline.
+`tailor.py <job>` calls OpenRouter (`qwen/qwen3.8-27b:free`) to select and reorder verbatim bullets and skills from a canonical CV for the specific job description, generating only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte, so the tailored version renders to the same single-page layout as the original. The validation gate in `src/tailor/validate.py` aborts the run if any required metric or claim doesn't match. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline.
 
 ## Tech stack
 
