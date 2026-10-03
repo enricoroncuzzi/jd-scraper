@@ -5,6 +5,7 @@ from src.writer import _note_filename
 from src.autoapply.classify import classify_channel
 from src.autoapply.package import write_manifest, notify_package
 from src import storage
+from src.scorer import _openrouter_quota_exhausted
 import tailor as tailor_cli
 
 
@@ -73,6 +74,9 @@ def run_autoapply(
             directory = tailor_cli.run(note_path, output_path, cv_master_path, css_path, llm_api_key)
         except Exception as e:
             print(f"[autoapply] tailoring failed for {offer.company}: {e}")
+            if _openrouter_quota_exhausted(e):
+                print("[autoapply] OpenRouter daily quota exhausted, stopping")
+                break
             continue
 
         write_manifest(directory, offer, channel, dry_run)

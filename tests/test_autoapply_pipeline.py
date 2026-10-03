@@ -173,6 +173,34 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch, cv_paths):
     assert calls["notify"] == []
 
 
+def test_run_autoapply_stops_when_openrouter_quota_is_exhausted(monkeypatch, cv_paths):
+    import time
+    import openai
+
+    calls = _patch_common(monkeypatch)
+    reset_ms = int((time.time() + 3600) * 1000)
+    quota = openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={"x-ratelimit-reset": str(reset_ms)}),
+        body={"code": 429, "metadata": {"headers": {"X-RateLimit-Reset": str(reset_ms)}}},
+    )
+
+    def boom(*a, **k):
+        calls["tailor_run"].append(a[0])
+        raise quota
+
+    monkeypatch.setattr("src.autoapply.pipeline.tailor_cli.run", boom)
+    offers = [_offer(1, score=9, company="First"), _offer(2, score=9, company="Second")]
+    results = run_autoapply(
+        offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        daily_cap=5, dry_run=False,
+        telegram_token="tok", telegram_chat_id="chat1",
+    )
+    assert results == []
+    assert len(calls["tailor_run"]) == 1
+
+
 def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch, cv_paths):
     called = {"count": False}
     monkeypatch.setattr(

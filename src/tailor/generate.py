@@ -1,11 +1,19 @@
 import functools
 import inspect
 import json
+import time
 
+import openai
 from pydantic import BaseModel
 from src import telemetry
 from src.remote_verifier import _is_malformed_output_error
-from src.scorer import _EmptyStructuredOutput, _TokenCounter, _openrouter_quota_exhausted
+from src.scorer import (
+    _EmptyStructuredOutput,
+    _TokenCounter,
+    _is_quota_exceeded,
+    _is_retryable_upstream_value_error,
+    _openrouter_quota_exhausted,
+)
 from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import CanonicalCV
 
@@ -144,6 +152,10 @@ def _build_chain(api_key: str, model: str = _OPENROUTER_MODEL):
     )
 
 
+_TRANSIENT_ATTEMPTS = 4
+_MALFORMED_ATTEMPTS = 2
+
+
 def generate(
     jd: JobDescription,
     canonical: CanonicalCV,
@@ -153,7 +165,8 @@ def generate(
     chain = _build_chain(api_key, model)
     prompt = build_prompt(jd, canonical)
     counter = _TokenCounter()
-    for attempt in range(2):
+    malformed_attempts = 0
+    for attempt in range(_TRANSIENT_ATTEMPTS):
         try:
             counter.begin_call()
             with telemetry.llm_call(stage="tailoring", provider="openrouter", request_model=model,
@@ -168,8 +181,24 @@ def generate(
                     raise _EmptyStructuredOutput()
                 return result
         except Exception as e:
-            if attempt == 0 and (
-                isinstance(e, _EmptyStructuredOutput) or _is_malformed_output_error(e)
-            ):
+            # Empty or malformed output keeps the old one-retry bound. Transient
+            # provider errors use the same ladder as verification: a quota 429
+            # stops immediately, everything else backs off across 4 attempts.
+            if isinstance(e, _EmptyStructuredOutput) or _is_malformed_output_error(e):
+                malformed_attempts += 1
+                if malformed_attempts >= _MALFORMED_ATTEMPTS:
+                    raise
                 continue
-            raise
+            if isinstance(e, openai.RateLimitError) and _is_quota_exceeded(e):
+                raise
+            transient = (
+                isinstance(e, (openai.RateLimitError, openai.InternalServerError,
+                               openai.APIConnectionError))
+                or (isinstance(e, ValueError) and _is_retryable_upstream_value_error(e))
+            )
+            if not transient or attempt == _TRANSIENT_ATTEMPTS - 1:
+                raise
+            wait = min(5 * (2 ** attempt), 60)
+            print(f"[tailor] OpenRouter {type(e).__name__}, retrying in {wait}s "
+                  f"(attempt {attempt + 1}/{_TRANSIENT_ATTEMPTS})...")
+            time.sleep(wait)

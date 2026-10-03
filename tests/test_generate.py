@@ -1,8 +1,10 @@
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
+import openai
 import pytest
 
 from src.tailor.generate import build_prompt, Selection, CoverLetterParts
@@ -184,6 +186,60 @@ def test_tailoring_empty_structured_output_retry_is_bounded(tmp_path):
         generate(_jd(), _canon(tmp_path), api_key="k")
 
     assert chain.invoke.call_count == 2
+
+
+def _rate_limit(reset_offset_s: int) -> openai.RateLimitError:
+    reset_ms = int((time.time() + reset_offset_s) * 1000)
+    return openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={"x-ratelimit-reset": str(reset_ms)}),
+        body={"code": 429, "metadata": {"headers": {"X-RateLimit-Reset": str(reset_ms)}}},
+    )
+
+
+def test_tailoring_retries_rate_limit_then_succeeds(tmp_path, monkeypatch):
+    from src.tailor.generate import generate
+
+    monkeypatch.setattr("src.tailor.generate.time.sleep", lambda s: None)
+    chain = MagicMock()
+    chain.invoke.side_effect = [_rate_limit(30), _selection()]
+
+    with patch("src.tailor.generate._build_chain", return_value=chain):
+        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert chain.invoke.call_count == 2
+    assert selection.cover_letter.proof_id == "exp.0.b0"
+
+
+def test_tailoring_retries_upstream_200_error_body_then_succeeds(tmp_path, monkeypatch):
+    from src.tailor.generate import generate
+
+    monkeypatch.setattr("src.tailor.generate.time.sleep", lambda s: None)
+    chain = MagicMock()
+    chain.invoke.side_effect = [
+        ValueError({"message": "Provider returned error", "code": 502}),
+        _selection(),
+    ]
+
+    with patch("src.tailor.generate._build_chain", return_value=chain):
+        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert chain.invoke.call_count == 2
+    assert selection.cover_letter.proof_id == "exp.0.b0"
+
+
+def test_tailoring_quota_429_raises_after_one_request(tmp_path):
+    from src.tailor.generate import generate
+
+    chain = MagicMock()
+    chain.invoke.side_effect = _rate_limit(3600)
+
+    with patch("src.tailor.generate._build_chain", return_value=chain), pytest.raises(
+        openai.RateLimitError
+    ):
+        generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert chain.invoke.call_count == 1
 
 
 def test_tailoring_request_routes_qwen_with_structured_fallbacks(tmp_path, monkeypatch):
