@@ -9,8 +9,8 @@ fallback, used when OpenRouter's daily share is spent, its quota is exhausted,
 or a batch fails. Groq keeps its own token budget: a proactive ceiling and the
 TPD 429 both stop further Groq calls for the rest of the run instead of
 repeating a doomed request. See _openrouter_chain and GROQ_DAILY_TOKEN_LIMIT.
-OpenRouter's daily REQUEST cap is shared with scoring and tailoring, so this
-stage stops at its derived share (see openrouter_request_shares) and a
+OpenRouter's daily request cap is shared with scoring and tailoring. Only
+this stage is capped, at OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP. A
 RateLimitError that means the account cap is exhausted stops further
 OpenRouter calls the same way.
 
@@ -138,59 +138,21 @@ _OPENROUTER_FALLBACK_MODELS = [
     "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
 ]
-# Tenths of the account-wide daily request allowance. 4+3+1+2 = 10, so
-# verification, scoring, and tailoring together leave a 2/10 headroom and
-# cannot pin the account at the cap on a day when each stage uses its share.
+# Verification may use 4/10 of the account-wide daily request allowance.
+# Scoring and tailoring share that allowance and are not capped here.
 _OPENROUTER_SHARE_DENOMINATOR = 10
 _OPENROUTER_VERIFICATION_SHARE_NUMERATOR = 4
-_OPENROUTER_SCORING_SHARE_NUMERATOR = 3
-_OPENROUTER_TAILORING_SHARE_NUMERATOR = 1
-_OPENROUTER_HEADROOM_SHARE_NUMERATOR = 2
 _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK = 25
-_OPENROUTER_SCORING_DAILY_REQUEST_FALLBACK = 25
-_OPENROUTER_TAILORING_DAILY_REQUEST_FALLBACK = 10
-
-
-def _openrouter_request_share(limit, numerator: int, fallback: int) -> int:
-    """One stage's request share. A missing or non-request limit stays small."""
-    if limit is None or limit.unit != "requests" or limit.per_day is None:
-        return fallback
-    return limit.per_day * numerator // _OPENROUTER_SHARE_DENOMINATOR
 
 
 def _openrouter_verification_daily_request_cap(limit) -> int:
-    return _openrouter_request_share(
-        limit, _OPENROUTER_VERIFICATION_SHARE_NUMERATOR,
-        _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK,
-    )
-
-
-def openrouter_request_shares(limit=None) -> dict[str, int]:
-    """Verification, scoring, and tailoring shares, plus the unallocated headroom.
-
-    `limit` defaults to the live openrouter entry in config/llm_limits.json.
-    """
-    if limit is None:
-        limit = limit_for("openrouter", "*")
-    verification = _openrouter_verification_daily_request_cap(limit)
-    scoring = _openrouter_request_share(
-        limit, _OPENROUTER_SCORING_SHARE_NUMERATOR,
-        _OPENROUTER_SCORING_DAILY_REQUEST_FALLBACK,
-    )
-    tailoring = _openrouter_request_share(
-        limit, _OPENROUTER_TAILORING_SHARE_NUMERATOR,
-        _OPENROUTER_TAILORING_DAILY_REQUEST_FALLBACK,
-    )
+    """Verification's request share. A missing or non-request limit stays small."""
     if limit is None or limit.unit != "requests" or limit.per_day is None:
-        headroom = 0
-    else:
-        headroom = limit.per_day - verification - scoring - tailoring
-    return {
-        "verification": verification,
-        "scoring": scoring,
-        "tailoring": tailoring,
-        "headroom": headroom,
-    }
+        return _OPENROUTER_VERIFICATION_DAILY_REQUEST_FALLBACK
+    return (
+        limit.per_day * _OPENROUTER_VERIFICATION_SHARE_NUMERATOR
+        // _OPENROUTER_SHARE_DENOMINATOR
+    )
 
 
 # This stage may use at most this many OpenRouter requests per UTC day

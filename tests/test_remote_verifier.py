@@ -638,14 +638,10 @@ def test_openrouters_own_daily_cap_stops_further_openrouter_calls(monkeypatch):
 
 # --- Verification's daily share of OpenRouter requests ----------------------
 
-def test_openrouter_verification_share_uses_live_allowance_and_leaves_headroom():
-    from src.remote_verifier import openrouter_request_shares
+def test_openrouter_verification_share_is_four_tenths_of_the_allowance():
     limit = Limit("openrouter", "*", "requests", 1000)
 
-    shares = openrouter_request_shares(limit)
-    assert shares == {"verification": 400, "scoring": 300, "tailoring": 100, "headroom": 200}
-    assert _openrouter_verification_daily_request_cap(limit) == shares["verification"]
-    assert sum(shares.values()) == 1000
+    assert _openrouter_verification_daily_request_cap(limit) == 400
 
 
 def test_openrouter_verification_share_shrinks_with_the_allowance():

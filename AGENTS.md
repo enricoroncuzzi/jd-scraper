@@ -108,13 +108,11 @@ what the README doesn't (or what has drifted from it).
    on-site sentence. The primary call is `_openrouter_chain` (`_VerdictOutput`
    via `with_structured_output(method="function_calling")`, same shape as the
    scorer). Its daily request share is
-   `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP`, from `openrouter_request_shares`:
-   tenths of the live `config/llm_limits.json` OpenRouter allowance, 4
-   verification, 3 scoring, 1 tailoring, 2 headroom (400/300/100/200 at the
-   current 1000/day figure). Only the verification share is enforced inside
-   this stage. Scoring and tailoring shares are named so the split stays
-   visible, with small fallbacks (25/25/10) when the file is missing or not a
-   request limit. Retries are included and the verifier's own SDK clients run
+   `OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP`: 4/10 of the live
+   `config/llm_limits.json` OpenRouter allowance (400 at the current 1000/day
+   figure), or 25 when that limit is missing or not a request count. Only
+   verification is capped. Scoring and tailoring draw on the same account and
+   are not stopped at a share. Retries are included and the verifier's own SDK clients run
    with `max_retries=0` so each counted attempt is exactly one HTTP request.
    `main.py` passes the day's running count from the usage log as
    `openrouter_requests_used_today`. An `openai.RateLimitError` where
