@@ -136,6 +136,8 @@ _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_MODEL = "qwen/qwen3.8-27b:free"
 _OPENROUTER_FALLBACK_MODELS = [
     "nvidia/nemotron-3-super-120b-a12b:free",
+    # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
+    # an unknown models entry can 400 the whole request.
     "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
 ]
