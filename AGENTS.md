@@ -31,9 +31,12 @@ what the README doesn't (or what has drifted from it).
    dies after all retries) goes to a per-tier JSONL retry queue -
    `src/retry_queue.py`, `data/unscored_tier{N}.jsonl`, its path derived from
    `dedup_log_path` as `AppConfig.retry_queue_path`. The next run feeds that
-   queue into scoring ahead of fresh offers, description and remote verdict
-   intact so neither LinkedIn nor the LLM stages are paid twice, and entries expire after
-   `MAX_AGE_DAYS` (3); the deferred count is reported in both the digest and
+   queue into scoring ahead of fresh offers. Scoring deferrals keep description
+   and remote verdict intact so neither LinkedIn nor the LLM stages are paid twice,
+   and expire after `MAX_AGE_DAYS` (3). An offer whose description LinkedIn refused
+   (429/503/504) is queued on that same path with status `rate_limited`, refetched
+   next run instead of scored on fallback text, and dropped after
+   `RATE_LIMIT_MAX_AGE_DAYS` (2). The scoring-deferred count is reported in both the digest and
    the Telegram summary. Why that split is load-bearing (an unconditional
    `mark_seen` is silently lossy, with exit code 0): see `src/retry_queue.py`'s
    module docstring. The 4 tiers (`config/config_tier{1..4}.json`) are not a

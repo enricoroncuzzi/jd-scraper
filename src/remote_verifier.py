@@ -548,7 +548,7 @@ def verify_offers(
         # unreadable. That carries no remote signal, so judging it would risk a
         # rejected verdict drawn from the location line alone.
         content_free = description == f"{offer.title} at {offer.company}"
-        if not description or offer.description_status == "failed" or content_free:
+        if not description or offer.description_status in ("failed", "rate_limited") or content_free:
             offer.remote_verdict = "unconfirmed"
             offer.remote_reason = _NO_DESCRIPTION_REASON
         else:

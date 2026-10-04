@@ -27,6 +27,50 @@ _DESC_MAX_RETRIES = 8
 _DESC_BASE_WAIT = 30
 _DESC_WAIT_CAP = 300
 
+# Gap between search pages and description requests. A 429 raises it, and a
+# later request that was not rate-limited puts it back. The cap stops a long
+# 429 streak from turning the gap into an unbounded sleep.
+_PACE_LOW = 1.5
+_PACE_HIGH = 3.0
+_PACE_DELAY_CAP = 30.0
+_PACE_GROWTH = 2.0
+
+
+class _RequestPace:
+    def __init__(self):
+        self.factor = 1.0
+
+    def reset(self) -> None:
+        self.factor = 1.0
+
+    def slow(self) -> None:
+        self.factor = min(self.factor * _PACE_GROWTH, _PACE_DELAY_CAP / _PACE_LOW)
+
+    def relax(self) -> None:
+        self.factor = 1.0
+
+    def pause(self) -> None:
+        low = min(_PACE_LOW * self.factor, _PACE_DELAY_CAP)
+        high = min(_PACE_HIGH * self.factor, _PACE_DELAY_CAP)
+        if high < low:
+            high = low
+        time.sleep(random.uniform(low, high))
+
+
+_pace = _RequestPace()
+
+
+def _note_response(status_code: int, saw_429: bool) -> bool:
+    """Raise the inter-request gap on HTTP 429. A completed request that never
+    saw a 429 puts the gap back to normal before the caller sleeps. 503/504
+    stay on the retry ladder and do not count as a 429."""
+    if status_code == 429:
+        _pace.slow()
+        return True
+    if not saw_429 and status_code not in (503, 504):
+        _pace.relax()
+    return saw_429
+
 # Deliberately conservative default, used only as the safety fallback below.
 # The captain has since reviewed real observed page counts (20 days of
 # production logs, see data/scraper-coverage-check/report.md in the firstmate
@@ -69,6 +113,7 @@ def fetch_offers(
     allowed_countries: frozenset[str] | None = None,
     max_pages_per_query: int = _MAX_PAGES_PER_QUERY,
 ) -> list[JobOffer]:
+    _pace.reset()
     work_modes = work_modes or []
     modes = work_modes if work_modes else [None]
     locations = countries if countries else [location]
@@ -108,6 +153,7 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
         params["f_WT"] = _WORK_MODE_MAP[work_mode]
 
     response = None
+    saw_429 = False
     for attempt in range(_SEARCH_MAX_RETRIES):
         try:
             response = requests.get(SEARCH_URL, params=params, headers=HEADERS, timeout=20)
@@ -120,11 +166,13 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
             continue
 
         if response.status_code == 200:
+            _note_response(200, saw_429)
             break
 
         if response.status_code in (429, 503, 504):
             if response.status_code == 429:
                 telemetry.count("search_rate_limits")
+            saw_429 = _note_response(response.status_code, saw_429)
             if attempt == _SEARCH_MAX_RETRIES - 1:
                 raise RuntimeError(f"LinkedIn search returned {response.status_code} after {_SEARCH_MAX_RETRIES} retries")
             wait = _wait_with_jitter(_SEARCH_BASE_WAIT * (2 ** min(attempt, 4)), _SEARCH_WAIT_CAP)
@@ -207,7 +255,7 @@ def _fetch_for_query(
                 # A page whose cards are all out of scope fetches no descriptions,
                 # so without this the loop can fire every search request back to
                 # back. Same pacing the card loop already applies.
-                time.sleep(random.uniform(1.5, 3.0))
+                _pace.pause()
             try:
                 response = _fetch_search_page(role, location, time_range, work_mode, next_start)
             except _EndOfResults:
@@ -261,7 +309,7 @@ def _fetch_for_query(
                         card["link"], card["title"], card["company"]
                     )
                     fetched_descriptions[card["link"]] = (description, description_status)
-                    time.sleep(random.uniform(1.5, 3.0))
+                    _pace.pause()
                 offers.append(JobOffer(
                     id=next_id,
                     title=card["title"],
@@ -303,8 +351,20 @@ def _fetch_for_query(
     return offers
 
 
+def refetch_description(offer: JobOffer) -> JobOffer:
+    """Fetch one carried-over offer's description again.
+
+    Used when an earlier run stored the offer because LinkedIn rate-limited
+    the page. The inter-request gap stays wherever this run's 429s left it.
+    """
+    description, status = _fetch_description(offer.link, offer.title, offer.company)
+    _pace.pause()
+    return offer.model_copy(update={"description": description, "description_status": status})
+
+
 def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
     fallback = f"{title} at {company}"
+    saw_429 = False
 
     for attempt in range(_DESC_MAX_RETRIES):
         try:
@@ -317,6 +377,7 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             continue
 
         if response.status_code == 200:
+            _note_response(200, saw_429)
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Step 1: main LinkedIn div
@@ -343,13 +404,17 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
         if response.status_code in (429, 503, 504):
             if response.status_code == 429:
                 telemetry.count("description_rate_limits")
+            saw_429 = _note_response(response.status_code, saw_429)
             if attempt == _DESC_MAX_RETRIES - 1:
-                return "", "failed"
+                # Not the title/company fallback: that text would be verified
+                # and scored as if it were the job. The caller defers the offer.
+                return "", "rate_limited"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
             print(f"[scraper] description HTTP {response.status_code}, retrying in {wait:.0f}s...")
             time.sleep(wait)
         else:
             # non-retriable (403, 404, etc.) - use title+company fallback
+            _note_response(response.status_code, saw_429)
             return fallback, "partial"
 
     return "", "failed"

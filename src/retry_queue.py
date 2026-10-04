@@ -22,10 +22,16 @@ so the next run feeds them straight back into scoring instead of refetching or
 re-verifying. They expire after `MAX_AGE_DAYS`, counted from the FIRST
 deferral: a job posting goes stale, and a queue that grows without bound on a
 run of bad days is its own bug.
+
+An offer whose description LinkedIn refused (HTTP 429/503/504) is a different
+entry on the same queue: `description_status` is `rate_limited`, the next run
+refetches the page instead of scoring the empty text, and it is dropped after
+`RATE_LIMIT_MAX_AGE_DAYS` so a throttle cannot defer it forever.
 """
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ValidationError, field_validator
@@ -35,6 +41,8 @@ from src.models import JobOffer
 # A posting deferred on a quota-exhausted day is still worth scoring two days
 # later; by day four the role is usually closed or filled.
 MAX_AGE_DAYS = 3
+# Two daily attempts (the day it first failed, and the next), then give up.
+RATE_LIMIT_MAX_AGE_DAYS = 2
 
 
 class QueueEntry(BaseModel):
@@ -52,16 +60,33 @@ class QueueEntry(BaseModel):
         return value.astimezone().replace(tzinfo=None)
 
 
-def load_deferred(path: str, now: datetime | None = None) -> list[QueueEntry]:
-    """Read the queue, dropping expired entries. A missing, empty or corrupt
-    file yields nothing: the queue is a recovery aid and must never be a
-    reason for a run to fail."""
+@dataclass
+class DeferredQueue:
+    live: list[QueueEntry]
+    expired_rate_limited: list[QueueEntry]
+
+
+def _rate_limit_expired(queued_at: datetime, now: datetime) -> bool:
+    return queued_at <= now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS)
+
+
+def read_deferred(path: str, now: datetime | None = None) -> DeferredQueue:
+    """Live entries, plus rate-limited ones dropped for age.
+
+    Scoring deferrals older than MAX_AGE_DAYS are logged and discarded.
+    Rate-limited descriptions older than RATE_LIMIT_MAX_AGE_DAYS are returned
+    separately so the caller can mark them seen: dropping them from the file
+    alone would let today's scrape start a new clock. A missing, empty or
+    corrupt file yields nothing. The queue is a recovery aid and must never
+    be a reason for a run to fail.
+    """
     if not os.path.exists(path):
-        return []
+        return DeferredQueue([], [])
     now = now or datetime.now()
-    cutoff = now - timedelta(days=MAX_AGE_DAYS)
-    entries: list[QueueEntry] = []
-    expired = 0
+    scoring_cutoff = now - timedelta(days=MAX_AGE_DAYS)
+    live: list[QueueEntry] = []
+    expired_rate_limited: list[QueueEntry] = []
+    scoring_expired = 0
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -69,17 +94,27 @@ def load_deferred(path: str, now: datetime | None = None) -> list[QueueEntry]:
                 continue
             try:
                 entry = QueueEntry.model_validate(json.loads(line))
-                stale = entry.queued_at < cutoff
             except (json.JSONDecodeError, ValidationError, TypeError) as e:
                 print(f"[queue] Skipping an unreadable entry in {path}: {type(e).__name__}: {e}")
                 continue
-            if stale:
-                expired += 1
+            if entry.offer.description_status == "rate_limited" and _rate_limit_expired(entry.queued_at, now):
+                expired_rate_limited.append(entry)
                 continue
-            entries.append(entry)
-    if expired:
-        print(f"[queue] Dropped {expired} deferred offer(s) older than {MAX_AGE_DAYS} day(s).")
-    return entries
+            if entry.queued_at < scoring_cutoff:
+                scoring_expired += 1
+                continue
+            live.append(entry)
+    if scoring_expired:
+        print(f"[queue] Dropped {scoring_expired} deferred offer(s) older than {MAX_AGE_DAYS} day(s).")
+    if expired_rate_limited:
+        print(f"[queue] Dropped {len(expired_rate_limited)} rate-limited offer(s) deferred "
+              f"longer than {RATE_LIMIT_MAX_AGE_DAYS} day(s).")
+    return DeferredQueue(live, expired_rate_limited)
+
+
+def load_deferred(path: str, now: datetime | None = None) -> list[QueueEntry]:
+    """Live queue entries. See read_deferred for expiry."""
+    return read_deferred(path, now).live
 
 
 def build_deferred(
@@ -95,10 +130,15 @@ def build_deferred(
     queue, not just the subset carried into scoring."""
     now = now or datetime.now()
     queued_at_by_link = {entry.offer.link: entry.queued_at for entry in previous}
-    return [
-        QueueEntry(queued_at=queued_at_by_link.get(offer.link, now), offer=offer)
-        for offer in offers
-    ]
+    entries: list[QueueEntry] = []
+    for offer in offers:
+        queued_at = queued_at_by_link.get(offer.link, now)
+        # A rate-limited description that already had its two days must not
+        # re-enter just because today's scrape saw the same link again.
+        if offer.description_status == "rate_limited" and _rate_limit_expired(queued_at, now):
+            continue
+        entries.append(QueueEntry(queued_at=queued_at, offer=offer))
+    return entries
 
 
 def save_deferred(path: str, entries: list[QueueEntry]) -> None:

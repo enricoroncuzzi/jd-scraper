@@ -6,11 +6,11 @@ import uuid
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from src.config import load_config
-from src.scraper import fetch_offers, resolve_max_pages_per_query
+from src.scraper import fetch_offers, refetch_description, resolve_max_pages_per_query
 from src.language_filter import filter_by_language
 from src.dedup import filter_new, mark_seen
 from src.models import JobOffer
-from src.retry_queue import build_deferred, load_deferred, save_deferred
+from src.retry_queue import build_deferred, read_deferred, save_deferred
 from src.scorer import score_offers
 from src.remote_verifier import verify_offers, GROQ_DAILY_TOKEN_LIMIT
 from src.tier_scope import resolve_allowed_countries
@@ -23,6 +23,32 @@ from src.retry import run_with_backoff
 import tailor as tailor_cli
 
 _USAGE_LOG_PATH = "data/usage_log.jsonl"
+
+
+def _is_rate_limited(offer: JobOffer) -> bool:
+    return offer.description_status == "rate_limited"
+
+
+def _persist_unfinished(config, previous, expired_rate_limited, pending_rate_limited, unscored):
+    """Queue scoring gaps and still-throttled descriptions.
+
+    Returns offers to mark seen (the rate-limit window closed) and how many
+    rate-limited descriptions were queued for the next run.
+    """
+    entries = build_deferred(list(unscored) + list(pending_rate_limited), previous)
+    save_deferred(config.retry_queue_path, entries)
+    queued_links = {entry.offer.link for entry in entries}
+    give_up = [offer for offer in pending_rate_limited if offer.link not in queued_links]
+    seen = {offer.link for offer in give_up}
+    for entry in expired_rate_limited:
+        if entry.offer.link not in queued_links and entry.offer.link not in seen:
+            give_up.append(entry.offer)
+            seen.add(entry.offer.link)
+    rate_limited_queued = sum(1 for entry in entries if _is_rate_limited(entry.offer))
+    if rate_limited_queued:
+        print(f"[main] {rate_limited_queued} offer(s) deferred because LinkedIn rate-limited "
+              f"the description - queued for the next run in {config.retry_queue_path}")
+    return give_up, rate_limited_queued
 
 
 def handler(event: dict, context, config_path: str = "config/config.json") -> None:
@@ -60,29 +86,61 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     telemetry.set_fields(offers_fetched=len(raw_offers), offers_new=len(new_offers))
 
     # Offers an earlier run fetched but never scored, because scoring stopped
-    # partway through that tier. They were deliberately left out of the dedup
-    # log, so they come back here instead of being lost for good; expired
-    # entries are dropped on load. See src/retry_queue.py.
-    deferred_entries = load_deferred(config.retry_queue_path)
+    # partway through that tier, or because LinkedIn rate-limited the
+    # description. They were deliberately left out of the dedup log, so they
+    # come back here instead of being lost for good; expired entries are
+    # dropped on load. See src/retry_queue.py.
+    loaded = read_deferred(config.retry_queue_path)
+    deferred_entries = loaded.live
+    expired_rate_limited = loaded.expired_rate_limited
     if deferred_entries:
         print(f"[main] {len(deferred_entries)} deferred offer(s) carried over from an earlier run")
 
     if not new_offers and not deferred_entries:
         print("[main] No new offers. Exiting.")
+        if expired_rate_limited:
+            mark_seen([entry.offer for entry in expired_rate_limited], config.dedup_log_path)
+        telemetry.set_fields(rate_limit_deferred=0)
         return
 
     ok = sum(1 for o in new_offers if o.description_status == "ok")
     partial = sum(1 for o in new_offers if o.description_status == "partial")
     failed = sum(1 for o in new_offers if o.description_status == "failed")
-    print(f"[main] Description quality - ok: {ok}, partial: {partial}, failed: {failed}")
+    rate_limited_count = sum(1 for o in new_offers if _is_rate_limited(o))
+    print(f"[main] Description quality - ok: {ok}, partial: {partial}, failed: {failed}, "
+          f"rate-limited: {rate_limited_count}")
+
+    # A description LinkedIn refused is not verified or scored on fallback
+    # text. Today's copy wins over a queued one; a queued copy today's scrape
+    # did not return is fetched again before it can be scored.
+    fresh_links = {o.link for o in new_offers}
+    pending_rate_limited = [o for o in new_offers if _is_rate_limited(o)]
+    scoreable_new = [o for o in new_offers if not _is_rate_limited(o)]
+    carried_ready: list[JobOffer] = []
+    carried_to_verify: list[JobOffer] = []
+    for entry in deferred_entries:
+        if entry.offer.link in fresh_links:
+            continue
+        if _is_rate_limited(entry.offer):
+            refreshed = refetch_description(entry.offer)
+            if _is_rate_limited(refreshed):
+                pending_rate_limited.append(refreshed)
+            else:
+                carried_to_verify.append(refreshed)
+        else:
+            carried_ready.append(entry.offer)
+    if carried_to_verify:
+        carried_to_verify = filter_by_language(carried_to_verify)
+    to_verify = scoreable_new + carried_to_verify
+    previous = list(deferred_entries) + list(expired_rate_limited)
 
     verification_degraded = False
     rejected: list = []
     verify_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    if config.remote_check.enabled and new_offers:
-        print(f"[main] Verifying full-remote status of {len(new_offers)} offers...")
-        new_offers, verify_usage = verify_offers(
-            offers=new_offers,
+    if config.remote_check.enabled and to_verify:
+        print(f"[main] Verifying full-remote status of {len(to_verify)} offers...")
+        to_verify, verify_usage = verify_offers(
+            offers=to_verify,
             require_italy_eligibility=config.remote_check.require_italy_eligibility,
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
             llm_api_key=config.llm_api_key,
@@ -90,7 +148,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             openrouter_requests_used_today=_verification_usage_today("openrouter_requests"),
         )
         verification_degraded = verify_usage.pop("degraded", False)
-        _log_usage(config.tier, "verification", len(new_offers), verify_usage)
+        _log_usage(config.tier, "verification", len(to_verify), verify_usage)
         groq_today = _verification_usage_today("total_tokens")
         provider = verify_usage.get("provider", "none")
         provider_note = (" | provider: none (no LLM call made)" if provider == "none"
@@ -103,8 +161,8 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         if verification_degraded:
             print(f"[main] Verification DEGRADED for tier {config.tier}: a material share of "
                   f"batches never produced a real verdict.")
-        rejected = [o for o in new_offers if o.remote_verdict == "rejected"]
-        survivors = [o for o in new_offers if o.remote_verdict != "rejected"]
+        rejected = [o for o in to_verify if o.remote_verdict == "rejected"]
+        survivors = [o for o in to_verify if o.remote_verdict != "rejected"]
         confirmed = sum(1 for o in survivors if o.remote_verdict == "confirmed")
         print(f"[main] Remote verification - confirmed: {confirmed}, "
               f"unconfirmed: {len(survivors) - confirmed}, rejected: {len(rejected)}")
@@ -119,37 +177,37 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             verification_rejected=len(rejected),
         )
     else:
-        survivors = new_offers
+        survivors = to_verify
 
     write_rejected(rejected, config.output_path, config.tier,
                    verification_enabled=config.remote_check.enabled)
 
-    # Deferred offers re-enter here, ahead of today's fresh ones, and skip
-    # verification: their description and verdict were already paid for on the
-    # run that fetched them. A deferred offer that today's scrape returned
-    # again drops out in favour of today's copy, whose verdict is the newer one
-    # - including when verification just rejected it.
-    fresh_links = {o.link for o in new_offers}
-    carried = [entry for entry in deferred_entries if entry.offer.link not in fresh_links]
-    to_score = _renumber([entry.offer for entry in carried] + list(survivors))
+    # Scoring deferrals re-enter ahead of today's fresh offers and skip
+    # verification: their description and verdict were already paid for.
+    # A deferred offer that today's scrape returned again drops out in favour
+    # of today's copy, whose verdict is the newer one - including when
+    # verification just rejected it. Rate-limited descriptions are not in
+    # this list; they stay pending until a fetch succeeds.
+    to_score = _renumber(carried_ready + list(survivors))
 
     if not to_score:
-        print("[main] No offers left to score - all rejected by verification.")
-        try:
-            send_message(
-                f"{config.telegram.greeting}\n\nTier {config.tier}: {len(rejected)} offer(s) found, "
-                f"all {len(rejected)} rejected as not full-remote.",
-                config.telegram_token,
-                config.telegram_chat_id,
-            )
-        except Exception as notify_exc:
-            print(f"[main] Failed to send all-rejected notification: {notify_exc}")
-        mark_seen(new_offers, config.dedup_log_path)
-        # Nothing is pending on this path (a non-empty `carried` would have
-        # scored), so whatever the queue file still holds is superseded by
-        # today's copies or expired. This branch never reaches the rewrite
-        # below, so clear it here.
-        save_deferred(config.retry_queue_path, [])
+        give_up, rate_limited_queued = _persist_unfinished(
+            config, previous, expired_rate_limited, pending_rate_limited, [])
+        if rejected:
+            print("[main] No offers left to score - all rejected by verification.")
+            note = (f" {rate_limited_queued} description(s) were rate-limited and deferred."
+                    if rate_limited_queued else "")
+            try:
+                send_message(
+                    f"{config.telegram.greeting}\n\nTier {config.tier}: {len(rejected)} offer(s) found, "
+                    f"all {len(rejected)} rejected as not full-remote.{note}",
+                    config.telegram_token,
+                    config.telegram_chat_id,
+                )
+            except Exception as notify_exc:
+                print(f"[main] Failed to send all-rejected notification: {notify_exc}")
+        mark_seen(list(rejected) + give_up, config.dedup_log_path)
+        telemetry.set_fields(rate_limit_deferred=rate_limited_queued)
         return
 
     print("[main] Scoring offers...")
@@ -170,11 +228,12 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     # seen again. This is how 222 of 242 tier-4 offers vanished on 2026-09-07.
     scored_links = {o.link for o in scored}
     deferred = [o for o in to_score if o.link not in scored_links]
-    # Timestamps come from every entry loaded off the queue, not just `carried`:
-    # an offer today's scrape returned again is re-queued as today's copy, but
-    # its expiry clock must still run from the first deferral or it can be
-    # re-scraped and re-deferred forever.
-    save_deferred(config.retry_queue_path, build_deferred(deferred, deferred_entries))
+    # Timestamps come from every entry loaded off the queue, including ones
+    # this run is about to drop: an offer today's scrape returned again is
+    # re-queued as today's copy, but its expiry clock must still run from the
+    # first deferral or it can be re-scraped and re-deferred forever.
+    give_up, rate_limited_queued = _persist_unfinished(
+        config, previous, expired_rate_limited, pending_rate_limited, deferred)
     if deferred:
         print(f"[main] {len(deferred)} offer(s) left unscored (scoring stopped early) "
               f"- queued for the next run in {config.retry_queue_path}")
@@ -184,6 +243,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         completion_tokens=usage["completion_tokens"],
         total_tokens=usage["total_tokens"],
         offers_deferred=len(deferred),
+        rate_limit_deferred=rate_limited_queued,
     )
     if config.db_url:
         session = telemetry.current()
@@ -267,10 +327,10 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         except Exception as notify_exc:
             print(f"[main] Failed to send summary failure notification: {notify_exc}")
 
-    # "Seen" means handled, not fetched: only the offers verification rejected
-    # and the offers scoring actually scored are recorded, so anything deferred
-    # above is still new to the next run.
-    mark_seen(list(rejected) + list(scored), config.dedup_log_path)
+    # "Seen" means handled, not fetched: verification rejects, scored offers,
+    # and rate-limited descriptions whose carry-over window has closed.
+    # Anything still deferred stays new to the next run.
+    mark_seen(list(rejected) + list(scored) + give_up, config.dedup_log_path)
     print("[main] Done.")
 
 

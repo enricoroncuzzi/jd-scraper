@@ -336,11 +336,11 @@ def test_every_tier_config_gets_its_own_retry_queue(monkeypatch):
 
 
 def test_tier_configs_carry_the_captain_approved_page_caps(monkeypatch):
-    # Expanded after the 2026-10-03 run still hit every tier 3/4 query cap and
-    # half of tier 2's caps, with enough runtime and throttle headroom.
+    # 2026-10-04: one measured step for the two broad tiers (EU 50, UK 35).
+    # Italy and Switzerland stay put; they never reach their caps.
     _set_env(monkeypatch)
 
-    expected = {1: 30, 2: 16, 3: 30, 4: 20}
+    expected = {1: 30, 2: 16, 3: 50, 4: 35}
     for tier, cap in expected.items():
         config = load_config(str(_REPO_ROOT / "config" / f"config_tier{tier}.json"))
         assert config.search.max_pages_per_query == cap

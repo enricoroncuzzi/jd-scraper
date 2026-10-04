@@ -43,7 +43,7 @@ _RUN_CLOSE_COLUMNS = (
     "verification_batches_failed", "verification_batches_total",
     "verification_degraded", "verification_confirmed", "verification_unconfirmed",
     "verification_rejected", "search_rate_limits", "description_rate_limits",
-    "telemetry_ok",
+    "rate_limit_deferred", "telemetry_ok",
 )
 _QUERY_COLUMNS = ("id", "run_uuid", "role", "location", "work_mode", "pages_walked",
                   "page_cap", "cards_seen", "offers_kept", "cross_query_duplicates",
