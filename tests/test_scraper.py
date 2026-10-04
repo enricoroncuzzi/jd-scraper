@@ -975,6 +975,55 @@ def test_search_pages_are_paced_but_the_first_request_is_not_delayed(monkeypatch
     assert log == ["search", "sleep", "search", "sleep", "search"]
 
 
+def _out_of_scope_search(monkeypatch, statuses):
+    """Search pages only. Cards are outside the tier scope, so a description
+    fetch would be a test failure. `statuses` is consumed one HTTP response
+    at a time, and a 200 renders page 0 or an empty follow-up page."""
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+    delays = []
+    pending = iter(statuses)
+
+    def mock_get(url, **kwargs):
+        if "seeMoreJobPostings" not in url:
+            raise AssertionError("out-of-scope cards must not fetch a description")
+        resp = MagicMock()
+        status = next(pending)
+        resp.status_code = status
+        if status != 200:
+            resp.text = ""
+            return resp
+        start = kwargs.get("params", {}).get("start", 0)
+        resp.text = (
+            _search_html([(1, "AI Engineer", "London, United Kingdom")])
+            if start == 0 else EMPTY_PAGE_HTML
+        )
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda seconds: delays.append(seconds))
+    monkeypatch.setattr("src.scraper.random.uniform", lambda low, high: low)
+    monkeypatch.setattr("src.scraper._wait_with_jitter", lambda base, cap: 0)
+    offers = fetch_offers(
+        ["AI Engineer"], "Europe", "r86400",
+        allowed_countries=TIER3_ALLOWED_COUNTRIES, max_pages_per_query=3,
+    )
+    return offers, [delay for delay in delays if delay]
+
+
+def test_search_page_429s_raise_the_gap_before_the_next_page(monkeypatch):
+    offers, paced = _out_of_scope_search(monkeypatch, [429, 429, 200, 200])
+    assert offers == []
+    assert paced[0] == scraper._PACE_LOW * 4
+
+
+@pytest.mark.parametrize("status", [503, 504])
+def test_a_503_or_504_on_a_search_page_does_not_slow_the_next_page(monkeypatch, status):
+    offers, paced = _out_of_scope_search(monkeypatch, [status, 200, 200])
+    assert offers == []
+    assert paced[0] == scraper._PACE_LOW
+    assert scraper._pace.factor == 1
+
+
 def test_a_single_page_query_never_sleeps_before_its_only_request(monkeypatch):
     log = []
     mock_get, calls = _event_log_mock_get({0: EMPTY_PAGE_HTML}, log)

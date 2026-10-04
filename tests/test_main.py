@@ -1154,6 +1154,53 @@ def _rate_limited(i):
                     description="", description_status="rate_limited")
 
 
+def test_a_tier_whose_offers_are_all_rate_limited_queues_them_and_notifies(monkeypatch, tmp_path):
+    from src.dedup import filter_new
+    from src.retry_queue import load_deferred
+    sent = {}
+    monkeypatch.setattr("main.send_message", lambda text, *a, **k: sent.update(text=text))
+    limited = [_rate_limited(1), _rate_limited(2)]
+
+    calls, send_summary = _run_handler(monkeypatch, tmp_path, limited)
+
+    assert calls["score_input"] == []
+    assert [entry.offer.link for entry in load_deferred(_queue_path(tmp_path))] == [
+        "https://x/1", "https://x/2",
+    ]
+    assert filter_new(limited, _seen_path(tmp_path)) == limited
+    assert "2 offer(s) deferred because LinkedIn rate-limited the description" in sent["text"]
+    send_summary.assert_not_called()
+
+
+def test_a_refetch_in_a_disallowed_language_is_not_scored(monkeypatch, tmp_path):
+    from src.language_filter import filter_by_language
+    from src.retry_queue import load_deferred
+    german = (
+        "Wir suchen einen erfahrenen Ingenieur für den Aufbau von "
+        "Produktionsanlagen und die Betreuung unserer Fertigung in München."
+    )
+    carried = _rate_limited(1)
+    _seed_queue(tmp_path, [carried])
+    refreshed = carried.model_copy(update={"description": german, "description_status": "ok"})
+    assert filter_by_language([refreshed]) == []
+    calls = {"score_input": None}
+
+    def fake_score(offers, **kwargs):
+        calls["score_input"] = list(offers)
+        return _score_all(offers, **kwargs)
+
+    import main
+    _stub_common_pipeline(monkeypatch)
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: [])
+    monkeypatch.setattr("main.refetch_description", lambda offer: refreshed)
+    monkeypatch.setattr("main.score_offers", fake_score)
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+    main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch)))
+
+    assert not calls["score_input"]
+    assert load_deferred(_queue_path(tmp_path)) == []
+
+
 def test_rate_limited_descriptions_are_deferred_and_partials_are_still_scored(monkeypatch, tmp_path):
     """A description LinkedIn refused is not verified or scored on fallback text.
     A genuinely thin HTTP 200 page still is."""
