@@ -409,15 +409,16 @@ def refetch_description(offer: JobOffer) -> JobOffer:
 def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
     fallback = f"{title} at {company}"
     saw_429 = False
+    saw_throttle = False
 
     for attempt in range(_DESC_MAX_RETRIES):
         try:
             response = requests.get(url, headers=HEADERS, timeout=15)
         except requests.RequestException:
             if attempt == _DESC_MAX_RETRIES - 1:
-                # A 429 earlier in this fetch means the page was throttled,
-                # even if the last attempt died on the network instead.
-                return "", "rate_limited" if saw_429 else "failed"
+                # A 429, 503, or 504 earlier in this fetch means the page was
+                # throttled, even if the last attempt died on the network.
+                return "", "rate_limited" if saw_throttle else "failed"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
             time.sleep(wait)
             continue
@@ -451,6 +452,7 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             if response.status_code == 429:
                 telemetry.count("description_rate_limits")
             saw_429 = _note_response(response.status_code, saw_429)
+            saw_throttle = True
             if attempt == _DESC_MAX_RETRIES - 1:
                 # Not the title/company fallback: that text would be verified
                 # and scored as if it were the job. The caller defers the offer.

@@ -376,6 +376,35 @@ def test_a_429_followed_by_a_network_error_is_still_rate_limited(monkeypatch):
     assert offers[0].description_status == "rate_limited"
 
 
+@pytest.mark.parametrize("status", [503, 504])
+def test_a_503_or_504_followed_by_a_network_error_is_still_rate_limited(monkeypatch, status):
+    calls = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            start = kwargs.get("params", {}).get("start", 0)
+            resp.text = SEARCH_HTML if start == 0 else EMPTY_PAGE_HTML
+            return resp
+        calls["n"] += 1
+        if calls["n"] < scraper._DESC_MAX_RETRIES:
+            resp.status_code = status
+            return resp
+        raise requests.RequestException("reset")
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+    scraper._pace.reset()
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert offers[0].description == ""
+    assert offers[0].description_status == "rate_limited"
+    assert scraper._pace.factor == 1
+
+
 def test_fetch_offers_skips_cards_without_title_or_link(monkeypatch):
     html_no_link = """
     <ul>
