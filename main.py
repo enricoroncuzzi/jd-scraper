@@ -147,7 +147,15 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 pending_rate_limited.append(entry.offer)
                 continue
             refreshed = refetch_description(entry.offer)
-            if _is_rate_limited(refreshed):
+            if refreshed.description_status in ("rate_limited", "failed"):
+                # A failed refetch has no description either. Store it as
+                # rate_limited so the next run tries again on the same clock,
+                # and stop the ladder: one dead refetch is enough.
+                if refreshed.description_status == "failed":
+                    refreshed = refreshed.model_copy(update={
+                        "description": "",
+                        "description_status": "rate_limited",
+                    })
                 pending_rate_limited.append(refreshed)
                 refetch_blocked = True
             else:

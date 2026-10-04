@@ -1205,6 +1205,28 @@ def test_a_carried_rate_limited_offer_is_refetched_before_scoring(monkeypatch, t
     assert load_deferred(_queue_path(tmp_path)) == []
 
 
+def test_a_failed_refetch_stays_queued_on_the_same_clock_and_is_not_scored(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
+    from src.retry_queue import load_deferred
+    _seed_queue(tmp_path, [_rate_limited(1), _rate_limited(3)], age=timedelta(days=1))
+    fetched_links = []
+
+    def fake_refetch(offer):
+        fetched_links.append(offer.link)
+        return offer.model_copy(update={"description": "", "description_status": "failed"})
+
+    monkeypatch.setattr("main.refetch_description", fake_refetch)
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(2)])
+
+    assert [offer.link for offer in calls["score_input"]] == ["https://x/2"]
+    assert fetched_links == ["https://x/1"]
+    entries = {entry.offer.link: entry for entry in load_deferred(_queue_path(tmp_path))}
+    assert set(entries) == {"https://x/1", "https://x/3"}
+    assert all(entry.offer.description_status == "rate_limited" for entry in entries.values())
+    assert all(entry.offer.description == "" for entry in entries.values())
+    assert entries["https://x/1"].queued_at < datetime.now() - timedelta(hours=12)
+
+
 def test_a_carried_offer_still_rate_limited_keeps_its_first_deferral_clock(monkeypatch, tmp_path):
     from datetime import datetime, timedelta
     from src.retry_queue import load_deferred
