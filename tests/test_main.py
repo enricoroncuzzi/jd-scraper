@@ -1325,6 +1325,21 @@ def test_a_rate_limit_give_up_is_recorded_even_when_nothing_stays_queued(monkeyp
     )
 
 
+def test_an_expired_queued_offer_scraped_again_with_a_description_is_not_a_give_up(monkeypatch, tmp_path):
+    from datetime import timedelta
+    import main
+    from src.retry_queue import RATE_LIMIT_MAX_AGE_DAYS
+    _seed_queue(tmp_path, [_rate_limited(1)], age=timedelta(days=RATE_LIMIT_MAX_AGE_DAYS))
+
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(1)])
+
+    assert [offer.link for offer in calls["score_input"]] == ["https://x/1"]
+    main.telemetry.set_fields.assert_any_call(
+        prompt_tokens=0, completion_tokens=0, total_tokens=0, offers_deferred=0,
+        rate_limit_deferred=0, rate_limit_dropped=0,
+    )
+
+
 def test_a_give_up_is_marked_seen_before_later_output_can_fail(monkeypatch, tmp_path):
     from datetime import timedelta
     from src.dedup import filter_new

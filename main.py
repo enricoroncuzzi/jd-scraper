@@ -29,7 +29,8 @@ def _is_rate_limited(offer: JobOffer) -> bool:
     return offer.description_status == "rate_limited"
 
 
-def _persist_unfinished(config, previous, expired_rate_limited, pending_rate_limited, unscored):
+def _persist_unfinished(config, previous, expired_rate_limited, pending_rate_limited, unscored,
+                       handled_links=frozenset()):
     """Queue scoring gaps and still-throttled descriptions.
 
     Marks offers whose rate-limit window closed, immediately after the queue
@@ -42,7 +43,8 @@ def _persist_unfinished(config, previous, expired_rate_limited, pending_rate_lim
     give_up = [offer for offer in pending_rate_limited if offer.link not in queued_links]
     seen = {offer.link for offer in give_up}
     for entry in expired_rate_limited:
-        if entry.offer.link not in queued_links and entry.offer.link not in seen:
+        link = entry.offer.link
+        if link not in queued_links and link not in seen and link not in handled_links:
             give_up.append(entry.offer)
             seen.add(entry.offer.link)
     rate_limited_queued = sum(1 for entry in entries if _is_rate_limited(entry.offer))
@@ -233,7 +235,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
 
     if not to_score:
         give_up, rate_limited_queued = _persist_unfinished(
-            config, previous, expired_rate_limited, pending_rate_limited, [])
+            config, previous, expired_rate_limited, pending_rate_limited, [], fresh_links)
         if rejected:
             print("[main] No offers left to score - all rejected by verification.")
             note = (f" {rate_limited_queued} description(s) were rate-limited and deferred."
@@ -288,7 +290,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
     # re-queued as today's copy, but its expiry clock must still run from the
     # first deferral or it can be re-scraped and re-deferred forever.
     give_up, rate_limited_queued = _persist_unfinished(
-        config, previous, expired_rate_limited, pending_rate_limited, deferred)
+        config, previous, expired_rate_limited, pending_rate_limited, deferred, fresh_links)
     if deferred:
         print(f"[main] {len(deferred)} offer(s) left unscored (scoring stopped early) "
               f"- queued for the next run in {config.retry_queue_path}")
