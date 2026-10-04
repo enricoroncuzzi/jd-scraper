@@ -32,7 +32,7 @@ from src import storage
 from src.database import apply_transaction_timeouts
 
 STOP_REASONS = ("exhausted_underfull", "empty_page", "duplicate_page",
-                "end_of_results", "cap_hit", "error")
+                "end_of_results", "cap_hit", "rate_limited", "error")
 
 _RUN_OPEN_COLUMNS = ("run_uuid", "run_at", "tier", "daily_run_id", "attempt",
                      "git_commit", "git_dirty", "status", "started_at")

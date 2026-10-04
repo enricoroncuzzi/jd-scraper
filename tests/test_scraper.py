@@ -173,6 +173,94 @@ def test_fetch_offers_rate_limits_description_instead_of_scoring_fallback_text(m
     assert call_count["n"] == scraper._DESC_MAX_RETRIES
 
 
+def test_three_consecutive_rate_limited_descriptions_stop_further_requests(monkeypatch):
+    """After three throttled descriptions, the rest of this fetch_offers call
+    is emitted as rate_limited with no further description HTTP, and later
+    pages and queries are not searched."""
+    description_urls = []
+    search_calls = []
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            params = kwargs.get("params", {})
+            search_calls.append((params.get("keywords"), params.get("start", 0)))
+            resp.status_code = 200
+            if params.get("start", 0) == 0 and params.get("keywords") == "AI Engineer":
+                cards = "".join(
+                    f"""<li>
+                      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/{i}">x</a>
+                      <h3 class="base-search-card__title">Role {i}</h3>
+                      <h4 class="base-search-card__subtitle">Co</h4>
+                      <span class="job-search-card__location">Milan, Italy</span>
+                    </li>"""
+                    for i in range(1, 6)
+                )
+                resp.text = f"<ul>{cards}</ul>"
+            else:
+                resp.text = _search_html([(9, "Later", "Milan, Italy")])
+            return resp
+        description_urls.append(url)
+        resp.status_code = 429
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(
+        ["AI Engineer", "ML Engineer"], "Europe", "r86400", max_pages_per_query=5,
+    )
+
+    assert len(description_urls) == (
+        scraper._CONSECUTIVE_RATE_LIMITS_BEFORE_BREAK * scraper._DESC_MAX_RETRIES
+    )
+    assert all("/jobs/view/4" not in url and "/jobs/view/5" not in url for url in description_urls)
+    assert search_calls == [("AI Engineer", 0)]
+    assert [offer.link.rsplit("/", 1)[-1] for offer in offers] == ["1", "2", "3", "4", "5"]
+    assert all(offer.description == "" and offer.description_status == "rate_limited" for offer in offers)
+
+
+def test_a_clean_description_resets_the_rate_limit_streak(monkeypatch):
+    calls = []
+
+    def fake_fetch(url, title, company):
+        calls.append(url)
+        status = "ok" if url.endswith("/3") else "rate_limited"
+        text = "A full English description of the role and the team." if status == "ok" else ""
+        return text, status
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        start = kwargs.get("params", {}).get("start", 0)
+        if start == 0:
+            cards = "".join(
+                f"""<li>
+                  <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/{i}">x</a>
+                  <h3 class="base-search-card__title">Role {i}</h3>
+                  <h4 class="base-search-card__subtitle">Co</h4>
+                  <span class="job-search-card__location">Milan, Italy</span>
+                </li>"""
+                for i in range(1, 6)
+            )
+            resp.text = f"<ul>{cards}</ul>"
+        else:
+            resp.text = EMPTY_PAGE_HTML
+        return resp
+
+    monkeypatch.setattr("src.scraper._fetch_description", fake_fetch)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(calls) == 5
+    assert [offer.description_status for offer in offers] == [
+        "rate_limited", "rate_limited", "ok", "rate_limited", "rate_limited",
+    ]
+
+
 def test_fetch_offers_rate_limits_description_when_503_or_504_exhausted(monkeypatch):
     def mock_get(url, **kwargs):
         resp = MagicMock()

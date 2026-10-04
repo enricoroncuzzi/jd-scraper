@@ -61,6 +61,27 @@ class _RequestPace:
 
 _pace = _RequestPace()
 
+# One exhausted description already spent the full retry ladder. After this
+# many in a row, the rest of the fetch_offers call is deferred without
+# another description request, and later pages are not fetched.
+_CONSECUTIVE_RATE_LIMITS_BEFORE_BREAK = 3
+
+
+class _DescriptionBreaker:
+    def __init__(self):
+        self.consecutive = 0
+        self.tripped = False
+
+    def note(self, status: str) -> None:
+        if status == "rate_limited":
+            self.consecutive += 1
+            if self.consecutive >= _CONSECUTIVE_RATE_LIMITS_BEFORE_BREAK and not self.tripped:
+                self.tripped = True
+                print(f"[scraper] {self.consecutive} descriptions rate-limited in a row - "
+                      f"not requesting further descriptions this run.")
+        else:
+            self.consecutive = 0
+
 
 def _note_response(status_code: int, saw_429: bool) -> bool:
     """Raise the inter-request gap on HTTP 429. A completed request that never
@@ -116,6 +137,7 @@ def fetch_offers(
     max_pages_per_query: int = _MAX_PAGES_PER_QUERY,
 ) -> list[JobOffer]:
     _pace.reset()
+    breaker = _DescriptionBreaker()
     work_modes = work_modes or []
     modes = work_modes if work_modes else [None]
     locations = countries if countries else [location]
@@ -139,6 +161,7 @@ def fetch_offers(
                     allowed_countries=allowed_countries,
                     max_pages_per_query=max_pages_per_query,
                     fetched_descriptions=fetched_descriptions,
+                    breaker=breaker,
                 )
                 for offer in offers:
                     if offer.link not in seen_links:
@@ -216,6 +239,7 @@ def _fetch_for_query(
     allowed_countries: frozenset[str] | None = None,
     max_pages_per_query: int = _MAX_PAGES_PER_QUERY,
     fetched_descriptions: dict[str, tuple[str, str]] | None = None,
+    breaker: _DescriptionBreaker | None = None,
 ) -> list[JobOffer]:
     """Paginate one search and return its in-scope offers.
 
@@ -234,6 +258,12 @@ def _fetch_for_query(
     """
     if fetched_descriptions is None:
         fetched_descriptions = {}
+    if breaker is None:
+        breaker = _DescriptionBreaker()
+    if breaker.tripped:
+        print(f"[scraper] Skipping {role}/{location}/{work_mode}: "
+              f"description fetches are stopped for this run.")
+        return []
     offers: list[JobOffer] = []
     seen_links: set[str] = set()
     cross_query_duplicates = 0
@@ -252,6 +282,9 @@ def _fetch_for_query(
 
     try:
         for page in range(max_pages_per_query):
+            if breaker.tripped:
+                stop_reason = "rate_limited"
+                break
             pages_walked = page + 1
             if page:
                 # A page whose cards are all out of scope fetches no descriptions,
@@ -306,11 +339,17 @@ def _fetch_for_query(
                 if cached is not None:
                     description, description_status = cached
                     cross_query_duplicates += 1
+                elif breaker.tripped:
+                    # The ladder already failed several times this call. Emit
+                    # the card so it defers, and do not spend another request.
+                    description, description_status = "", "rate_limited"
+                    fetched_descriptions[card["link"]] = (description, description_status)
                 else:
                     description, description_status = _fetch_description(
                         card["link"], card["title"], card["company"]
                     )
                     fetched_descriptions[card["link"]] = (description, description_status)
+                    breaker.note(description_status)
                     _pace.pause()
                 offers.append(JobOffer(
                     id=next_id,
@@ -324,14 +363,17 @@ def _fetch_for_query(
                 ))
                 next_id += 1
         else:
-            stop_reason = "cap_hit" if last_page_was_full else "exhausted_underfull"
+            stop_reason = (
+                "rate_limited" if breaker.tripped
+                else "cap_hit" if last_page_was_full else "exhausted_underfull"
+            )
             # An under-full final page exhausted the result set on its own, so only
             # a full last page leaves it ambiguous whether the cap truncated this
             # query. The cap stays where it is until production shows real page
             # depth, and that observation needs this line to be free of false
             # positives - hence "full" meaning "as wide as this query's other
             # pages", never "== some hardcoded page size".
-            if last_page_was_full:
+            if stop_reason == "cap_hit":
                 print(f"[scraper] Hit the page cap ({max_pages_per_query} pages) for "
                       f"{role}/{location}/{work_mode} - there may be more results beyond this.")
     finally:
