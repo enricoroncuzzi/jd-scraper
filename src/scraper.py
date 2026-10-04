@@ -47,7 +47,9 @@ class _RequestPace:
         self.factor = min(self.factor * _PACE_GROWTH, _PACE_DELAY_CAP / _PACE_LOW)
 
     def relax(self) -> None:
-        self.factor = 1.0
+        # One clean request steps back toward the normal gap. A run of 429s
+        # is not forgotten by the next response that happened to succeed.
+        self.factor = max(1.0, self.factor / _PACE_GROWTH)
 
     def pause(self) -> None:
         low = min(_PACE_LOW * self.factor, _PACE_DELAY_CAP)
@@ -371,7 +373,9 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             response = requests.get(url, headers=HEADERS, timeout=15)
         except requests.RequestException:
             if attempt == _DESC_MAX_RETRIES - 1:
-                return "", "failed"
+                # A 429 earlier in this fetch means the page was throttled,
+                # even if the last attempt died on the network instead.
+                return "", "rate_limited" if saw_429 else "failed"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
             time.sleep(wait)
             continue

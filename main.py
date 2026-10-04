@@ -100,6 +100,9 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         print("[main] No new offers. Exiting.")
         if expired_rate_limited:
             mark_seen([entry.offer for entry in expired_rate_limited], config.dedup_log_path)
+        # Nothing live remains. Leaving the expired rows in the file would
+        # log and re-mark them on every later empty run.
+        save_deferred(config.retry_queue_path, [])
         telemetry.set_fields(rate_limit_deferred=0)
         return
 
@@ -111,27 +114,48 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
           f"rate-limited: {rate_limited_count}")
 
     # A description LinkedIn refused is not verified or scored on fallback
-    # text. Today's copy wins over a queued one; a queued copy today's scrape
-    # did not return is fetched again before it can be scored.
-    fresh_links = {o.link for o in new_offers}
-    pending_rate_limited = [o for o in new_offers if _is_rate_limited(o)]
-    scoreable_new = [o for o in new_offers if not _is_rate_limited(o)]
+    # text. Today's copy wins over a queued one, except when today's copy is
+    # only rate-limited and the queue already holds a real description: that
+    # paid-for copy is what gets scored. A queued rate-limited copy today's
+    # scrape did not return is fetched again. The first refetch that is still
+    # throttled stops the rest: each full retry ladder is many minutes, and
+    # walking all of them would stall the tier.
+    queued_by_link = {entry.offer.link: entry for entry in deferred_entries}
+    fresh_links: set[str] = set()
+    pending_rate_limited: list[JobOffer] = []
+    scoreable_new: list[JobOffer] = []
+    for offer in new_offers:
+        queued = queued_by_link.get(offer.link)
+        if _is_rate_limited(offer) and queued is not None and not _is_rate_limited(queued.offer):
+            continue
+        fresh_links.add(offer.link)
+        if _is_rate_limited(offer):
+            pending_rate_limited.append(offer)
+        else:
+            scoreable_new.append(offer)
     carried_ready: list[JobOffer] = []
     carried_to_verify: list[JobOffer] = []
+    refetch_blocked = False
     for entry in deferred_entries:
         if entry.offer.link in fresh_links:
             continue
         if _is_rate_limited(entry.offer):
+            if refetch_blocked:
+                pending_rate_limited.append(entry.offer)
+                continue
             refreshed = refetch_description(entry.offer)
             if _is_rate_limited(refreshed):
                 pending_rate_limited.append(refreshed)
+                refetch_blocked = True
             else:
                 carried_to_verify.append(refreshed)
         else:
             carried_ready.append(entry.offer)
     if carried_to_verify:
         carried_to_verify = filter_by_language(carried_to_verify)
-    to_verify = scoreable_new + carried_to_verify
+    # verify_offers keys verdicts by offer id. A carried offer still has the
+    # id from the run that fetched it, which collides with today's offers.
+    to_verify = _renumber(scoreable_new + carried_to_verify)
     previous = list(deferred_entries) + list(expired_rate_limited)
 
     verification_degraded = False
@@ -206,6 +230,17 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 )
             except Exception as notify_exc:
                 print(f"[main] Failed to send all-rejected notification: {notify_exc}")
+        elif rate_limited_queued:
+            print(f"[main] No offers left to score - {rate_limited_queued} rate-limited description(s) deferred.")
+            try:
+                send_message(
+                    f"{config.telegram.greeting}\n\nTier {config.tier}: {rate_limited_queued} offer(s) "
+                    f"deferred because LinkedIn rate-limited the description.",
+                    config.telegram_token,
+                    config.telegram_chat_id,
+                )
+            except Exception as notify_exc:
+                print(f"[main] Failed to send rate-limit deferral notification: {notify_exc}")
         mark_seen(list(rejected) + give_up, config.dedup_log_path)
         telemetry.set_fields(rate_limit_deferred=rate_limited_queued)
         return
@@ -335,12 +370,12 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
 
 
 def _renumber(offers: list[JobOffer]) -> list[JobOffer]:
-    """Give the scoring input unique sequential ids.
+    """Give this batch unique sequential ids.
 
-    src/scorer.py keys its results by offer id, and a deferred offer still
-    carries the id it had on the run that fetched it. Without renumbering,
-    those ids collide with today's fresh ones and scores land on the wrong
-    offers.
+    src/scorer.py and src/remote_verifier.py both key results by offer id.
+    A deferred offer still carries the id it had on the run that fetched it.
+    Without renumbering, those ids collide with today's fresh ones and a
+    score or a remote verdict lands on the wrong offer.
     """
     return [offer.model_copy(update={"id": i}) for i, offer in enumerate(offers)]
 

@@ -138,7 +138,7 @@ def test_a_rate_limited_offer_is_dropped_after_two_days_and_logged(tmp_path, cap
     path = str(tmp_path / "unscored_tier1.jsonl")
     now = datetime(2026, 10, 4, 7, 0, 0)
     expired = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS), offer=_rate_limited(0))
-    still_open = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS, minutes=-1), offer=_rate_limited(1))
+    still_open = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS - 1), offer=_rate_limited(1))
     scoring = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS), offer=_offer(2))
     save_deferred(path, [expired, still_open, scoring])
 

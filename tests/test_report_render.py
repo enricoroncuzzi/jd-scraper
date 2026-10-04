@@ -249,7 +249,7 @@ def test_trend_includes_rate_limit_total_and_deferred_count():
     text = rr.render_trend(metrics, settings=SETTINGS)
     header, row = text.splitlines()
     assert "429s" in header and "rl-defer" in header
-    assert "112" in row and "7" in row
+    assert row.split()[-2:] == ["112", "7"]
 
 
 def test_unconfigured_limits_render_as_unknown_and_warn():

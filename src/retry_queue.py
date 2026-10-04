@@ -67,7 +67,10 @@ class DeferredQueue:
 
 
 def _rate_limit_expired(queued_at: datetime, now: datetime) -> bool:
-    return queued_at <= now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS)
+    # Calendar days, not elapsed hours: the queue is written at the end of a
+    # tier and read at the start of a later one, so a 48-hour cutoff often
+    # still looks open on the morning it should close.
+    return (now.date() - queued_at.date()).days >= RATE_LIMIT_MAX_AGE_DAYS
 
 
 def read_deferred(path: str, now: datetime | None = None) -> DeferredQueue:

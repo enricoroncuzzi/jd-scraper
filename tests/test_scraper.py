@@ -1,4 +1,5 @@
 import pytest
+import requests
 from unittest.mock import MagicMock, patch
 from src import scraper
 from src.scraper import fetch_offers
@@ -194,7 +195,8 @@ def test_fetch_offers_rate_limits_description_when_503_or_504_exhausted(monkeypa
 
 def test_pacing_increases_after_a_429_and_resets_after_a_clean_description(monkeypatch):
     """The gap after a throttled description is longer than the normal gap.
-    A later description that is not rate-limited brings the gap back down.
+    Each later description that is not rate-limited steps the gap back down,
+    and it is normal again only once the 429s have actually stopped.
     Retry backoff sleeps stay at zero here so only the inter-request gap shows."""
     delays = []
     monkeypatch.setattr("src.scraper.time.sleep", lambda seconds: delays.append(seconds))
@@ -210,9 +212,17 @@ def test_pacing_increases_after_a_429_and_resets_after_a_clean_description(monke
         <h4 class="base-search-card__subtitle">Other Co</h4>
         <span class="job-search-card__location">Milan, Italy</span>
       </li>
+      <li>
+        <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/333">y</a>
+        <h3 class="base-search-card__title">Data Scientist</h3>
+        <h4 class="base-search-card__subtitle">Third Co</h4>
+        <span class="job-search-card__location">Milan, Italy</span>
+      </li>
     </ul>""",
     )
-    description_statuses = iter([429, 200, 200])
+    # Two 429s then a 200 on the first description (factor 4), then two clean
+    # descriptions that halve the gap back to normal.
+    description_statuses = iter([429, 429, 200, 200, 200])
 
     def mock_get(url, **kwargs):
         resp = MagicMock()
@@ -229,10 +239,10 @@ def test_pacing_increases_after_a_429_and_resets_after_a_clean_description(monke
     offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
 
     paced = [delay for delay in delays if delay]
-    assert len(offers) == 2
-    assert paced[0] == scraper._PACE_LOW * 2
-    assert paced[0] > scraper._PACE_LOW
-    assert paced[1] == scraper._PACE_LOW
+    assert len(offers) == 3
+    assert paced[0] == scraper._PACE_LOW * 4
+    assert paced[1] == scraper._PACE_LOW * 2
+    assert paced[2] == scraper._PACE_LOW
     assert scraper._pace.factor == 1
 
 
@@ -242,10 +252,40 @@ def test_pace_growth_is_capped():
         for _ in range(30):
             scraper._pace.slow()
         assert scraper._PACE_LOW * scraper._pace.factor <= scraper._PACE_DELAY_CAP
+        before = scraper._pace.factor
         scraper._pace.relax()
+        assert 1 < scraper._pace.factor < before
+        while scraper._pace.factor > 1:
+            scraper._pace.relax()
         assert scraper._pace.factor == 1
     finally:
         scraper._pace.reset()
+
+
+def test_a_429_followed_by_a_network_error_is_still_rate_limited(monkeypatch):
+    calls = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            start = kwargs.get("params", {}).get("start", 0)
+            resp.text = SEARCH_HTML if start == 0 else EMPTY_PAGE_HTML
+            return resp
+        calls["n"] += 1
+        if calls["n"] == 1:
+            resp.status_code = 429
+            return resp
+        raise requests.RequestException("reset")
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert offers[0].description == ""
+    assert offers[0].description_status == "rate_limited"
 
 
 def test_fetch_offers_skips_cards_without_title_or_link(monkeypatch):

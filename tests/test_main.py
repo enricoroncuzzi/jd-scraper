@@ -668,7 +668,7 @@ def test_all_offers_rejected_by_verification_notifies_and_still_marks_seen(monke
     monkeypatch.setattr("main.filter_new", lambda offers, path: offers)
     monkeypatch.setattr("main.verify_offers", fake_verify)
     monkeypatch.setattr("main.score_offers", mock_score)
-    monkeypatch.setattr("main.mark_seen", lambda offers, path: marked.update(ids=[o.id for o in offers]))
+    monkeypatch.setattr("main.mark_seen", lambda offers, path: marked.update(links=[o.link for o in offers]))
     monkeypatch.setattr("main.send_message", mock_send_message)
     _stub_common_pipeline(monkeypatch)
 
@@ -679,7 +679,7 @@ def test_all_offers_rejected_by_verification_notifies_and_still_marks_seen(monke
     text = mock_send_message.call_args.args[0]
     assert "2" in text
     assert "rejected" in text
-    assert sorted(marked["ids"]) == [1, 2]
+    assert sorted(marked["links"]) == ["https://x/1", "https://x/2"]
 
 
 def test_verification_is_skipped_when_disabled(monkeypatch, tmp_path):
@@ -1236,6 +1236,88 @@ def test_a_rate_limited_offer_older_than_two_days_is_dropped_and_marked_seen(mon
     assert load_deferred(_queue_path(tmp_path)) == []
     assert filter_new([limited], _seen_path(tmp_path)) == []
     assert f"longer than {RATE_LIMIT_MAX_AGE_DAYS} day" in capsys.readouterr().out
+
+
+def test_a_refetched_offer_is_verified_under_an_id_that_cannot_collide(monkeypatch, tmp_path):
+    carried = _rate_limited(5).model_copy(update={"id": 0})
+    fresh = _offer(0)
+    _seed_queue(tmp_path, [carried])
+    seen = {}
+
+    def fake_refetch(offer):
+        return offer.model_copy(update={
+            "description": "A full description of the carried role.",
+            "description_status": "ok",
+        })
+
+    def fake_verify(offers, require_italy_eligibility, groq_api_key, **kwargs):
+        seen["ids"] = [offer.id for offer in offers]
+        seen["links"] = [offer.link for offer in offers]
+        for offer in offers:
+            offer.remote_verdict = "confirmed"
+        return offers, dict(_ZERO_USAGE)
+
+    monkeypatch.setattr("main.refetch_description", fake_refetch)
+    calls, _ = _run_handler(
+        monkeypatch, tmp_path, [fresh], remote_check=True, verify=fake_verify,
+    )
+
+    assert seen["links"] == ["https://x/0", "https://x/5"]
+    assert seen["ids"] == [0, 1]
+    assert [offer.link for offer in calls["score_input"]] == ["https://x/0", "https://x/5"]
+
+
+def test_a_throttled_rescrape_does_not_replace_a_description_already_in_hand(monkeypatch, tmp_path):
+    ready = _offer(1).model_copy(update={
+        "description": "a real description already fetched",
+        "remote_verdict": "confirmed",
+    })
+    _seed_queue(tmp_path, [ready])
+
+    def fail_refetch(offer):
+        raise AssertionError("the queued description is already paid for")
+
+    monkeypatch.setattr("main.refetch_description", fail_refetch)
+    calls, _ = _run_handler(monkeypatch, tmp_path, [_rate_limited(1), _offer(2)])
+
+    scored = {offer.link: offer.description for offer in calls["score_input"]}
+    assert scored["https://x/1"] == "a real description already fetched"
+    assert "https://x/2" in scored
+    from src.retry_queue import load_deferred
+    assert load_deferred(_queue_path(tmp_path)) == []
+
+
+def test_one_throttled_refetch_stops_the_rest_of_the_carry_over(monkeypatch, tmp_path):
+    _seed_queue(tmp_path, [_rate_limited(1), _rate_limited(2)])
+    calls_made = {"n": 0}
+
+    def fake_refetch(offer):
+        calls_made["n"] += 1
+        return offer
+
+    monkeypatch.setattr("main.refetch_description", fake_refetch)
+    score_calls, _ = _run_handler(monkeypatch, tmp_path, [_offer(3)])
+
+    assert calls_made["n"] == 1
+    assert [offer.link for offer in score_calls["score_input"]] == ["https://x/3"]
+    from src.retry_queue import load_deferred
+    assert [entry.offer.link for entry in load_deferred(_queue_path(tmp_path))] == [
+        "https://x/1", "https://x/2",
+    ]
+
+
+def test_an_empty_run_drops_expired_rate_limited_offers_from_the_queue(monkeypatch, tmp_path):
+    from datetime import timedelta
+    from src.dedup import filter_new
+    from src.retry_queue import RATE_LIMIT_MAX_AGE_DAYS, load_deferred
+    limited = _rate_limited(1)
+    _seed_queue(tmp_path, [limited], age=timedelta(days=RATE_LIMIT_MAX_AGE_DAYS))
+
+    _run_handler(monkeypatch, tmp_path, [])
+
+    assert load_deferred(_queue_path(tmp_path)) == []
+    assert not __import__("os").path.exists(_queue_path(tmp_path))
+    assert filter_new([limited], _seen_path(tmp_path)) == []
 
 
 def test_a_queued_offer_rejected_by_todays_verification_is_dropped(monkeypatch, tmp_path):
