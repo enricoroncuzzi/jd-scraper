@@ -46,7 +46,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 | Metric | Value | Verified via |
 |---|---|---|
-| Automated tests | **536** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
+| Automated tests | **550** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
 | Max pages per query | **16-50** per tier (~160-500 cards at the endpoint's current 10/request) | `search.max_pages_per_query` in `config/config_tier{1..4}.json` |
 | Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~3,000** | `wc -l` |

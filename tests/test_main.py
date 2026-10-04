@@ -1325,6 +1325,32 @@ def test_a_rate_limit_give_up_is_recorded_even_when_nothing_stays_queued(monkeyp
     )
 
 
+def test_a_give_up_is_marked_seen_before_later_output_can_fail(monkeypatch, tmp_path):
+    from datetime import timedelta
+    from src.dedup import filter_new
+    from src.retry_queue import RATE_LIMIT_MAX_AGE_DAYS, load_deferred
+    limited = _rate_limited(1)
+    _seed_queue(tmp_path, [limited], age=timedelta(days=RATE_LIMIT_MAX_AGE_DAYS))
+
+    import main
+    _stub_common_pipeline(monkeypatch)
+    monkeypatch.setattr("main.write_digest", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    monkeypatch.setattr("main.fetch_offers", lambda **kwargs: [_offer(2)])
+    monkeypatch.setattr("main.filter_by_language", lambda offers: offers)
+    monkeypatch.setattr("main.score_offers", _score_all)
+    monkeypatch.setattr(
+        "main.refetch_description",
+        lambda offer: (_ for _ in ()).throw(AssertionError("expired offers are not refetched")),
+    )
+    monkeypatch.setattr("main._USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+
+    with pytest.raises(OSError, match="disk"):
+        main.handler({}, None, config_path=str(_config_with(tmp_path, monkeypatch)))
+
+    assert filter_new([limited], _seen_path(tmp_path)) == []
+    assert load_deferred(_queue_path(tmp_path)) == []
+
+
 def test_an_empty_run_records_rate_limit_give_ups(monkeypatch, tmp_path):
     from datetime import timedelta
     import main

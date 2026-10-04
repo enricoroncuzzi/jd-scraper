@@ -32,8 +32,9 @@ def _is_rate_limited(offer: JobOffer) -> bool:
 def _persist_unfinished(config, previous, expired_rate_limited, pending_rate_limited, unscored):
     """Queue scoring gaps and still-throttled descriptions.
 
-    Returns offers to mark seen (the rate-limit window closed) and how many
-    rate-limited descriptions were queued for the next run.
+    Marks offers whose rate-limit window closed, immediately after the queue
+    rewrite, and returns that give-up list plus how many rate-limited
+    descriptions were queued for the next run.
     """
     entries = build_deferred(list(unscored) + list(pending_rate_limited), previous)
     save_deferred(config.retry_queue_path, entries)
@@ -45,6 +46,11 @@ def _persist_unfinished(config, previous, expired_rate_limited, pending_rate_lim
             give_up.append(entry.offer)
             seen.add(entry.offer.link)
     rate_limited_queued = sum(1 for entry in entries if _is_rate_limited(entry.offer))
+    # Mark the give-up before anything else in this tier can fail. A crash
+    # between the queue rewrite and a later mark_seen used to drop the row
+    # and restart the two-day clock on the next run.
+    if give_up:
+        mark_seen(give_up, config.dedup_log_path)
     if rate_limited_queued:
         print(f"[main] {rate_limited_queued} offer(s) deferred because LinkedIn rate-limited "
               f"the description - queued for the next run in {config.retry_queue_path}")
@@ -98,11 +104,11 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
 
     if not new_offers and not deferred_entries:
         print("[main] No new offers. Exiting.")
+        # Clear the file first, then mark seen. Leaving the expired rows
+        # would log and re-mark them on every later empty run.
+        save_deferred(config.retry_queue_path, [])
         if expired_rate_limited:
             mark_seen([entry.offer for entry in expired_rate_limited], config.dedup_log_path)
-        # Nothing live remains. Leaving the expired rows in the file would
-        # log and re-mark them on every later empty run.
-        save_deferred(config.retry_queue_path, [])
         telemetry.set_fields(
             rate_limit_deferred=0,
             rate_limit_dropped=len(expired_rate_limited),
@@ -252,7 +258,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 )
             except Exception as notify_exc:
                 print(f"[main] Failed to send rate-limit deferral notification: {notify_exc}")
-        mark_seen(list(rejected) + give_up, config.dedup_log_path)
+        mark_seen(list(rejected), config.dedup_log_path)
         telemetry.set_fields(
             rate_limit_deferred=rate_limited_queued,
             rate_limit_dropped=len(give_up),
@@ -377,10 +383,11 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         except Exception as notify_exc:
             print(f"[main] Failed to send summary failure notification: {notify_exc}")
 
-    # "Seen" means handled, not fetched: verification rejects, scored offers,
-    # and rate-limited descriptions whose carry-over window has closed.
-    # Anything still deferred stays new to the next run.
-    mark_seen(list(rejected) + list(scored) + give_up, config.dedup_log_path)
+    # "Seen" means handled, not fetched: verification rejects and scored
+    # offers. Rate-limited descriptions whose window closed were marked
+    # inside _persist_unfinished, with the queue rewrite. Anything still
+    # deferred stays new to the next run.
+    mark_seen(list(rejected) + list(scored), config.dedup_log_path)
     print("[main] Done.")
 
 
