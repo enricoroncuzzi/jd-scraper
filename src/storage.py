@@ -61,7 +61,6 @@ def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
                     )
                 """)
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS description_status VARCHAR(20) NOT NULL DEFAULT 'ok'""")
-                cur.execute("""ALTER TABLE offers ALTER COLUMN description_status TYPE VARCHAR(20)""")
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS application_channel VARCHAR(20)""")
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_verdict VARCHAR(12)""")
                 cur.execute("""ALTER TABLE offers ADD COLUMN IF NOT EXISTS remote_reason TEXT""")
