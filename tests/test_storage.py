@@ -53,10 +53,16 @@ def test_init_db_evolves_runs_and_adds_telemetry_tables():
         "verification_batches_total INTEGER", "verification_degraded BOOLEAN",
         "verification_confirmed INTEGER", "verification_unconfirmed INTEGER",
         "verification_rejected INTEGER", "search_rate_limits INTEGER",
-        "description_rate_limits INTEGER", "telemetry_ok BOOLEAN",
+        "description_rate_limits INTEGER", "rate_limit_deferred INTEGER",
+        "rate_limit_dropped INTEGER",
+        "telemetry_ok BOOLEAN",
     ):
         assert f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {column}" in sql
     assert "CREATE UNIQUE INDEX IF NOT EXISTS runs_run_uuid_key ON runs (run_uuid)" in sql
+    # An unconditional type change takes ACCESS EXCLUSIVE and can roll back
+    # the new runs columns if it waits on a lock. Rate-limited offers are
+    # never inserted, so the existing VARCHAR(10) does not need widening.
+    assert "ALTER COLUMN description_status" not in sql
     assert "CREATE TABLE IF NOT EXISTS run_queries" in sql
     assert "CREATE TABLE IF NOT EXISTS llm_calls" in sql
     assert "CREATE INDEX IF NOT EXISTS llm_calls_started_at_idx" in sql

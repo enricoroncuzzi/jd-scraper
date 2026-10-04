@@ -52,7 +52,7 @@ def test_job_offer_description_status_defaults_to_ok():
 
 
 def test_job_offer_description_status_accepts_valid_values():
-    for status in ("ok", "partial", "failed"):
+    for status in ("ok", "partial", "failed", "rate_limited"):
         offer = JobOffer(id=1, title="t", company="c", link="l", description_status=status)
         assert offer.description_status == status
 

@@ -9,7 +9,7 @@ class JobOffer(BaseModel):
     location: str = "N/A"
     link: str
     description: str = ""
-    description_status: Literal["ok", "partial", "failed"] = "ok"
+    description_status: Literal["ok", "partial", "failed", "rate_limited"] = "ok"
     work_mode: str = ""
     remote_verdict: Literal["confirmed", "rejected", "unconfirmed", "not_checked"] = "not_checked"
     remote_reason: str = ""

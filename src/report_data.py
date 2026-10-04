@@ -49,6 +49,10 @@ class TierRun:
     telemetry_ok: bool | None
     scored: int = 0
     high: int = 0
+    search_rate_limits: int | None = None
+    description_rate_limits: int | None = None
+    rate_limit_deferred: int | None = None
+    rate_limit_dropped: int | None = None
 
 
 @dataclass
@@ -160,6 +164,9 @@ class DailyMetrics:
     llm_calls: int | None
     llm_failed: int | None
     packaged: int
+    rate_limits: int | None = None
+    rate_limit_deferred: int | None = None
+    rate_limit_dropped: int | None = None
 
 
 def load_tier_settings(paths: list[str]) -> dict[int, TierSettings]:
@@ -306,6 +313,10 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
                     verification_batches_total=row["verification_batches_total"],
                     verification_degraded=row["verification_degraded"],
                     telemetry_ok=row["telemetry_ok"],
+                    search_rate_limits=row.get("search_rate_limits"),
+                    description_rate_limits=row.get("description_rate_limits"),
+                    rate_limit_deferred=row.get("rate_limit_deferred"),
+                    rate_limit_dropped=row.get("rate_limit_dropped"),
                 )  # later attempts overwrite earlier ones: rows are ordered by attempt
             latest_uuids = [t.run_uuid for t in tiers.values()]
             for tier in tiers.values():
@@ -382,6 +393,18 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
         conn.close()
 
 
+def _nullable_int(value):
+    return None if value is None else int(value)
+
+
+def _rate_limit_total(row) -> int | None:
+    search = row["search_rate_limits"]
+    description = row["description_rate_limits"]
+    if search is None and description is None:
+        return None
+    return int(search or 0) + int(description or 0)
+
+
 def load_daily_metrics(db_url: str, *, since: date, settings: dict[int, TierSettings]) -> list[DailyMetrics]:
     conn = _connect(db_url)
     try:
@@ -392,6 +415,10 @@ def load_daily_metrics(db_url: str, *, since: date, settings: dict[int, TierSett
                 "ORDER BY COALESCE(daily_run_id, id::text), tier, attempt DESC NULLS LAST) "
                 "SELECT (COALESCE(started_at, run_at) AT TIME ZONE 'Europe/Rome')::date AS day, "
                 "SUM(offers_fetched) AS offers_fetched, SUM(verification_tokens) AS verification_tokens, "
+                "SUM(search_rate_limits) AS search_rate_limits, "
+                "SUM(description_rate_limits) AS description_rate_limits, "
+                "SUM(rate_limit_deferred) AS rate_limit_deferred, "
+                "SUM(rate_limit_dropped) AS rate_limit_dropped, "
                 "array_remove(array_agg(DISTINCT git_commit), NULL) AS commits, "
                 "array_agg(run_uuid) AS uuids FROM latest GROUP BY day ORDER BY day", (since,))
             runs = {r["day"]: r for r in cur.fetchall()}
@@ -429,6 +456,9 @@ def load_daily_metrics(db_url: str, *, since: date, settings: dict[int, TierSett
             llm_calls=int(llm[d]["calls"]) if d in llm else None,
             llm_failed=int(llm[d]["failed"]) if d in llm else None,
             packaged=int(packaged[d]["packaged"]) if d in packaged else 0,
+            rate_limits=_rate_limit_total(runs[d]) if d in runs else None,
+            rate_limit_deferred=_nullable_int(runs[d]["rate_limit_deferred"]) if d in runs else None,
+            rate_limit_dropped=_nullable_int(runs[d]["rate_limit_dropped"]) if d in runs else None,
         ) for d in days]
     finally:
         conn.close()

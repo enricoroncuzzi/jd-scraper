@@ -32,7 +32,7 @@ from src import storage
 from src.database import apply_transaction_timeouts
 
 STOP_REASONS = ("exhausted_underfull", "empty_page", "duplicate_page",
-                "end_of_results", "cap_hit", "error")
+                "end_of_results", "cap_hit", "rate_limited", "error")
 
 _RUN_OPEN_COLUMNS = ("run_uuid", "run_at", "tier", "daily_run_id", "attempt",
                      "git_commit", "git_dirty", "status", "started_at")
@@ -43,7 +43,7 @@ _RUN_CLOSE_COLUMNS = (
     "verification_batches_failed", "verification_batches_total",
     "verification_degraded", "verification_confirmed", "verification_unconfirmed",
     "verification_rejected", "search_rate_limits", "description_rate_limits",
-    "telemetry_ok",
+    "rate_limit_deferred", "rate_limit_dropped", "telemetry_ok",
 )
 _QUERY_COLUMNS = ("id", "run_uuid", "role", "location", "work_mode", "pages_walked",
                   "page_cap", "cards_seen", "offers_kept", "cross_query_duplicates",

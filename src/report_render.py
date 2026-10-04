@@ -12,6 +12,16 @@ from src.report_data import TIER_FLAGS, TIER_NAMES, TierSettings
 _ROME = ZoneInfo("Europe/Rome")
 _STAGE_LABELS = (("scoring", "Scoring"), ("verification", "Verification"), ("tailoring", "Tailoring"))
 _LIMIT_WARN_RATIO = 0.9
+# One source of truth for "LinkedIn throttling is degrading this tier".
+# The morning report and `scripts/run_report.py day` both read these.
+# Deferral warns when the share of fetched offers is strictly above this.
+RATE_LIMIT_DEFER_SHARE_WARN = 0.05
+# Per-tier LinkedIn HTTP 429 responses (search pages + descriptions).
+# Above this the run is not healthy, even if every description still arrived.
+LINKEDIN_429_WARN = 20
+# Offers whose rate-limit carry-over window closed this run. Any give-up
+# means a job was dropped, so the threshold sits at zero.
+RATE_LIMIT_DROPPED_WARN = 0
 
 
 def short_model(model: str) -> str:
@@ -67,6 +77,7 @@ def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[s
             warnings.append(f"⚠ {_tier_label(n)} verification: {failed} of {total} batches failed")
         if tier.telemetry_ok is False:
             warnings.append(f"⚠ {_tier_label(n)} telemetry incomplete: some records may be missing")
+        warnings.extend(_rate_limit_warnings(tier))
     for limit in report.limits:
         if limit.per_day and limit.used >= _LIMIT_WARN_RATIO * limit.per_day:
             warnings.append(
@@ -80,6 +91,39 @@ def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[s
         warnings.append("⚠ The server's copy has uncommitted edits: numbers may not match any commit")
     if getattr(report, "limits_unconfigured", False):
         warnings.append("⚠ Provider limits could not be loaded: ceilings shown as unknown")
+    return warnings
+
+
+def _count(value) -> str:
+    return "-" if value is None else str(value)
+
+
+def _rate_limit_warnings(tier) -> list[str]:
+    warnings = []
+    search = tier.search_rate_limits
+    description = tier.description_rate_limits
+    if search is not None or description is not None:
+        total = (search or 0) + (description or 0)
+        if total > LINKEDIN_429_WARN:
+            warnings.append(
+                f"⚠ {_tier_label(tier.tier)} LinkedIn 429s: {total} "
+                f"(search {search or 0}, description {description or 0}; "
+                f"warn above {LINKEDIN_429_WARN})"
+            )
+    dropped = tier.rate_limit_dropped
+    if dropped is not None and dropped > RATE_LIMIT_DROPPED_WARN:
+        warnings.append(
+            f"⚠ {_tier_label(tier.tier)} rate-limit give-ups: {dropped} "
+            f"(warn above {RATE_LIMIT_DROPPED_WARN})"
+        )
+    deferred = tier.rate_limit_deferred
+    fetched = tier.offers_fetched
+    if deferred is not None and fetched and deferred / fetched > RATE_LIMIT_DEFER_SHARE_WARN:
+        warnings.append(
+            f"⚠ {_tier_label(tier.tier)} rate-limit deferrals: {deferred} of {fetched} "
+            f"offers ({round(100 * deferred / fetched)}%; "
+            f"warn above {round(100 * RATE_LIMIT_DEFER_SHARE_WARN)}%)"
+        )
     return warnings
 
 
@@ -153,6 +197,10 @@ def _tier_block(report, n: int, settings) -> str:
     lines = [
         f"{head} · {status} · {_duration(tier.started_at, tier.finished_at)}",
         f"  Searches: {len(queries)} · {cap_hits} hit their limit ({cap} pages)",
+        f"  LinkedIn 429s: {_count(tier.search_rate_limits)} search, "
+        f"{_count(tier.description_rate_limits)} description, "
+        f"{_count(tier.rate_limit_deferred)} deferred, "
+        f"{_count(tier.rate_limit_dropped)} dropped",
         f"  Offers: {tier.offers_fetched if tier.offers_fetched is not None else '?'} found → "
         f"{tier.scored} scored → {tier.high} at {settings.get(n, TierSettings()).threshold}+ → "
         f"{tier.offers_packaged if tier.offers_packaged is not None else 0} packaged",
@@ -252,13 +300,16 @@ def _high_share_label(settings: dict | None) -> str:
 
 
 def render_trend(metrics, settings: dict | None = None) -> str:
-    lines = [f"date    cap-hits  verif-tok  {_high_share_label(settings)} share  llm-fail  packaged"]
+    lines = [f"date    cap-hits  verif-tok  {_high_share_label(settings)} share  llm-fail  packaged  429s  rl-defer  rl-drop"]
     for m in metrics:
         share = f"{100 * m.high / m.scored:.1f}%" if m.scored else "-"
         caps = f"{m.cap_hits}/{m.queries}" if m.queries is not None else "-"
         fail = f"{100 * m.llm_failed / m.llm_calls:.0f}%" if m.llm_calls else "-"
+        rate_limits = _count(m.rate_limits)
+        deferred = _count(m.rate_limit_deferred)
+        dropped = _count(m.rate_limit_dropped)
         lines.append(f"{m.day:%m-%d}   {caps:>8}  {fmt_tokens(m.verification_tokens):>9}  "
-                     f"{share:>8}  {fail:>8}  {m.packaged:>8}")
+                     f"{share:>8}  {fail:>8}  {m.packaged:>8}  {rate_limits:>5}  {deferred:>8}  {dropped:>7}")
     return "\n".join(lines)
 
 

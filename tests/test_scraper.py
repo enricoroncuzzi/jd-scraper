@@ -1,4 +1,5 @@
 import pytest
+import requests
 from unittest.mock import MagicMock, patch
 from src import scraper
 from src.scraper import fetch_offers
@@ -146,7 +147,7 @@ def test_fetch_offers_partial_description_falls_back_to_title_company(monkeypatc
     assert offers[0].description_status == "partial"
 
 
-def test_fetch_offers_failed_description_when_429_exhausted(monkeypatch):
+def test_fetch_offers_rate_limits_description_instead_of_scoring_fallback_text(monkeypatch):
     call_count = {"n": 0}
 
     def mock_get(url, **kwargs):
@@ -167,7 +168,241 @@ def test_fetch_offers_failed_description_when_429_exhausted(monkeypatch):
 
     assert len(offers) == 1
     assert offers[0].description == ""
-    assert offers[0].description_status == "failed"
+    assert offers[0].description != "AI Engineer at Some Company"
+    assert offers[0].description_status == "rate_limited"
+    assert call_count["n"] == scraper._DESC_MAX_RETRIES
+
+
+def test_three_consecutive_rate_limited_descriptions_stop_further_requests(monkeypatch):
+    """After three throttled descriptions, the rest of this fetch_offers call
+    is emitted as rate_limited with no further description HTTP, and later
+    pages and queries are not searched."""
+    description_urls = []
+    search_calls = []
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            params = kwargs.get("params", {})
+            search_calls.append((params.get("keywords"), params.get("start", 0)))
+            resp.status_code = 200
+            if params.get("start", 0) == 0 and params.get("keywords") == "AI Engineer":
+                cards = "".join(
+                    f"""<li>
+                      <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/{i}">x</a>
+                      <h3 class="base-search-card__title">Role {i}</h3>
+                      <h4 class="base-search-card__subtitle">Co</h4>
+                      <span class="job-search-card__location">Milan, Italy</span>
+                    </li>"""
+                    for i in range(1, 6)
+                )
+                resp.text = f"<ul>{cards}</ul>"
+            else:
+                resp.text = _search_html([(9, "Later", "Milan, Italy")])
+            return resp
+        description_urls.append(url)
+        resp.status_code = 429
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(
+        ["AI Engineer", "ML Engineer"], "Europe", "r86400", max_pages_per_query=5,
+    )
+
+    assert len(description_urls) == (
+        scraper._CONSECUTIVE_RATE_LIMITS_BEFORE_BREAK * scraper._DESC_MAX_RETRIES
+    )
+    assert all("/jobs/view/4" not in url and "/jobs/view/5" not in url for url in description_urls)
+    assert search_calls == [("AI Engineer", 0)]
+    assert [offer.link.rsplit("/", 1)[-1] for offer in offers] == ["1", "2", "3", "4", "5"]
+    assert all(offer.description == "" and offer.description_status == "rate_limited" for offer in offers)
+
+
+def test_a_clean_description_resets_the_rate_limit_streak(monkeypatch):
+    calls = []
+
+    def fake_fetch(url, title, company):
+        calls.append(url)
+        status = "ok" if url.endswith("/3") else "rate_limited"
+        text = "A full English description of the role and the team." if status == "ok" else ""
+        return text, status
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        start = kwargs.get("params", {}).get("start", 0)
+        if start == 0:
+            cards = "".join(
+                f"""<li>
+                  <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/{i}">x</a>
+                  <h3 class="base-search-card__title">Role {i}</h3>
+                  <h4 class="base-search-card__subtitle">Co</h4>
+                  <span class="job-search-card__location">Milan, Italy</span>
+                </li>"""
+                for i in range(1, 6)
+            )
+            resp.text = f"<ul>{cards}</ul>"
+        else:
+            resp.text = EMPTY_PAGE_HTML
+        return resp
+
+    monkeypatch.setattr("src.scraper._fetch_description", fake_fetch)
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(calls) == 5
+    assert [offer.description_status for offer in offers] == [
+        "rate_limited", "rate_limited", "ok", "rate_limited", "rate_limited",
+    ]
+
+
+def test_fetch_offers_rate_limits_description_when_503_or_504_exhausted(monkeypatch):
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            resp.text = SEARCH_HTML
+        else:
+            resp.status_code = 503
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert offers[0].description == ""
+    assert offers[0].description_status == "rate_limited"
+
+
+def test_pacing_increases_after_a_429_and_resets_after_a_clean_description(monkeypatch):
+    """The gap after a throttled description is longer than the normal gap.
+    Each later description that is not rate-limited steps the gap back down,
+    and it is normal again only once the 429s have actually stopped.
+    Retry backoff sleeps stay at zero here so only the inter-request gap shows."""
+    delays = []
+    monkeypatch.setattr("src.scraper.time.sleep", lambda seconds: delays.append(seconds))
+    monkeypatch.setattr("src.scraper.random.uniform", lambda low, high: low)
+    monkeypatch.setattr("src.scraper._wait_with_jitter", lambda base, cap: 0)
+
+    html = SEARCH_HTML.replace(
+        "</ul>",
+        """
+      <li>
+        <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/222">x</a>
+        <h3 class="base-search-card__title">ML Engineer</h3>
+        <h4 class="base-search-card__subtitle">Other Co</h4>
+        <span class="job-search-card__location">Milan, Italy</span>
+      </li>
+      <li>
+        <a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/333">y</a>
+        <h3 class="base-search-card__title">Data Scientist</h3>
+        <h4 class="base-search-card__subtitle">Third Co</h4>
+        <span class="job-search-card__location">Milan, Italy</span>
+      </li>
+    </ul>""",
+    )
+    # Two 429s then a 200 on the first description (factor 4), then two clean
+    # descriptions that halve the gap back to normal.
+    description_statuses = iter([429, 429, 200, 200, 200])
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            start = kwargs.get("params", {}).get("start", 0)
+            resp.text = html if start == 0 else EMPTY_PAGE_HTML
+        else:
+            resp.status_code = next(description_statuses)
+            resp.text = DESCRIPTION_HTML
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    paced = [delay for delay in delays if delay]
+    assert len(offers) == 3
+    assert paced[0] == scraper._PACE_LOW * 4
+    assert paced[1] == scraper._PACE_LOW * 2
+    assert paced[2] == scraper._PACE_LOW
+    assert scraper._pace.factor == 1
+
+
+def test_pace_growth_is_capped():
+    scraper._pace.reset()
+    try:
+        for _ in range(30):
+            scraper._pace.slow()
+        assert scraper._PACE_LOW * scraper._pace.factor <= scraper._PACE_DELAY_CAP
+        before = scraper._pace.factor
+        scraper._pace.relax()
+        assert 1 < scraper._pace.factor < before
+        while scraper._pace.factor > 1:
+            scraper._pace.relax()
+        assert scraper._pace.factor == 1
+    finally:
+        scraper._pace.reset()
+
+
+def test_a_429_followed_by_a_network_error_is_still_rate_limited(monkeypatch):
+    calls = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            start = kwargs.get("params", {}).get("start", 0)
+            resp.text = SEARCH_HTML if start == 0 else EMPTY_PAGE_HTML
+            return resp
+        calls["n"] += 1
+        if calls["n"] == 1:
+            resp.status_code = 429
+            return resp
+        raise requests.RequestException("reset")
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert offers[0].description == ""
+    assert offers[0].description_status == "rate_limited"
+
+
+@pytest.mark.parametrize("status", [503, 504])
+def test_a_503_or_504_followed_by_a_network_error_is_still_rate_limited(monkeypatch, status):
+    calls = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            start = kwargs.get("params", {}).get("start", 0)
+            resp.text = SEARCH_HTML if start == 0 else EMPTY_PAGE_HTML
+            return resp
+        calls["n"] += 1
+        if calls["n"] < scraper._DESC_MAX_RETRIES:
+            resp.status_code = status
+            return resp
+        raise requests.RequestException("reset")
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+    scraper._pace.reset()
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert offers[0].description == ""
+    assert offers[0].description_status == "rate_limited"
+    assert scraper._pace.factor == 1
 
 
 def test_fetch_offers_skips_cards_without_title_or_link(monkeypatch):
@@ -738,6 +973,55 @@ def test_search_pages_are_paced_but_the_first_request_is_not_delayed(monkeypatch
     assert offers == []
     assert "description" not in log
     assert log == ["search", "sleep", "search", "sleep", "search"]
+
+
+def _out_of_scope_search(monkeypatch, statuses):
+    """Search pages only. Cards are outside the tier scope, so a description
+    fetch would be a test failure. `statuses` is consumed one HTTP response
+    at a time, and a 200 renders page 0 or an empty follow-up page."""
+    from src.tier_scope import TIER3_ALLOWED_COUNTRIES
+    delays = []
+    pending = iter(statuses)
+
+    def mock_get(url, **kwargs):
+        if "seeMoreJobPostings" not in url:
+            raise AssertionError("out-of-scope cards must not fetch a description")
+        resp = MagicMock()
+        status = next(pending)
+        resp.status_code = status
+        if status != 200:
+            resp.text = ""
+            return resp
+        start = kwargs.get("params", {}).get("start", 0)
+        resp.text = (
+            _search_html([(1, "AI Engineer", "London, United Kingdom")])
+            if start == 0 else EMPTY_PAGE_HTML
+        )
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda seconds: delays.append(seconds))
+    monkeypatch.setattr("src.scraper.random.uniform", lambda low, high: low)
+    monkeypatch.setattr("src.scraper._wait_with_jitter", lambda base, cap: 0)
+    offers = fetch_offers(
+        ["AI Engineer"], "Europe", "r86400",
+        allowed_countries=TIER3_ALLOWED_COUNTRIES, max_pages_per_query=3,
+    )
+    return offers, [delay for delay in delays if delay]
+
+
+def test_search_page_429s_raise_the_gap_before_the_next_page(monkeypatch):
+    offers, paced = _out_of_scope_search(monkeypatch, [429, 429, 200, 200])
+    assert offers == []
+    assert paced[0] == scraper._PACE_LOW * 4
+
+
+@pytest.mark.parametrize("status", [503, 504])
+def test_a_503_or_504_on_a_search_page_does_not_slow_the_next_page(monkeypatch, status):
+    offers, paced = _out_of_scope_search(monkeypatch, [status, 200, 200])
+    assert offers == []
+    assert paced[0] == scraper._PACE_LOW
+    assert scraper._pace.factor == 1
 
 
 def test_a_single_page_query_never_sleeps_before_its_only_request(monkeypatch):

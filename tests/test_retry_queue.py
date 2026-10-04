@@ -5,9 +5,11 @@ from datetime import datetime, timedelta
 from src.models import JobOffer
 from src.retry_queue import (
     MAX_AGE_DAYS,
+    RATE_LIMIT_MAX_AGE_DAYS,
     QueueEntry,
     build_deferred,
     load_deferred,
+    read_deferred,
     save_deferred,
 )
 
@@ -126,6 +128,32 @@ def test_saving_nothing_never_creates_directories(tmp_path):
     save_deferred(path, [])
 
     assert not os.path.exists(os.path.dirname(path))
+
+
+def _rate_limited(i: int) -> JobOffer:
+    return _offer(i, description="").model_copy(update={"description_status": "rate_limited"})
+
+
+def test_a_rate_limited_offer_is_dropped_after_two_days_and_logged(tmp_path, capsys):
+    path = str(tmp_path / "unscored_tier1.jsonl")
+    now = datetime(2026, 10, 4, 7, 0, 0)
+    expired = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS), offer=_rate_limited(0))
+    still_open = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS - 1), offer=_rate_limited(1))
+    scoring = QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS), offer=_offer(2))
+    save_deferred(path, [expired, still_open, scoring])
+
+    loaded = read_deferred(path, now=now)
+
+    assert [e.offer.link for e in loaded.live] == ["https://li.com/1", "https://li.com/2"]
+    assert [e.offer.link for e in loaded.expired_rate_limited] == ["https://li.com/0"]
+    assert f"longer than {RATE_LIMIT_MAX_AGE_DAYS} day" in capsys.readouterr().out
+
+
+def test_build_deferred_does_not_restart_the_clock_of_an_expired_rate_limit(tmp_path):
+    now = datetime(2026, 10, 4, 7, 0, 0)
+    previous = [QueueEntry(queued_at=now - timedelta(days=RATE_LIMIT_MAX_AGE_DAYS), offer=_rate_limited(0))]
+
+    assert build_deferred([_rate_limited(0)], previous, now=now) == []
 
 
 def test_an_offer_deferred_again_keeps_its_original_timestamp():
