@@ -136,7 +136,7 @@ def test_handler_orchestrates_full_pipeline(monkeypatch):
     mock_telemetry.set_fields.assert_any_call(offers_fetched=1, offers_new=1)
     mock_telemetry.set_fields.assert_any_call(
         prompt_tokens=0, completion_tokens=0, total_tokens=0, offers_deferred=0,
-        rate_limit_deferred=0,
+        rate_limit_deferred=0, rate_limit_dropped=0,
     )
     mock_save_offers.assert_called_once_with(
         "postgresql://test", scored_offers, 42, 1,
@@ -1236,6 +1236,35 @@ def test_a_rate_limited_offer_older_than_two_days_is_dropped_and_marked_seen(mon
     assert load_deferred(_queue_path(tmp_path)) == []
     assert filter_new([limited], _seen_path(tmp_path)) == []
     assert f"longer than {RATE_LIMIT_MAX_AGE_DAYS} day" in capsys.readouterr().out
+
+
+def test_a_rate_limit_give_up_is_recorded_even_when_nothing_stays_queued(monkeypatch, tmp_path):
+    from datetime import timedelta
+    import main
+    from src.retry_queue import RATE_LIMIT_MAX_AGE_DAYS
+    _seed_queue(tmp_path, [_rate_limited(1)], age=timedelta(days=RATE_LIMIT_MAX_AGE_DAYS))
+    monkeypatch.setattr(
+        "main.refetch_description",
+        lambda offer: (_ for _ in ()).throw(AssertionError("expired offers are not refetched")),
+    )
+
+    _run_handler(monkeypatch, tmp_path, [_offer(2)])
+
+    main.telemetry.set_fields.assert_any_call(
+        prompt_tokens=0, completion_tokens=0, total_tokens=0, offers_deferred=0,
+        rate_limit_deferred=0, rate_limit_dropped=1,
+    )
+
+
+def test_an_empty_run_records_rate_limit_give_ups(monkeypatch, tmp_path):
+    from datetime import timedelta
+    import main
+    from src.retry_queue import RATE_LIMIT_MAX_AGE_DAYS
+    _seed_queue(tmp_path, [_rate_limited(1)], age=timedelta(days=RATE_LIMIT_MAX_AGE_DAYS))
+
+    _run_handler(monkeypatch, tmp_path, [])
+
+    main.telemetry.set_fields.assert_any_call(rate_limit_deferred=0, rate_limit_dropped=1)
 
 
 def test_a_refetched_offer_is_verified_under_an_id_that_cannot_collide(monkeypatch, tmp_path):

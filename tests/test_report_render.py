@@ -244,12 +244,26 @@ def test_trend_includes_rate_limit_total_and_deferred_count():
     metrics = [rd.DailyMetrics(
         day=date(2026, 10, 4), commits=set(), offers_fetched=10, cap_hits=2, queries=8,
         verification_tokens=100, scored=4, high=1, llm_calls=10, llm_failed=0, packaged=1,
-        rate_limits=112, rate_limit_deferred=7,
+        rate_limits=112, rate_limit_deferred=7, rate_limit_dropped=2,
     )]
     text = rr.render_trend(metrics, settings=SETTINGS)
     header, row = text.splitlines()
-    assert "429s" in header and "rl-defer" in header
-    assert row.split()[-2:] == ["112", "7"]
+    assert "429s" in header and "rl-defer" in header and "rl-drop" in header
+    assert row.split()[-3:] == ["112", "7", "2"]
+
+
+def test_a_rate_limit_give_up_blocks_all_ok():
+    tiers = {n: _tier(n, search_rate_limits=0, description_rate_limits=0,
+                      rate_limit_deferred=0, rate_limit_dropped=0)
+             for n in (1, 2, 3, 4)}
+    assert "ALL OK" in rr.render_day(_report(tiers=tiers), settings=SETTINGS)[0]
+    tiers[3] = _tier(3, offers_fetched=100, search_rate_limits=0, description_rate_limits=0,
+                     rate_limit_deferred=0, rate_limit_dropped=40)
+    blocks = rr.render_day(_report(tiers=tiers), settings=SETTINGS)
+    assert "ALL OK" not in blocks[0]
+    assert "rate-limit give-ups: 40" in blocks[0]
+    assert f"warn above {rr.RATE_LIMIT_DROPPED_WARN}" in blocks[0]
+    assert "40 dropped" in blocks[3]
 
 
 def test_unconfigured_limits_render_as_unknown_and_warn():

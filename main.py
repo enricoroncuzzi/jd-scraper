@@ -103,7 +103,10 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         # Nothing live remains. Leaving the expired rows in the file would
         # log and re-mark them on every later empty run.
         save_deferred(config.retry_queue_path, [])
-        telemetry.set_fields(rate_limit_deferred=0)
+        telemetry.set_fields(
+            rate_limit_deferred=0,
+            rate_limit_dropped=len(expired_rate_limited),
+        )
         return
 
     ok = sum(1 for o in new_offers if o.description_status == "ok")
@@ -242,7 +245,10 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
             except Exception as notify_exc:
                 print(f"[main] Failed to send rate-limit deferral notification: {notify_exc}")
         mark_seen(list(rejected) + give_up, config.dedup_log_path)
-        telemetry.set_fields(rate_limit_deferred=rate_limited_queued)
+        telemetry.set_fields(
+            rate_limit_deferred=rate_limited_queued,
+            rate_limit_dropped=len(give_up),
+        )
         return
 
     print("[main] Scoring offers...")
@@ -279,6 +285,7 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
         total_tokens=usage["total_tokens"],
         offers_deferred=len(deferred),
         rate_limit_deferred=rate_limited_queued,
+        rate_limit_dropped=len(give_up),
     )
     if config.db_url:
         session = telemetry.current()

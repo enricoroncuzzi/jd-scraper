@@ -76,7 +76,8 @@ def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
                     "verification_degraded BOOLEAN", "verification_confirmed INTEGER",
                     "verification_unconfirmed INTEGER", "verification_rejected INTEGER",
                     "search_rate_limits INTEGER", "description_rate_limits INTEGER",
-                    "rate_limit_deferred INTEGER", "telemetry_ok BOOLEAN",
+                    "rate_limit_deferred INTEGER", "rate_limit_dropped INTEGER",
+                    "telemetry_ok BOOLEAN",
                 ):
                     cur.execute(f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {column}")
                 # Unique so buffered run records upsert idempotently; NULL for

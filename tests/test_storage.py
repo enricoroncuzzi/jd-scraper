@@ -54,6 +54,7 @@ def test_init_db_evolves_runs_and_adds_telemetry_tables():
         "verification_confirmed INTEGER", "verification_unconfirmed INTEGER",
         "verification_rejected INTEGER", "search_rate_limits INTEGER",
         "description_rate_limits INTEGER", "rate_limit_deferred INTEGER",
+        "rate_limit_dropped INTEGER",
         "telemetry_ok BOOLEAN",
     ):
         assert f"ALTER TABLE runs ADD COLUMN IF NOT EXISTS {column}" in sql
