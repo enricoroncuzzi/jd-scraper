@@ -317,6 +317,17 @@ def test_failed_and_unanswered_calls_do_not_count_as_another_model():
     assert "ALL OK" in rr.render_day(_report(stages=stages), settings=SETTINGS)[0]
 
 
+def test_one_fallback_call_on_a_short_stage_stays_all_ok():
+    stages = [
+        rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _NEMOTRON, 25, 0, 1000),
+        rd.StageRow(1, "verification", "openrouter", _NEMOTRON, _NEMOTRON, 28, 0, 1000),
+        rd.StageRow(1, "tailoring", "openrouter", _NEMOTRON, _LIQUID, 1, 0, 10),
+    ]
+    block = rr.render_day(_report(stages=stages), settings=SETTINGS)[0]
+    assert "ALL OK" in block
+    assert "answered by" not in block
+
+
 def test_verification_answered_by_groq_instead_of_the_primary_blocks_all_ok():
     stages = [
         rd.StageRow(4, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",

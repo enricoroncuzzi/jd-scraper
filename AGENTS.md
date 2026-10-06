@@ -143,9 +143,9 @@ what the README doesn't (or what has drifted from it).
    own OpenRouter model pin (`_OPENROUTER_MODEL`/`_OPENROUTER_FALLBACK_MODELS`
    in `src/remote_verifier.py`) is kept independent of the scorer's array
    rather than importing it, so this stage's correctness does not inherit the
-   scorer's pin drift. A 2026-10-03 comparison on real offers put Qwen's
-   agreement with prior Groq verdicts at 85.5% (Wilson 78.0-90.7%), with zero
-   rejected-to-confirmed flips.
+   scorer's pin drift. Qwen 3.8, measured at 85.5% agreement with prior Groq
+   verdicts (Wilson 78.0-90.7%, zero rejected-to-confirmed flips) on
+   2026-10-03, was withdrawn from the free tier on 2026-10-05.
    `usage["degraded"]` fires once `failed_batches /
    total_batches >= _DEGRADED_FAILURE_RATIO` (10%), not only at 100% failure,
    so a mostly-failed run cannot report itself healthy in the Telegram

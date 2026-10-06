@@ -28,7 +28,10 @@ RATE_LIMIT_DROPPED_WARN = 0
 # Share of a stage's successful calls answered by a model other than that
 # stage's configured primary. Above this the run is not ALL OK: a silent
 # fallback (the primary 404s and another free model answers) must show up.
+# A stage with fewer other-model calls than the floor stays quiet: tailoring
+# often has one or two calls, and one fallback answer would otherwise be 100%.
 PRIMARY_MODEL_MISMATCH_SHARE_WARN = 0.20
+PRIMARY_MODEL_MISMATCH_MIN_CALLS = 3
 _STAGE_PRIMARY = {
     "scoring": _SCORING_PRIMARY,
     "verification": _VERIFICATION_PRIMARY,
@@ -125,7 +128,11 @@ def _primary_model_warnings(report, tier_no: int) -> list[str]:
         configured = _STAGE_PRIMARY[stage]
         others = [(model, count) for model, count in parts if model != configured]
         other_count = sum(count for _, count in others)
-        if total == 0 or other_count / total <= PRIMARY_MODEL_MISMATCH_SHARE_WARN:
+        if (
+            total == 0
+            or other_count < PRIMARY_MODEL_MISMATCH_MIN_CALLS
+            or other_count / total <= PRIMARY_MODEL_MISMATCH_SHARE_WARN
+        ):
             continue
         others.sort(key=lambda item: (-item[1], item[0]))
         named = ", ".join(f"{short_model(model)} ({count})" for model, count in others)
