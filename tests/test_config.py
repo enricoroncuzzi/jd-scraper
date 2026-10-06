@@ -213,7 +213,7 @@ def test_load_config_defaults_autoapply_when_absent(tmp_path, monkeypatch):
 
     assert config.autoapply.enabled is False
     assert config.autoapply.dry_run is True
-    assert config.autoapply.daily_cap == 5
+    assert not hasattr(config.autoapply, "daily_cap")
 
 
 def test_load_config_reads_autoapply_section(tmp_path, monkeypatch):
@@ -222,7 +222,7 @@ def test_load_config_reads_autoapply_section(tmp_path, monkeypatch):
         "search": {"roles": ["AI Engineer"], "location": "Europe", "time_range": "r86400", "work_mode": ["remote"]},
         "scoring": {"threshold": 8, "exclude_keywords": [], "priority_keywords": [], "candidate_profile": "x"},
         "telegram": {"greeting": "Hey!"},
-        "autoapply": {"enabled": True, "dry_run": False, "daily_cap": 3},
+        "autoapply": {"enabled": True, "dry_run": False},
     }))
     monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
     monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
@@ -233,7 +233,26 @@ def test_load_config_reads_autoapply_section(tmp_path, monkeypatch):
 
     assert config.autoapply.enabled is True
     assert config.autoapply.dry_run is False
-    assert config.autoapply.daily_cap == 3
+    assert not hasattr(config.autoapply, "daily_cap")
+
+
+def test_load_config_ignores_a_leftover_daily_cap(tmp_path, monkeypatch):
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({
+        "search": {"roles": ["AI Engineer"], "location": "Europe", "time_range": "r86400", "work_mode": ["remote"]},
+        "scoring": {"threshold": 8, "exclude_keywords": [], "priority_keywords": [], "candidate_profile": "x"},
+        "telegram": {"greeting": "Hey!"},
+        "autoapply": {"enabled": True, "dry_run": True, "daily_cap": 10},
+    }))
+    monkeypatch.setenv("LLM_API_KEY", "test-llm-key")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "test-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setenv("DEDUP_LOG_PATH", "/data/seen.txt")
+
+    config = load_config(str(config_file))
+
+    assert config.autoapply.enabled is True
+    assert not hasattr(config.autoapply, "daily_cap")
 
 
 def _write_config(tmp_path, extra=None):
@@ -336,11 +355,11 @@ def test_every_tier_config_gets_its_own_retry_queue(monkeypatch):
 
 
 def test_tier_configs_carry_the_captain_approved_page_caps(monkeypatch):
-    # 2026-10-04: one measured step for the two broad tiers (EU 50, UK 35).
-    # Italy and Switzerland stay put; they never reach their caps.
+    # Italy and Switzerland stay at 30 and 16. EU and UK are the tiers that
+    # were hitting their caps (EU 80, UK 50).
     _set_env(monkeypatch)
 
-    expected = {1: 30, 2: 16, 3: 50, 4: 35}
+    expected = {1: 30, 2: 16, 3: 80, 4: 50}
     for tier, cap in expected.items():
         config = load_config(str(_REPO_ROOT / "config" / f"config_tier{tier}.json"))
         assert config.search.max_pages_per_query == cap

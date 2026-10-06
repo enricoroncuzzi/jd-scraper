@@ -22,7 +22,7 @@ NO_RESPONSE_MODEL = "no response"
 
 @dataclass(frozen=True)
 class TierSettings:
-    threshold: int = 7
+    threshold: int = 8
     verification_enabled: bool = False
 
 

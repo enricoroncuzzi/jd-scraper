@@ -4,12 +4,13 @@ LinkedIn's "remote" work-mode filter is not trustworthy for this: plenty of
 listings are tagged remote but require residency in the posting country. This
 stage reads the description itself and rules on it.
 
-OpenRouter qwen/qwen3.8-27b:free is the primary judge. Groq gpt-oss-20b is the
-fallback, used when OpenRouter's daily share is spent, its quota is exhausted,
-or a batch fails. Two OpenRouter batch failures in a row stop further
-OpenRouter calls for that run. Groq keeps its own token budget: a proactive ceiling and the
-TPD 429 both stop further Groq calls for the rest of the run instead of
-repeating a doomed request. See _openrouter_chain and GROQ_DAILY_TOKEN_LIMIT.
+OpenRouter nvidia/nemotron-3-super-120b-a12b:free is the primary judge. Groq
+gpt-oss-20b is the fallback, used when OpenRouter's daily share is spent, its
+quota is exhausted, or a batch fails. Two OpenRouter batch failures in a row
+stop further OpenRouter calls for that run. Groq keeps its own token budget: a
+proactive ceiling and the TPD 429 both stop further Groq calls for the rest of
+the run instead of repeating a doomed request. See _openrouter_chain and
+GROQ_DAILY_TOKEN_LIMIT.
 OpenRouter's daily request cap is shared with scoring and tailoring. Only
 this stage is capped, at OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP. A
 RateLimitError that means the account cap is exhausted stops further
@@ -129,17 +130,19 @@ _EXCERPT_SEPARATOR = " [...] "
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Pins are perishable and kept independent of src/scorer.py so this stage does
-# not inherit a scoring pin change. Primary is qwen/qwen3.8-27b:free (measured
-# against Groq on real offers, 2026-10-03). Fallbacks are free models that list
-# structured outputs, one provider each. The array itself is what OpenRouter
-# caps at 3 entries (a 6-entry list broke scoring on 2026-09-01).
-_OPENROUTER_MODEL = "qwen/qwen3.8-27b:free"
+# not inherit a scoring pin change. Primary is
+# nvidia/nemotron-3-super-120b-a12b:free. qwen/qwen3.8-27b:free was withdrawn
+# (404; the paid slug is not pinned). Fallbacks are the other free models that
+# listed structured_outputs on 2026-10-06, one provider each. The array itself
+# is what OpenRouter caps at 3 entries (a 6-entry list broke scoring on
+# 2026-09-01).
+_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 _OPENROUTER_FALLBACK_MODELS = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
     # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
     # an unknown models entry can 400 the whole request.
     "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
+    "apodex/apodex-1.1-mini:free",
 ]
 # Verification may use 4/10 of the account-wide daily request allowance.
 # Scoring and tailoring share that allowance and are not capped here.

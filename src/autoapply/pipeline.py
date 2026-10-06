@@ -22,21 +22,20 @@ def run_autoapply(
     cv_master_path: str,
     css_path: str,
     llm_api_key: str,
-    daily_cap: int,
     dry_run: bool,
     telegram_token: str,
     telegram_chat_id: str,
 ) -> list[dict]:
-    """Auto-tailor and package every above-threshold, not-yet-packaged offer, up to
-    `daily_cap` per day. Draft-and-notify only: this reuses tailor.py's existing
-    tailoring/validation/PDF pipeline as-is and never submits an application anywhere.
-    In dry-run mode the full pipeline (classify, tailor, package) runs, but no
-    Telegram notification is sent (the tracking table is still written, gating
-    dedup and the daily cap the same as a live run)."""
+    """Auto-tailor and package every above-threshold, not-yet-packaged offer.
+    Draft-and-notify only: this reuses tailor.py's existing tailoring/validation/PDF
+    pipeline as-is and never submits an application anywhere. In dry-run mode the
+    full pipeline (classify, tailor, package) runs, but no Telegram notification is
+    sent (the tracking table is still written, so the same offer is not tailored
+    again). An OpenRouter daily-quota error stops the loop; other tailoring
+    failures skip that offer and continue."""
     today = date.today().isoformat()
-    # Unconfirmed offers never spend the daily cap: the captain reads those from
-    # the digest and decides by hand. not_checked covers tier 2, which accepts
-    # every work mode and runs no verification.
+    # Unconfirmed offers are left for the digest. not_checked covers tier 2,
+    # which accepts every work mode and runs no verification.
     candidates = [
         o for o in offers
         if o.score >= threshold and o.remote_verdict in ("confirmed", "not_checked")
@@ -55,14 +54,8 @@ def run_autoapply(
             "(or deploy the CV source to this path) before auto-apply can tailor anything"
         )
 
-    already_today = storage.count_applications_packaged_today(db_url)
-    budget = max(daily_cap - already_today, 0)
-
     results: list[dict] = []
     for offer in candidates:
-        if budget <= 0:
-            print(f"[autoapply] daily cap ({daily_cap}) reached, skipping remaining offers")
-            break
         if storage.is_application_packaged(db_url, offer.link):
             continue
 
@@ -80,7 +73,6 @@ def run_autoapply(
             continue
 
         write_manifest(directory, offer, channel, dry_run)
-        budget -= 1
 
         # Record the package (dry-run or not) so re-runs on the same still-open offer
         # don't re-tailor it every day - only the notification is dry-run-gated.

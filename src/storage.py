@@ -286,24 +286,3 @@ def save_application(
             conn.close()
     except Exception as e:
         print(f"[storage] save_application failed: {e}")
-
-
-def count_applications_packaged_today(db_url: str) -> int:
-    """Counts packages regardless of dry_run so the daily cap actually limits
-    tailoring calls (and their OpenRouter quota) while dry-run stays on, not just once
-    notifications go live."""
-    if db_url is None:
-        return 0
-    try:
-        conn = psycopg2.connect(db_url)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT COUNT(*) FROM applications WHERE packaged_at::date = CURRENT_DATE"
-                )
-                return cur.fetchone()[0]
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f"[storage] count_applications_packaged_today failed: {e}")
-        return 0

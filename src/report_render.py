@@ -7,7 +7,10 @@ error texts and stop reasons are full of Markdown metacharacters.
 """
 from zoneinfo import ZoneInfo
 
-from src.report_data import TIER_FLAGS, TIER_NAMES, TierSettings
+from src.report_data import NO_RESPONSE_MODEL, TIER_FLAGS, TIER_NAMES, TierSettings
+from src.remote_verifier import _OPENROUTER_MODEL as _VERIFICATION_PRIMARY
+from src.scorer import _OPENROUTER_MODEL as _SCORING_PRIMARY
+from src.tailor.generate import _OPENROUTER_MODEL as _TAILORING_PRIMARY
 
 _ROME = ZoneInfo("Europe/Rome")
 _STAGE_LABELS = (("scoring", "Scoring"), ("verification", "Verification"), ("tailoring", "Tailoring"))
@@ -22,6 +25,18 @@ LINKEDIN_429_WARN = 20
 # Offers whose rate-limit carry-over window closed this run. Any give-up
 # means a job was dropped, so the threshold sits at zero.
 RATE_LIMIT_DROPPED_WARN = 0
+# Share of a stage's successful calls answered by a model other than that
+# stage's configured primary. Above this the run is not ALL OK: a silent
+# fallback (the primary 404s and another free model answers) must show up.
+# A stage with fewer other-model calls than the floor stays quiet: tailoring
+# often has one or two calls, and one fallback answer would otherwise be 100%.
+PRIMARY_MODEL_MISMATCH_SHARE_WARN = 0.20
+PRIMARY_MODEL_MISMATCH_MIN_CALLS = 3
+_STAGE_PRIMARY = {
+    "scoring": _SCORING_PRIMARY,
+    "verification": _VERIFICATION_PRIMARY,
+    "tailoring": _TAILORING_PRIMARY,
+}
 
 
 def short_model(model: str) -> str:
@@ -78,6 +93,7 @@ def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[s
         if tier.telemetry_ok is False:
             warnings.append(f"⚠ {_tier_label(n)} telemetry incomplete: some records may be missing")
         warnings.extend(_rate_limit_warnings(tier))
+        warnings.extend(_primary_model_warnings(report, n))
     for limit in report.limits:
         if limit.per_day and limit.used >= _LIMIT_WARN_RATIO * limit.per_day:
             warnings.append(
@@ -91,6 +107,41 @@ def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[s
         warnings.append("⚠ The server's copy has uncommitted edits: numbers may not match any commit")
     if getattr(report, "limits_unconfigured", False):
         warnings.append("⚠ Provider limits could not be loaded: ceilings shown as unknown")
+    return warnings
+
+
+def _primary_model_warnings(report, tier_no: int) -> list[str]:
+    grouped: dict[str, list[tuple[str, int]]] = {}
+    for row in report.stages:
+        if row.tier != tier_no or row.stage not in _STAGE_PRIMARY:
+            continue
+        if row.model == NO_RESPONSE_MODEL:
+            continue
+        successful = row.calls - (row.failed or 0)
+        if successful <= 0:
+            continue
+        grouped.setdefault(row.stage, []).append((row.model, successful))
+    warnings = []
+    labels = dict(_STAGE_LABELS)
+    for stage, parts in grouped.items():
+        total = sum(count for _, count in parts)
+        configured = _STAGE_PRIMARY[stage]
+        others = [(model, count) for model, count in parts if model != configured]
+        other_count = sum(count for _, count in others)
+        if (
+            total == 0
+            or other_count < PRIMARY_MODEL_MISMATCH_MIN_CALLS
+            or other_count / total <= PRIMARY_MODEL_MISMATCH_SHARE_WARN
+        ):
+            continue
+        others.sort(key=lambda item: (-item[1], item[0]))
+        named = ", ".join(f"{short_model(model)} ({count})" for model, count in others)
+        warnings.append(
+            f"⚠ {_tier_label(tier_no)} {labels[stage]}: {other_count} of {total} "
+            f"calls answered by {named}; "
+            f"warn above {round(100 * PRIMARY_MODEL_MISMATCH_SHARE_WARN)}%; "
+            f"primary {short_model(configured)}"
+        )
     return warnings
 
 

@@ -334,7 +334,6 @@ def handler(event: dict, context, config_path: str = "config/config.json") -> No
                 cv_master_path=tailor_cli._DEFAULT_MASTER,
                 css_path=tailor_cli._DEFAULT_CSS,
                 llm_api_key=config.llm_api_key,
-                daily_cap=config.autoapply.daily_cap,
                 dry_run=config.autoapply.dry_run,
                 telegram_token=config.telegram_token,
                 telegram_chat_id=config.telegram_chat_id,
