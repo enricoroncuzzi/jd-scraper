@@ -3,7 +3,7 @@ from src.models import ScoredOffer
 from src.storage import (
     init_db, save_offers,
     save_application_channel, is_application_packaged,
-    save_application, count_applications_packaged_today,
+    save_application,
 )
 
 
@@ -257,18 +257,3 @@ def test_save_application_skips_when_db_url_is_none():
     mock_connect.assert_not_called()
 
 
-def test_count_applications_packaged_today_returns_count():
-    mock_conn, mock_cur = _mock_conn_cur()
-    mock_cur.fetchone.return_value = (3,)
-    with patch("src.storage.psycopg2.connect", return_value=mock_conn):
-        result = count_applications_packaged_today("postgresql://test")
-    assert result == 3
-    sql = mock_cur.execute.call_args[0][0]
-    assert "dry_run" not in sql
-
-
-def test_count_applications_packaged_today_zero_when_db_url_is_none():
-    with patch("src.storage.psycopg2.connect") as mock_connect:
-        result = count_applications_packaged_today(None)
-    assert result == 0
-    mock_connect.assert_not_called()

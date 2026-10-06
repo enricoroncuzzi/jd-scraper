@@ -15,8 +15,8 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 ## What runs daily, zero-touch
 
 1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to a per-tier page cap (`search.max_pages_per_query` in each tier config, resolved by `src/scraper.py`), where each page advances `start` by the number of cards the endpoint actually returned rather than by an assumed page size: tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote, tier 4 United Kingdom full-remote. A tier narrows its results to the countries listed in its config's `search.allowed_countries` (enforced by `src/tier_scope.py`); tiers 1 and 4 list none and do no narrowing.
-2. **Verify** - `src/remote_verifier.py` runs an LLM (OpenRouter `qwen/qwen3.8-27b:free` primarily, falling back to Groq `openai/gpt-oss-20b` when that share is spent or a batch fails; the daily OpenRouter verification share is 4/10 of the allowance in `config/llm_limits.json`, 400 of 1000 requests, and only that stage is capped) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
-3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`qwen/qwen3.8-27b:free`, with a 3-model native fallback array: `nvidia/nemotron-3-super-120b-a12b:free`, `dots-studio/dots-3-note-preview:free`, `liquid/lfm-2.5-2.6b:free`), returning structured Pydantic output with a one-line rationale. The shipped score cutoff is 7.
+2. **Verify** - `src/remote_verifier.py` runs an LLM (OpenRouter `nvidia/nemotron-3-super-120b-a12b:free` primarily, falling back to Groq `openai/gpt-oss-20b` when that share is spent or a batch fails; the daily OpenRouter verification share is 4/10 of the allowance in `config/llm_limits.json`, 400 of 1000 requests, and only that stage is capped) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. It runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
+3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a 3-model native fallback array: `dots-studio/dots-3-note-preview:free`, `liquid/lfm-2.5-2.6b:free`, `apodex/apodex-1.1-mini:free`), returning structured Pydantic output with a one-line rationale. The shipped score cutoff is 8.
 4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included.
 5. **Digest** - a ranked `digest.md` per tier lands in Obsidian, alongside a `rejected.md` audit trail of what verification screened out and why, plus a Telegram summary.
 6. **Tailor** - one click on any offer in the digest runs the CV tailoring engine end to end.
@@ -28,7 +28,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 ## CV tailoring, working today
 
-`tailor.py <job>` calls OpenRouter (`qwen/qwen3.8-27b:free`) to select and reorder verbatim bullets and skills from a canonical CV for the specific job description, generating only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte, so the tailored version renders to the same single-page layout as the original. The validation gate in `src/tailor/validate.py` aborts the run if any required metric or claim doesn't match. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline.
+`tailor.py <job>` calls OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`) to select and reorder verbatim bullets and skills from a canonical CV for the specific job description, generating only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte, so the tailored version renders to the same single-page layout as the original. The validation gate in `src/tailor/validate.py` aborts the run if any required metric or claim doesn't match. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline.
 
 ## Tech stack
 
@@ -48,7 +48,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 |---|---|---|
 | Automated tests | **551** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
-| Max pages per query | **16-50** per tier (~160-500 cards at the endpoint's current 10/request) | `search.max_pages_per_query` in `config/config_tier{1..4}.json` |
+| Max pages per query | **16-80** per tier (~160-800 cards at the endpoint's current 10/request) | `search.max_pages_per_query` in `config/config_tier{1..4}.json` |
 | Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~3,000** | `wc -l` |
 | Manual steps in the daily run | **0** | cron-driven, see `AGENTS.md` |
 

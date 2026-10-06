@@ -41,9 +41,10 @@ class TelegramConfig:
 @dataclass
 class AutoApplyConfig:
     # Draft-and-notify only: never submits anything. See data/jds-autoapply-explore/report.md.
+    # Every qualifying offer is packaged. OpenRouter quota exhaustion is what
+    # stops the loop, not a daily package count.
     enabled: bool = False
     dry_run: bool = True
-    daily_cap: int = 5
 
 
 @dataclass
@@ -102,6 +103,9 @@ def load_config(config_path: str = "config/config.json") -> AppConfig:
         output_path=os.environ.get("OUTPUT_PATH", "output"),
         dedup_log_path=data["dedup_log_path"] if "dedup_log_path" in data else os.environ["DEDUP_LOG_PATH"],
         db_url=os.environ.get("DATABASE_URL"),
-        autoapply=AutoApplyConfig(**data.get("autoapply", {})),
+        autoapply=AutoApplyConfig(**{
+            key: value for key, value in data.get("autoapply", {}).items()
+            if key != "daily_cap"
+        }),
         remote_check=RemoteCheckConfig(**data.get("remote_check", {})),
     )

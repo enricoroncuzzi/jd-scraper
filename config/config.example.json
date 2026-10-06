@@ -9,7 +9,7 @@
   },
   "remote_check": { "enabled": true, "require_italy_eligibility": true },
   "scoring": {
-    "threshold": 7,
+    "threshold": 8,
     "exclude_keywords": [
       "Principal", "Staff", "VP", "Director",
       "10+ years", "8+ years", "7+ years",
@@ -28,7 +28,6 @@
   },
   "autoapply": {
     "enabled": false,
-    "dry_run": true,
-    "daily_cap": 5
+    "dry_run": true
   }
 }

@@ -20,17 +20,13 @@ def cv_paths(tmp_path):
     return str(master), str(css)
 
 
-def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False, count_today=0):
+def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False):
     calls = {"classify": [], "tailor_run": [], "write_manifest": [], "notify": [],
              "save_channel": [], "save_application": []}
 
     monkeypatch.setattr(
         "src.autoapply.pipeline.classify_channel",
         lambda link: calls["classify"].append(link) or "external_ats",
-    )
-    monkeypatch.setattr(
-        "src.autoapply.pipeline.storage.count_applications_packaged_today",
-        lambda db_url: count_today,
     )
     monkeypatch.setattr(
         "src.autoapply.pipeline.storage.is_application_packaged",
@@ -71,7 +67,7 @@ def test_run_autoapply_skips_offers_below_threshold(monkeypatch, cv_paths):
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
@@ -84,7 +80,7 @@ def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch, c
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert len(results) == 1
@@ -100,7 +96,7 @@ def test_run_autoapply_dry_run_skips_notify_but_still_tracks(monkeypatch, cv_pat
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=True,
+        dry_run=True,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert len(results) == 1
@@ -121,7 +117,7 @@ def test_run_autoapply_respects_already_packaged_dedup(monkeypatch, cv_paths):
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
@@ -129,30 +125,17 @@ def test_run_autoapply_respects_already_packaged_dedup(monkeypatch, cv_paths):
     assert calls["notify"] == []
 
 
-def test_run_autoapply_stops_at_daily_cap(monkeypatch, cv_paths):
-    calls = _patch_common(monkeypatch, count_today=0)
+def test_run_autoapply_packages_every_qualifying_offer(monkeypatch, cv_paths):
+    calls = _patch_common(monkeypatch)
     offers = [_offer(1, score=9), _offer(2, score=9), _offer(3, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=2, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
-    assert len(results) == 2
-    assert len(calls["tailor_run"]) == 2
-
-
-def test_run_autoapply_cap_accounts_for_already_packaged_today(monkeypatch, cv_paths):
-    calls = _patch_common(monkeypatch, count_today=2)
-    offers = [_offer(1, score=9), _offer(2, score=9)]
-    results = run_autoapply(
-        offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=2, dry_run=False,
-        telegram_token="tok", telegram_chat_id="chat1",
-    )
-    assert results == []
-    assert calls["tailor_run"] == []
+    assert len(results) == 3
+    assert len(calls["tailor_run"]) == 3
 
 
 def test_run_autoapply_continues_past_tailoring_failure(monkeypatch, cv_paths):
@@ -166,7 +149,7 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch, cv_paths):
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
@@ -194,7 +177,7 @@ def test_run_autoapply_stops_when_openrouter_quota_is_exhausted(monkeypatch, cv_
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
@@ -202,19 +185,19 @@ def test_run_autoapply_stops_when_openrouter_quota_is_exhausted(monkeypatch, cv_
 
 
 def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch, cv_paths):
-    called = {"count": False}
+    called = {"packaged": False}
     monkeypatch.setattr(
-        "src.autoapply.pipeline.storage.count_applications_packaged_today",
-        lambda db_url: called.__setitem__("count", True) or 0,
+        "src.autoapply.pipeline.storage.is_application_packaged",
+        lambda db_url, link: called.__setitem__("packaged", True),
     )
     results = run_autoapply(
         [], threshold=8, output_path="/out", tier=1, db_url=None,
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
-    assert called["count"] is False
+    assert called["packaged"] is False
 
 
 def test_run_autoapply_raises_when_cv_master_path_missing(monkeypatch, tmp_path, cv_paths):
@@ -225,7 +208,7 @@ def test_run_autoapply_raises_when_cv_master_path_missing(monkeypatch, tmp_path,
         run_autoapply(
             offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
             cv_master_path=missing, css_path=cv_paths[1], llm_api_key="k",
-            daily_cap=5, dry_run=False,
+            dry_run=False,
             telegram_token="tok", telegram_chat_id="chat1",
         )
 
@@ -238,7 +221,7 @@ def test_run_autoapply_raises_when_css_path_missing(monkeypatch, tmp_path, cv_pa
         run_autoapply(
             offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
             cv_master_path=cv_paths[0], css_path=missing, llm_api_key="k",
-            daily_cap=5, dry_run=False,
+            dry_run=False,
             telegram_token="tok", telegram_chat_id="chat1",
         )
 
@@ -249,7 +232,7 @@ def test_run_autoapply_below_threshold_short_circuits_before_path_check(monkeypa
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
         cv_master_path=str(tmp_path / "does-not-exist.md"), css_path="", llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     assert results == []
@@ -265,7 +248,7 @@ def test_only_confirmed_and_not_checked_offers_are_packaged(monkeypatch, cv_path
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
         cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
-        daily_cap=5, dry_run=False,
+        dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
     titles = [r["offer"].title for r in results]

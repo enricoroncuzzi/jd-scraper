@@ -396,7 +396,7 @@ def test_handler_skips_autoapply_when_disabled(monkeypatch):
 
 
 def test_handler_runs_autoapply_when_enabled(monkeypatch):
-    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=True, daily_cap=3))
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=True))
     scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
                                   link="https://li.com/0", score=9,
                                   comment="great", summary="LLM role")]
@@ -427,7 +427,7 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
     assert kwargs["offers"] == scored_offers
     assert kwargs["threshold"] == 8
     assert kwargs["tier"] == 1
-    assert kwargs["daily_cap"] == 3
+    assert "daily_cap" not in kwargs
     assert kwargs["dry_run"] is True
     assert kwargs["llm_api_key"] == config.llm_api_key
     assert kwargs["telegram_token"] == config.telegram_token
@@ -435,7 +435,7 @@ def test_handler_runs_autoapply_when_enabled(monkeypatch):
 
 
 def test_handler_survives_autoapply_failure_and_still_sends_digest(monkeypatch):
-    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=False, daily_cap=3))
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=False))
     scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
                                   link="https://li.com/0", score=9,
                                   comment="great", summary="LLM role")]
@@ -474,7 +474,7 @@ def test_handler_survives_autoapply_failure_and_still_sends_digest(monkeypatch):
 
 
 def test_handler_survives_autoapply_failure_notification_also_failing(monkeypatch, capsys):
-    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=False, daily_cap=3))
+    config = _mock_config(autoapply=AutoApplyConfig(enabled=True, dry_run=False))
     scored_offers = [ScoredOffer(id=0, title="AI Eng", company="Acme",
                                   link="https://li.com/0", score=9,
                                   comment="great", summary="LLM role")]

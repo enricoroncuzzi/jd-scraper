@@ -155,7 +155,7 @@ def test_tailoring_generation_is_recorded(tmp_path):
     assert len(recorded) == 1
     assert recorded[0]["stage"] == "tailoring"
     assert recorded[0]["provider"] == "openrouter"
-    assert recorded[0]["request_model"] == "qwen/qwen3.8-27b:free"
+    assert recorded[0]["request_model"] == "nvidia/nemotron-3-super-120b-a12b:free"
     assert recorded[0]["batch_size"] == 1
     assert recorded[0]["attempt"] == 1
 
@@ -260,7 +260,7 @@ def test_tailoring_quota_429_raises_after_one_request(tmp_path):
     assert chain.invoke.call_count == 1
 
 
-def test_tailoring_request_routes_qwen_with_structured_fallbacks(tmp_path, monkeypatch):
+def test_tailoring_request_routes_nemotron_with_structured_fallbacks(tmp_path, monkeypatch):
     from src.tailor.generate import generate
 
     captured = []
@@ -326,10 +326,11 @@ def test_tailoring_request_routes_qwen_with_structured_fallbacks(tmp_path, monke
 
     assert selection.cover_letter.proof_id == "exp.0.b0"
     request = captured[0]
-    assert request["model"] == "qwen/qwen3.8-27b:free"
+    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
     assert request["models"] == [
-        "nvidia/nemotron-3-super-120b-a12b:free",
         "dots-studio/dots-3-note-preview:free",
         "liquid/lfm-2.5-2.6b:free",
+        "apodex/apodex-1.1-mini:free",
     ]
+    assert "qwen" not in request["model"]
     assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]

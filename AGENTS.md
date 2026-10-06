@@ -45,7 +45,7 @@ what the README doesn't (or what has drifted from it).
    scope filter), tier 4 is United Kingdom full-remote - see each tier config's
    `search`/`remote_check` block for the exact filters. Remote verification
    (`src/remote_verifier.py::verify_offers`) runs after scraping/dedup but
-   before scoring, primarily on OpenRouter (`qwen/qwen3.8-27b:free`, pins
+   before scoring, primarily on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, pins
    kept independent of the scorer's), with Groq `openai/gpt-oss-20b` as the
    fallback, and rules each offer confirmed/rejected/unconfirmed;
    it is a filter, not a gate - every failure mode (missing key, empty
@@ -164,7 +164,7 @@ what the README doesn't (or what has drifted from it).
    (see the prompt in `src/tailor/generate.py`). `src/tailor/validate.py`
    is the validation gate: it byte-matches the assembled CV against
    `REQUIRED_METRICS` and checks cover-letter claims, halting on a mismatch.
-   Generation uses **OpenRouter** (`qwen/qwen3.8-27b:free` with the same
+   Generation uses **OpenRouter** (`nvidia/nemotron-3-super-120b-a12b:free` with the same
    three-model structured-output fallback chain, key read as `LLM_API_KEY`
    in `tailor.py`). The quality guards in `src/tailor/validate.py`, including
    the concrete-bridge halt, are unchanged.
@@ -188,17 +188,16 @@ what the README doesn't (or what has drifted from it).
    unattended cron).
    `src/storage.py`'s `applications` table (keyed by an md5 link hash, same
    scheme as `src/dedup.py`) is the application-time dedup gate - distinct
-   from `src/dedup.py`'s scrape-time dedup - and gates the per-day cap
-   (`config.autoapply.daily_cap`) via
-   `count_applications_packaged_today`/`is_application_packaged`.
+   from `src/dedup.py`'s scrape-time dedup - via `is_application_packaged`.
+   There is no daily package cap: every qualifying offer is packaged, and an
+   OpenRouter quota error is what stops the loop.
    `config.autoapply.dry_run` (default `true`) runs the full pipeline
    (classify, tailor, package) but skips only the Telegram notification, for
    safe testing - it still writes the `applications` tracking row (with
-   `dry_run=true`), because `is_application_packaged`/
-   `count_applications_packaged_today` don't distinguish dry-run from live rows:
-   without that write, the same still-open offer got re-tailored (and
-   re-billed against the OpenRouter quota) every day dry-run stayed on. One
-   consequence: once an offer is dry-run-packaged it stays deduped even after
+   `dry_run=true`), because `is_application_packaged` does not distinguish
+   dry-run from live rows: without that write, the same still-open offer got
+   re-tailored (and re-billed against the OpenRouter quota) every day dry-run
+   stayed on. One consequence: once an offer is dry-run-packaged it stays deduped even after
    `dry_run` flips to `false` - it will never retroactively fire a live
    notification for that offer, only newly-qualifying ones do.
    `main.py`'s call into `run_autoapply` is wrapped in `try/except` (mirroring

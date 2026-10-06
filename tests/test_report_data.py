@@ -15,6 +15,10 @@ def test_shipped_tier_configs_parse():
     s = rd.load_tier_settings([f"config/config_tier{n}.json" for n in (1, 2, 3, 4)])
     assert set(s) == {1, 2, 3, 4}
     assert s[2].verification_enabled is False and s[1].verification_enabled is True
+    # One cutoff: the code default and every shipped tier. Reports label the
+    # high-score share from this default when a tier file omits it.
+    assert rd.TierSettings().threshold == 8
+    assert {tier.threshold for tier in s.values()} == {8}
 
 
 def _m(day, commits):

@@ -962,3 +962,77 @@ def test_groq_daily_quota_is_recorded_as_quota_exhausted(tmp_path, monkeypatch):
         for started in patches:
             started.stop()
         telemetry._reset_for_tests()
+
+
+def test_openrouter_verification_routes_nemotron_primary_with_structured_fallbacks(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    captured = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            captured.append(body)
+            tool_name = body["tools"][0]["function"]["name"]
+            payload = {
+                "id": "gen-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body["model"],
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps({"offers": [
+                                    {"id": 1, "verdict": "confirmed", "reason": "States remote."},
+                                ]}),
+                            },
+                        }],
+                    },
+                }],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 8, "total_tokens": 48},
+            }
+            raw = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        "src.remote_verifier._OPENROUTER_BASE_URL",
+        f"http://127.0.0.1:{server.server_port}/api/v1",
+    )
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    try:
+        verified, usage = verify_offers([_offer(1)], True, groq_api_key="", llm_api_key="k")
+    finally:
+        server.shutdown()
+
+    assert verified[0].remote_verdict == "confirmed"
+    assert usage["openrouter_requests"] == 1
+    request = captured[0]
+    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert request["models"] == [
+        "dots-studio/dots-3-note-preview:free",
+        "liquid/lfm-2.5-2.6b:free",
+        "apodex/apodex-1.1-mini:free",
+    ]
+    assert request["model"] not in request["models"]
+    assert all(model.endswith(":free") for model in request["models"])
+    assert "qwen" not in request["model"]
+    assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]
