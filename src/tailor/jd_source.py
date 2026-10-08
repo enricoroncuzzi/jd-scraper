@@ -32,7 +32,8 @@ def _title(text: str) -> str:
     if not m:
         return ""
     heading = m.group(1).strip()
-    return heading.rsplit(" — ", 1)[0].strip() if " — " in heading else heading
+    # writer.py::_format_note joins title and company with " - ".
+    return heading.rsplit(" - ", 1)[0].strip() if " - " in heading else heading
 
 
 def _description(text: str) -> str:

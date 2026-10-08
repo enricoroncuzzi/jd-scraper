@@ -14,9 +14,32 @@ def _jd(company="Logicalis Spain"):
 def test_artifact_dir_path_and_creation(tmp_path):
     d = artifact_dir(_jd(), str(tmp_path))
     assert d == os.path.join(
-        str(tmp_path), "2026-07-02", "tier1", "tailored", "logicalis_spain"
+        str(tmp_path), "2026-07-02", "tier1", "tailored",
+        "logicalis_spain_ai_engineer_63",
     )
     assert os.path.isdir(d)
+
+
+def test_same_company_offers_in_one_tier_keep_separate_packages(tmp_path):
+    first = _jd(company="Alignerr").model_copy(update={
+        "title": "AI Tutor", "offer_id": 101,
+    })
+    second = _jd(company="Alignerr").model_copy(update={
+        "title": "ML Reviewer", "offer_id": 202,
+    })
+    first_dir = artifact_dir(first, str(tmp_path))
+    second_dir = artifact_dir(second, str(tmp_path))
+    assert first_dir != second_dir
+    assert os.path.basename(first_dir) == "alignerr_ai_tutor_101"
+    assert os.path.basename(second_dir) == "alignerr_ml_reviewer_202"
+
+    with open(os.path.join(first_dir, "CLAIMS_REVIEW.txt"), "w") as f:
+        f.write("PASS first offer\n")
+    with open(os.path.join(second_dir, "CLAIMS_REVIEW.txt"), "w") as f:
+        f.write("FAIL second offer\n")
+
+    assert open(os.path.join(first_dir, "CLAIMS_REVIEW.txt")).read() == "PASS first offer\n"
+    assert open(os.path.join(second_dir, "CLAIMS_REVIEW.txt")).read() == "FAIL second offer\n"
 
 
 def test_write_sources_creates_three_files(tmp_path):
