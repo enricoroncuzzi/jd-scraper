@@ -12,7 +12,7 @@ link: https://es.linkedin.com/jobs/view/x-4435553154
 tags: [job, scraped, high-score]
 ---
 
-# Data Scientist / AI Engineer — Logicalis Spain
+# Data Scientist / AI Engineer - Logicalis Spain
 
 **Location:** Barcelona, Spain
 **Score:** 9/10
@@ -48,10 +48,34 @@ def test_parse_note_offer_id_from_filename(tmp_path):
     assert parse_note(str(p)).offer_id == 128
 
 
-def test_parse_note_title_with_em_dash_in_title(tmp_path):
+def test_parse_note_title_matches_writer_separator(tmp_path):
+    from src.models import ScoredOffer
+    from src.writer import _format_note, _note_filename
+
+    offer = ScoredOffer(
+        id=63,
+        title="Machine Learning - LLM Platform",
+        company="Acme Corp",
+        location="Barcelona, Spain",
+        link="https://es.linkedin.com/jobs/view/x-4435553154",
+        description="Create AI agents and RAG pipelines using Python and LangChain.",
+        work_mode="remote",
+        score=9,
+        comment="Strong fit.",
+        summary="Build RAG pipelines.",
+    )
+    path = tmp_path / _note_filename(offer)
+    path.write_text(_format_note(offer, "high-score", "2026-07-02", 1))
+
+    jd = parse_note(str(path))
+    assert jd.title == "Machine Learning - LLM Platform"
+    assert jd.company == "Acme Corp"
+
+
+def test_parse_note_keeps_an_em_dash_inside_the_title(tmp_path):
     note = NOTE.replace(
-        "# Data Scientist / AI Engineer — Logicalis Spain",
-        "# Machine Learning — LLM Platform — Acme Corp",
+        "# Data Scientist / AI Engineer - Logicalis Spain",
+        "# Machine Learning — LLM Platform - Acme Corp",
     )
     p = tmp_path / "acme_corp_ml_9.md"
     p.write_text(note)

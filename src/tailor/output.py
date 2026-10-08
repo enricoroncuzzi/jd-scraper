@@ -3,9 +3,15 @@ from src.writer import _slugify
 from src.tailor.jd_source import JobDescription
 
 
+def _package_dirname(jd: JobDescription) -> str:
+    """One directory per offer. Company alone collides when several roles
+    from the same company are tailored in one tier."""
+    return f"{_slugify(jd.company)}_{_slugify(jd.title)}_{jd.offer_id}"
+
+
 def artifact_dir(jd: JobDescription, jd_output_root: str) -> str:
     directory = os.path.join(
-        jd_output_root, jd.date, f"tier{jd.tier}", "tailored", _slugify(jd.company)
+        jd_output_root, jd.date, f"tier{jd.tier}", "tailored", _package_dirname(jd)
     )
     os.makedirs(directory, exist_ok=True)
     return directory
