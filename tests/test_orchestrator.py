@@ -80,19 +80,53 @@ def test_every_tier_gets_the_same_daily_run_id_and_the_report_is_sent_last(monke
     report.assert_called_once_with(seen_env[0])
 
 
-def test_morning_report_is_plain_text_and_split_on_blocks(monkeypatch):
+def test_morning_report_is_plain_text_one_send_per_message(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
     monkeypatch.setenv("TELEGRAM_TOKEN", "t")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
     with patch("orchestrator.load_dotenv"), \
          patch("orchestrator.telemetry.drain_buffers"), \
          patch("orchestrator.report_data.load_day", return_value=None), \
-         patch("orchestrator.report_render.render_day", return_value=["a_b *c* [d]", "e"]), \
-         patch("orchestrator.report_render.pack_messages", return_value=["m1", "m2"]), \
+         patch("orchestrator.report_render.render_messages", return_value=["m1", "m2"]), \
          patch("orchestrator.send_message") as send:
         orchestrator._send_morning_report("day-1")
     assert [c.args[0] for c in send.call_args_list] == ["m1", "m2"]
     assert all(c.kwargs["parse_mode"] is None for c in send.call_args_list)
+
+
+def test_morning_report_log_line_reports_messages_sent(monkeypatch, capsys):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    with patch("orchestrator.load_dotenv"), \
+         patch("orchestrator.telemetry.drain_buffers"), \
+         patch("orchestrator.report_data.load_tier_settings", return_value={}), \
+         patch("orchestrator.report_data.load_day", return_value=None), \
+         patch("orchestrator.report_render.render_messages", return_value=["m1", "m2", "m3", "m4"]), \
+         patch("orchestrator.send_message", return_value=True) as send:
+        orchestrator._send_morning_report("day-1")
+    assert send.call_count == 4
+    assert "Morning report sent (4 messages)." in capsys.readouterr().out
+
+
+def test_four_tier_messages_are_sent_in_order_with_the_summary_last(monkeypatch):
+    from datetime import datetime, timezone
+    from src import report_data as rd
+    from tests.test_report_render import _report, SETTINGS
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "c")
+    with patch("orchestrator.load_dotenv"), \
+         patch("orchestrator.telemetry.drain_buffers"), \
+         patch("orchestrator.report_data.load_tier_settings", return_value=SETTINGS), \
+         patch("orchestrator.report_data.load_day", return_value=_report()), \
+         patch("orchestrator.send_message", return_value=True) as send:
+        orchestrator._send_morning_report("day-1")
+    sent = [c.args[0] for c in send.call_args_list]
+    assert len(sent) == 4
+    for message, name in zip(sent, ("Italy", "Switzerland", "EU", "UK")):
+        assert message.splitlines()[0].count(name) == 1
+    assert all("DAY SUMMARY" not in m for m in sent[:3]) and "DAY SUMMARY" in sent[3]
 
 
 def test_morning_report_failure_never_raises(monkeypatch):
@@ -111,8 +145,7 @@ def test_a_failed_middle_message_does_not_drop_the_rest(monkeypatch, capsys):
     with patch("orchestrator.load_dotenv"), \
          patch("orchestrator.telemetry.drain_buffers"), \
          patch("orchestrator.report_data.load_day", return_value=None), \
-         patch("orchestrator.report_render.render_day", return_value=["a", "b", "c"]), \
-         patch("orchestrator.report_render.pack_messages", return_value=["m1", "m2", "m3"]), \
+         patch("orchestrator.report_render.render_messages", return_value=["m1", "m2", "m3"]), \
          patch("orchestrator.send_message", side_effect=[True, RuntimeError("timeout"), False]):
         orchestrator._send_morning_report("day-1")
     out = capsys.readouterr().out

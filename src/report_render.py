@@ -13,6 +13,7 @@ from src.scorer import _OPENROUTER_MODEL as _SCORING_PRIMARY
 from src.tailor.generate import _OPENROUTER_MODEL as _TAILORING_PRIMARY
 
 _ROME = ZoneInfo("Europe/Rome")
+_SUMMARY_RULE = "━━━━━━━━━━━━━━━━━━━━"
 _STAGE_LABELS = (("scoring", "Scoring"), ("verification", "Verification"), ("tailoring", "Tailoring"))
 _LIMIT_WARN_RATIO = 0.9
 # One source of truth for "LinkedIn throttling is degrading this tier".
@@ -72,42 +73,50 @@ def _tier_label(n: int) -> str:
     return f"Tier {n} ({TIER_NAMES.get(n, '?')})"
 
 
-def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[str]:
-    warnings = []
+def _tagged_warnings(report, expected_tiers) -> list[tuple[int | None, str]]:
+    """Every warning as (tier or None for day-wide, text without the tier label)."""
+    warnings: list[tuple[int | None, str]] = []
     for n in expected_tiers:
         tier = report.tiers.get(n)
         if tier is None:
-            warnings.append(f"⚠ {_tier_label(n)} NOT RECORDED: no run record for this tier")
+            warnings.append((n, "NOT RECORDED: no run record for this tier"))
             continue
         if tier.status == "running":
-            warnings.append(f"⚠ {_tier_label(n)} CRASHED: its record was never closed")
+            warnings.append((n, "CRASHED: its record was never closed"))
         elif tier.status == "failed":
-            warnings.append(f"⚠ {_tier_label(n)} FAILED: {tier.error or 'no error text'}")
+            warnings.append((n, f"FAILED: {tier.error or 'no error text'}"))
         if tier.attempts > 1:
-            warnings.append(f"⚠ {_tier_label(n)} needed {tier.attempts} attempts")
+            warnings.append((n, f"needed {tier.attempts} attempts"))
         failed, total = tier.verification_batches_failed or 0, tier.verification_batches_total or 0
         if tier.verification_degraded:
-            warnings.append(f"⚠ {_tier_label(n)} verification DEGRADED: {failed} of {total} batches failed")
+            warnings.append((n, f"verification DEGRADED: {failed} of {total} batches failed"))
         elif failed:
-            warnings.append(f"⚠ {_tier_label(n)} verification: {failed} of {total} batches failed")
+            warnings.append((n, f"verification: {failed} of {total} batches failed"))
         if tier.telemetry_ok is False:
-            warnings.append(f"⚠ {_tier_label(n)} telemetry incomplete: some records may be missing")
-        warnings.extend(_rate_limit_warnings(tier))
-        warnings.extend(_primary_model_warnings(report, n))
+            warnings.append((n, "telemetry incomplete: some records may be missing"))
+        warnings.extend((n, text) for text in _rate_limit_warnings(tier))
+        warnings.extend((n, text) for text in _primary_model_warnings(report, n))
+    day_wide = []
     for limit in report.limits:
         if limit.per_day and limit.used >= _LIMIT_WARN_RATIO * limit.per_day:
-            warnings.append(
-                f"⚠ {limit.provider} {short_model(limit.model) if limit.model != '*' else 'free models'} "
+            day_wide.append(
+                f"{limit.provider} {short_model(limit.model) if limit.model != '*' else 'free models'} "
                 f"limit at {round(100 * limit.used / limit.per_day)}% "
                 f"({_fmt_limit_amount(limit.unit, limit.used)}/{_fmt_limit_amount(limit.unit, limit.per_day)} {limit.unit})")
     if report.previous_commit and report.git_commit and report.git_commit != report.previous_commit:
         subject = f" \"{report.commit_subject}\"" if report.commit_subject else ""
-        warnings.append(f"⚠ New code live since the last run: {report.git_commit[:8]}{subject}")
+        day_wide.append(f"New code live since the last run: {report.git_commit[:8]}{subject}")
     if report.git_dirty:
-        warnings.append("⚠ The server's copy has uncommitted edits: numbers may not match any commit")
+        day_wide.append("The server's copy has uncommitted edits: numbers may not match any commit")
     if getattr(report, "limits_unconfigured", False):
-        warnings.append("⚠ Provider limits could not be loaded: ceilings shown as unknown")
+        day_wide.append("Provider limits could not be loaded: ceilings shown as unknown")
+    warnings.extend((None, text) for text in day_wide)
     return warnings
+
+
+def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[str]:
+    return [f"⚠ {_tier_label(n)} {text}" if n is not None else f"⚠ {text}"
+            for n, text in _tagged_warnings(report, expected_tiers)]
 
 
 def _primary_model_warnings(report, tier_no: int) -> list[str]:
@@ -137,7 +146,7 @@ def _primary_model_warnings(report, tier_no: int) -> list[str]:
         others.sort(key=lambda item: (-item[1], item[0]))
         named = ", ".join(f"{short_model(model)} ({count})" for model, count in others)
         warnings.append(
-            f"⚠ {_tier_label(tier_no)} {labels[stage]}: {other_count} of {total} "
+            f"{labels[stage]}: {other_count} of {total} "
             f"calls answered by {named}; "
             f"warn above {round(100 * PRIMARY_MODEL_MISMATCH_SHARE_WARN)}%; "
             f"primary {short_model(configured)}"
@@ -157,21 +166,21 @@ def _rate_limit_warnings(tier) -> list[str]:
         total = (search or 0) + (description or 0)
         if total > LINKEDIN_429_WARN:
             warnings.append(
-                f"⚠ {_tier_label(tier.tier)} LinkedIn 429s: {total} "
+                f"LinkedIn 429s: {total} "
                 f"(search {search or 0}, description {description or 0}; "
                 f"warn above {LINKEDIN_429_WARN})"
             )
     dropped = tier.rate_limit_dropped
     if dropped is not None and dropped > RATE_LIMIT_DROPPED_WARN:
         warnings.append(
-            f"⚠ {_tier_label(tier.tier)} rate-limit give-ups: {dropped} "
+            f"rate-limit give-ups: {dropped} "
             f"(warn above {RATE_LIMIT_DROPPED_WARN})"
         )
     deferred = tier.rate_limit_deferred
     fetched = tier.offers_fetched
     if deferred is not None and fetched and deferred / fetched > RATE_LIMIT_DEFER_SHARE_WARN:
         warnings.append(
-            f"⚠ {_tier_label(tier.tier)} rate-limit deferrals: {deferred} of {fetched} "
+            f"rate-limit deferrals: {deferred} of {fetched} "
             f"offers ({round(100 * deferred / fetched)}%; "
             f"warn above {round(100 * RATE_LIMIT_DEFER_SHARE_WARN)}%)"
         )
@@ -187,37 +196,49 @@ def _limit_header_line(limit) -> str:
     name = "free models" if limit.model == "*" else short_model(limit.model)
     used = _fmt_limit_amount(limit.unit, limit.used)
     cap = _fmt_limit_amount(limit.unit, limit.per_day)
-    return f"  {limit.provider:<11}{name:<28}{used} / {cap} {limit.unit}{_pct(limit.used, limit.per_day)}"
+    return f"  {limit.provider} {name}: {used} / {cap} {limit.unit}{_pct(limit.used, limit.per_day)}"
+
+
+def _sentence(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def _summary_block(report, *, settings, expected_tiers) -> str:
-    warnings = collect_warnings(report, settings=settings, expected_tiers=expected_tiers)
+    tagged = _tagged_warnings(report, expected_tiers)
     ok = sum(1 for n in expected_tiers if n in report.tiers and report.tiers[n].status == "ok")
-    health = [w for w in warnings if not _is_informational(w)]
+    health = [text for _, text in tagged if not _is_informational(text)]
     if ok == len(expected_tiers) and not health:
         verdict = "ALL OK"
     elif ok != len(expected_tiers):
         verdict = f"{ok} of {len(expected_tiers)} tiers ok"
     else:
         verdict = "CHECK"
+    if verdict != "ALL OK" and any(n is not None for n, _ in tagged):
+        verdict += " (see the warnings in the tier messages)"
     day = report.started_at.astimezone(_ROME).strftime("%d/%m")
     code = (report.git_commit or "unknown")[:8]
-    lines = warnings + [
-        f"Run health {day} · {_duration(report.started_at, report.finished_at)} · {verdict} · code {code}",
-        "Limits today (whole day, all tiers):",
-    ] + [_limit_header_line(l) for l in report.limits]
-    lines.append(f"LLM calls: {report.llm_calls} · {report.llm_failed} failed"
-                 + (f" · slowest 5% over {report.p95_latency_ms / 1000:.1f}s"
-                    if report.p95_latency_ms else ""))
+    lines = [
+        _SUMMARY_RULE,
+        f"DAY SUMMARY · {day}",
+        f"Verdict: {verdict}",
+        f"Total run time: {_duration(report.started_at, report.finished_at)}",
+        f"Code version: {code}",
+    ]
+    lines += [f"⚠ {text}" for n, text in tagged if n is None]
+    lines += ["", "Daily limits used (whole day, all tiers):"]
+    lines += [_limit_header_line(l) for l in report.limits]
+    lines += ["", f"LLM calls: {report.llm_calls} · {report.llm_failed} failed"
+              + (f" · slowest 5% over {report.p95_latency_ms / 1000:.1f}s"
+                 if report.p95_latency_ms else "")]
     return "\n".join(lines)
 
 
-def _stage_line(report, tier_no: int, stage: str, label: str, verification_enabled: bool) -> str:
+def _stage_lines(report, tier_no: int, stage: str, label: str, verification_enabled: bool) -> list[str]:
     if stage == "verification" and not verification_enabled:
-        return f"  {label:<13} not used on this tier"
+        return [f"{label}: not used on this tier"]
     rows = [r for r in report.stages if r.tier == tier_no and r.stage == stage]
     if not rows:
-        return f"  {label:<13} no calls"
+        return [f"{label}: no calls"]
     rows.sort(key=lambda r: r.calls, reverse=True)
     models = " + ".join(f"{short_model(r.model)} ({r.calls} call{'s' if r.calls != 1 else ''})"
                         for r in rows) if len(rows) > 1 else short_model(rows[0].model)
@@ -227,46 +248,66 @@ def _stage_line(report, tier_no: int, stage: str, label: str, verification_enabl
     limit = next((l for l in report.limits if l.provider == primary.provider
                   and l.model == primary.request_model), None) or \
         next((l for l in report.limits if l.provider == primary.provider and l.model == "*"), None)
-    tail = ""
+    detail = f"  {calls} call{'s' if calls != 1 else ''} · {fmt_tokens(tokens)} tok"
     if limit is not None:
         unit = "tok" if limit.unit == "tokens" else "req"
         so_far = limit.used_through_tier.get(tier_no, limit.used)
-        tail = (f" · day so far {_fmt_limit_amount(limit.unit, so_far)}/"
-                f"{_fmt_limit_amount(limit.unit, limit.per_day)} {unit}")
-    return f"  {label:<13} {models} · {calls} calls · {fmt_tokens(tokens)} tok{tail}"
+        detail += (f" · day so far {_fmt_limit_amount(limit.unit, so_far)}/"
+                   f"{_fmt_limit_amount(limit.unit, limit.per_day)} {unit}")
+    return [f"{label}: {models}", detail]
 
 
-def _tier_block(report, n: int, settings) -> str:
-    head = f"{TIER_FLAGS.get(n, '')} {_tier_label(n)}"
+def _tier_block(report, n: int, settings, warnings: list[str] | None = None) -> str:
+    head = f"{TIER_FLAGS.get(n, '')} Tier {n} · {TIER_NAMES.get(n, '?')}"
+    warning_lines = [f"⚠ {_sentence(text)}" for text in (warnings or [])]
     tier = report.tiers.get(n)
     if tier is None:
-        return f"{head} · NOT RECORDED"
-    status = {"running": "CRASHED"}.get(tier.status, tier.status)
+        return "\n".join([f"{head} · NOT RECORDED"] + warning_lines)
+    status = {"running": "CRASHED"}.get(tier.status, tier.status).upper()
     queries = [q for q in report.queries if q.tier == n]
     cap_hits = sum(1 for q in queries if q.stop_reason == "cap_hit")
     cap = queries[0].page_cap if queries else "?"
-    lines = [
-        f"{head} · {status} · {_duration(tier.started_at, tier.finished_at)}",
-        f"  Searches: {len(queries)} · {cap_hits} hit their limit ({cap} pages)",
-        f"  LinkedIn 429s: {_count(tier.search_rate_limits)} search, "
-        f"{_count(tier.description_rate_limits)} description, "
-        f"{_count(tier.rate_limit_deferred)} deferred, "
-        f"{_count(tier.rate_limit_dropped)} dropped",
-        f"  Offers: {tier.offers_fetched if tier.offers_fetched is not None else '?'} found → "
-        f"{tier.scored} scored → {tier.high} at {settings.get(n, TierSettings()).threshold}+ → "
-        f"{tier.offers_packaged if tier.offers_packaged is not None else 0} packaged",
+    found = tier.offers_fetched if tier.offers_fetched is not None else "?"
+    packaged = tier.offers_packaged if tier.offers_packaged is not None else 0
+    threshold = settings.get(n, TierSettings()).threshold
+    lines = [f"{head} · {status} · {_duration(tier.started_at, tier.finished_at)}"]
+    lines += warning_lines
+    lines += [
+        "",
+        f"Offers: {found} found → {tier.scored} scored → {tier.high} scored {threshold}+ → "
+        f"{packaged} packaged",
+        "",
+        f"Searches: {len(queries)} run, {cap_hits} hit their page limit ({cap} pages)",
+        f"LinkedIn rate limits (429): {_count(tier.search_rate_limits)} on search, "
+        f"{_count(tier.description_rate_limits)} on descriptions",
+        f"Held back for next run: {_count(tier.rate_limit_deferred)} · "
+        f"given up: {_count(tier.rate_limit_dropped)}",
+        "",
     ]
     enabled = settings.get(n, TierSettings()).verification_enabled
-    lines += [_stage_line(report, n, stage, label, enabled) for stage, label in _STAGE_LABELS]
+    for stage, label in _STAGE_LABELS:
+        lines += _stage_lines(report, n, stage, label, enabled)
     return "\n".join(lines)
 
 
 def render_day(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[str]:
+    """One message per tier, in tier order, the day summary closing the last."""
     if report is None:
         return ["⚠ Run health: no telemetry was recorded for today's run. "
                 "Check the server's cron log: the run may not have started."]
-    return [_summary_block(report, settings=settings, expected_tiers=expected_tiers)] + \
-        [_tier_block(report, n, settings) for n in expected_tiers]
+    tagged = _tagged_warnings(report, expected_tiers)
+    blocks = [_tier_block(report, n, settings, [text for t, text in tagged if t == n])
+              for n in expected_tiers]
+    blocks[-1] += "\n\n" + _summary_block(report, settings=settings, expected_tiers=expected_tiers)
+    return blocks
+
+
+def render_messages(report, *, settings, expected_tiers=(1, 2, 3, 4), limit: int = 4096) -> list[str]:
+    """The Telegram messages for the morning report: each block alone, split only if oversize."""
+    messages = []
+    for block in render_day(report, settings=settings, expected_tiers=expected_tiers):
+        messages += pack_messages([block], limit)
+    return messages
 
 
 def render_day_detail(report, *, settings) -> str:
