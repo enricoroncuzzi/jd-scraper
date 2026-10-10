@@ -69,10 +69,6 @@ def _duration(start, end) -> str:
     return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
 
 
-def _tier_label(n: int) -> str:
-    return f"Tier {n} ({TIER_NAMES.get(n, '?')})"
-
-
 def _tagged_warnings(report, expected_tiers) -> list[tuple[int | None, str]]:
     """Every warning as (tier or None for day-wide, text without the tier label)."""
     warnings: list[tuple[int | None, str]] = []
