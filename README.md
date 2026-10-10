@@ -48,7 +48,7 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 |---|---|---|
 | Automated tests | **558** | `.venv/bin/python -m pytest tests/ --collect-only -q` |
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
-| Max pages per query | **16-130** per tier (~160-1300 cards at the endpoint's current 10/request) | `search.max_pages_per_query` in `config/config_tier{1..4}.json` |
+| Max pages per query | **16-100** per tier (~160-1000 cards at the endpoint's current 10/request); LinkedIn serves at most about 100 pages per search, so higher values have no effect | `search.max_pages_per_query` in `config/config_tier{1..4}.json` |
 | Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~3,000** | `wc -l` |
 | Manual steps in the daily run | **0** | cron-driven, see `AGENTS.md` |
 

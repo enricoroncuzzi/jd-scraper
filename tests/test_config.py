@@ -355,11 +355,11 @@ def test_every_tier_config_gets_its_own_retry_queue(monkeypatch):
 
 
 def test_tier_configs_carry_the_captain_approved_page_caps(monkeypatch):
-    # Italy and Switzerland stay at 30 and 16. EU and UK are the tiers that
-    # were hitting their caps (EU 130, UK 85).
+    # Italy and Switzerland stay at 30 and 16. EU and UK sit at 100, the most
+    # pages LinkedIn's guest search serves per query (page 101 gets HTTP 400).
     _set_env(monkeypatch)
 
-    expected = {1: 30, 2: 16, 3: 130, 4: 85}
+    expected = {1: 30, 2: 16, 3: 100, 4: 100}
     for tier, cap in expected.items():
         config = load_config(str(_REPO_ROOT / "config" / f"config_tier{tier}.json"))
         assert config.search.max_pages_per_query == cap
