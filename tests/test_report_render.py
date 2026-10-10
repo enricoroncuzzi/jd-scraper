@@ -84,12 +84,11 @@ def test_crashed_failed_retried_and_missing_tiers_all_warn():
     tiers = {1: _tier(1, status="running", finished_at=None),
              2: _tier(2, status="failed", error="RuntimeError: LinkedIn 403"),
              3: _tier(3, attempts=2, attempt=2)}
-    warnings = rr.collect_warnings(_report(tiers=tiers), settings=SETTINGS)
-    joined = "\n".join(warnings)
-    assert "Tier 1 (Italy) CRASHED" in joined
-    assert "Tier 2 (Switzerland) FAILED: RuntimeError: LinkedIn 403" in joined
-    assert "Tier 3 (EU) needed 2 attempts" in joined
-    assert "Tier 4 (UK) NOT RECORDED" in joined
+    joined = "\n".join(rr.render_day(_report(tiers=tiers), settings=SETTINGS))
+    assert "Tier 1 · Italy · CRASHED" in joined
+    assert "⚠ FAILED: RuntimeError: LinkedIn 403" in joined
+    assert "⚠ Needed 2 attempts" in joined
+    assert "⚠ NOT RECORDED: no run record for this tier" in joined
     blocks = rr.render_day(_report(tiers=tiers), settings=SETTINGS)
     assert "1 of 4 tiers ok" in blocks[3]
     assert "NOT RECORDED" in blocks[3].splitlines()[0]
@@ -98,8 +97,7 @@ def test_crashed_failed_retried_and_missing_tiers_all_warn():
 
 def test_limit_past_90_percent_warns():
     limits = [rd.LimitUse("groq", "openai/gpt-oss-20b", "tokens", 200000, 191000, {1: 191000})]
-    warnings = rr.collect_warnings(_report(limits=limits), settings=SETTINGS)
-    assert any("96%" in w for w in warnings)
+    assert "96%" in "\n".join(rr.render_day(_report(limits=limits), settings=SETTINGS))
 
 
 def test_new_code_dirty_copy_degraded_and_incomplete_telemetry_warn():
@@ -109,11 +107,11 @@ def test_new_code_dirty_copy_degraded_and_incomplete_telemetry_warn():
     tiers[4] = _tier(4, telemetry_ok=False)
     report = _report(tiers=tiers, previous_commit="b" * 40, commit_subject="per-tier page cap",
                      git_dirty=True)
-    joined = "\n".join(rr.collect_warnings(report, settings=SETTINGS))
+    joined = "\n".join(rr.render_day(report, settings=SETTINGS))
     assert "New code live since the last run: cccccccc \"per-tier page cap\"" in joined
     assert "uncommitted edits" in joined
-    assert "Tier 3 (EU) verification DEGRADED: 4 of 20 batches failed" in joined
-    assert "Tier 4 (UK) telemetry incomplete" in joined
+    assert "⚠ Verification DEGRADED: 4 of 20 batches failed" in joined
+    assert "⚠ Telemetry incomplete" in joined
 
 
 def test_no_report_at_all_is_itself_an_alarm():

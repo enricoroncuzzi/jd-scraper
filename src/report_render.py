@@ -114,11 +114,6 @@ def _tagged_warnings(report, expected_tiers) -> list[tuple[int | None, str]]:
     return warnings
 
 
-def collect_warnings(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[str]:
-    return [f"⚠ {_tier_label(n)} {text}" if n is not None else f"⚠ {text}"
-            for n, text in _tagged_warnings(report, expected_tiers)]
-
-
 def _primary_model_warnings(report, tier_no: int) -> list[str]:
     grouped: dict[str, list[tuple[str, int]]] = {}
     for row in report.stages:
