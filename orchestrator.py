@@ -36,8 +36,7 @@ def _send_morning_report(daily_run_id: str) -> None:
         telemetry.drain_buffers(telemetry.buffer_dir(), db_url)  # land any stragglers first
         settings = report_data.load_tier_settings(CONFIGS)
         report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id)
-        blocks = report_render.render_day(report, settings=settings)
-        messages = report_render.pack_messages(blocks)
+        messages = report_render.render_messages(report, settings=settings)
         failed = []
         for index, message in enumerate(messages, start=1):
             try:
@@ -53,7 +52,7 @@ def _send_morning_report(daily_run_id: str) -> None:
             print(f"[orchestrator] Morning report incomplete: message(s) {listed} "
                   f"of {len(messages)} failed.")
         else:
-            print(f"[orchestrator] Morning report sent ({len(blocks)} blocks).")
+            print(f"[orchestrator] Morning report sent ({len(messages)} message{'s' if len(messages) != 1 else ''}).")
     except Exception as e:
         print(f"[orchestrator] Morning report FAILED: {type(e).__name__}: {telemetry._redact(str(e))}")
 
