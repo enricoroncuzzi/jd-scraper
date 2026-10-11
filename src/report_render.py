@@ -321,7 +321,7 @@ def render_tier_report(report, n: int, *, settings, expected_tiers=(1, 2, 3, 4))
     block = _tier_block(report, n, settings, [text for t, text in tagged if t == n])
     terms = _legend_terms(report, n, block, settings)
     if terms:
-        block += "\n\nLegend: " + " · ".join(terms) + "."
+        block += "\n\nLegend:\n" + "\n".join(f"• {term}" for term in terms)
     return block
 
 

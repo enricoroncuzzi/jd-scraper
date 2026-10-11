@@ -418,12 +418,11 @@ def test_tier_warnings_land_in_their_tier_and_day_wide_ones_in_the_summary():
 def test_tier_report_carries_a_legend_for_the_terms_that_appear():
     block = rr.render_tier_report(_report(), 1, settings=SETTINGS)
     assert block.startswith("🇮🇹 Tier 1 · Italy")
-    assert "Legend:" in block
-    assert "8+ = scored at or above the tier threshold" in block
-    assert "429 = LinkedIn rate-limit responses" in block
-    assert "held back = offers deferred to the next run" in block
-    assert "given up = dropped after their retry window" in block
-    assert "day so far = requests used against the daily allowance" in block
+    assert "Legend:\n• 8+ = scored at or above the tier threshold" in block
+    assert "• 429 = LinkedIn rate-limit responses" in block
+    assert "• held back = offers deferred to the next run" in block
+    assert "• given up = dropped after their retry window" in block
+    assert "• day so far = requests used against the daily allowance" in block
 
 
 def test_tier_report_legend_only_names_terms_that_appear():
