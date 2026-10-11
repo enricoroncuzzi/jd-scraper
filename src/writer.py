@@ -118,7 +118,9 @@ def _digest_entry(o: ScoredOffer, today: str, tier: int, with_reason: bool) -> l
     lines = [
         f"- **{o.title} - {o.company}** ({o.score}/10) · {o.location} "
         f"· [link]({o.link}) · [note](scraped/{note_file}) "
-        f"· [🎯 tailor](tailor:{today}/tier{tier}/scraped/{note_file})",
+        f"· [🎯 tailor](tailor:{today}/tier{tier}/scraped/{note_file}) "
+        f"· [⭐ golden](jdlabel:golden/{today}/tier{tier}/scraped/{note_file}) "
+        f"· [👎 not for me](jdlabel:not_for_me/{today}/tier{tier}/scraped/{note_file})",
         f"  {o.summary}",
     ]
     if with_reason and o.remote_reason:

@@ -279,3 +279,16 @@ def test_write_digest_no_offers_and_no_deferrals_keeps_the_dedup_wording(tmp_pat
     write_digest([], str(tmp_path), threshold=8, tier=1, verification_enabled=False)
 
     assert "No new offers after dedup filter" in (_digest_dir(tmp_path, 1) / "digest.md").read_text()
+
+
+def test_write_digest_contains_label_links(tmp_path):
+    from datetime import date
+    import src.writer as w
+    today = date.today().isoformat()
+    offer = ScoredOffer(id=0, title="AI Engineer", company="Acme", link="http://x", score=9, summary="s")
+    w.write_digest([offer], str(tmp_path), 7, 1, False)
+    content = (tmp_path / today / "tier1" / "digest.md").read_text()
+    note = "acme_ai_engineer_0.md"
+    assert f"[⭐ golden](jdlabel:golden/{today}/tier1/scraped/{note})" in content
+    assert f"[👎 not for me](jdlabel:not_for_me/{today}/tier1/scraped/{note})" in content
+    assert content.index("🎯 tailor") < content.index("⭐ golden")

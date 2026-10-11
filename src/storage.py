@@ -16,6 +16,26 @@ def _link_hash(link: str) -> str:
     return hashlib.md5(link.encode()).hexdigest()
 
 
+# A posting is identified by posting_key, not by offers.link or offers.id: the same
+# posting is saved once per re-score (offers.link is not unique), and the slug part
+# of a LinkedIn URL can differ between sightings while the numeric job id does not
+# (see src/labels.py::posting_key). A posting carries at most one label: marking it
+# golden removes its not_for_me label and vice versa. offer_id points at the most
+# recent offers row seen for the link so the full description stays reachable.
+OFFER_LABELS_DDL = """
+    CREATE TABLE IF NOT EXISTS offer_labels (
+        id          SERIAL PRIMARY KEY,
+        posting_key TEXT NOT NULL,
+        link        TEXT NOT NULL,
+        label       TEXT NOT NULL CHECK (label IN ('golden', 'not_for_me')),
+        offer_id    INTEGER REFERENCES offers(id),
+        note        TEXT,
+        labeled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (posting_key, label)
+    )
+"""
+
+
 def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
     if db_url is None:
         return
@@ -138,6 +158,7 @@ def init_db(db_url: str, *, connect_timeout: int | None = None) -> None:
                         dry_run      BOOLEAN NOT NULL DEFAULT FALSE
                     )
                 """)
+                cur.execute(OFFER_LABELS_DDL)
             conn.commit()
         finally:
             conn.close()

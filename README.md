@@ -30,6 +30,8 @@ The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the
 
 `tailor.py <job>` calls OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`) to reorder skill groups from a canonical CV for the specific job description. Every bullet is included, in canonical order. The model writes only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte. The validation gate in `src/tailor/validate.py` aborts the run if a required metric is missing, or if the cover letter fails its checks for banned phrases, length, and a concrete bridge. Hook claims are written to `CLAIMS_REVIEW.txt` for a person to confirm. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline, and the CV must stay a single page. The package is one directory per offer.
 
+Each digest entry also has ⭐ golden and 👎 not for me links. After a confirmation dialog they record the offer in the `offer_labels` table (one label per posting, re-clicking is a no-op), building a labelled set for evals. `python label.py --list golden` prints it and `python label.py --remove golden <link-or-note>` undoes a label. The handler is installed by `scripts/install-tailor-app.command`.
+
 ## Tech stack
 
 `Python` - `OpenRouter` & `Groq` LLM APIs - `Pydantic` - `PostgreSQL (Neon)` - `Playwright` (headless Chromium) - `LangChain` (thin scoring adapter over OpenRouter) - `pytest` (TDD)
