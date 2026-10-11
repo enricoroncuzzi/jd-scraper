@@ -29,6 +29,7 @@ on open location theURL
         set AppleScript's text item delimiters to "/"
         set parts to text items of (text 9 thru -1 of theURL)
         set labelName to item 1 of parts
+        if labelName is "not_for_me" then set labelName to "not-for-me"
         set noteName to last item of parts
         set AppleScript's text item delimiters to ""
         activate

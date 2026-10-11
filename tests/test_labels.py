@@ -49,7 +49,7 @@ def test_set_label_upsert_is_idempotent_and_reports_duplicates():
     conn, cur = _conn(fetch=(False,))
     with patch("src.labels.psycopg2.connect", return_value=conn):
         res = labels.set_label("postgresql://t", LINK, "golden", "n.md")
-    assert res == {"created": False, "replaced": False}
+    assert res == {"created": False, "replaced": None}
     sqls = [c[0][0] for c in cur.execute.call_args_list]
     assert any("ON CONFLICT (posting_key, label)" in s for s in sqls)
     conn.commit.assert_called_once()
@@ -60,7 +60,7 @@ def test_set_label_removes_the_opposite_label():
     conn, cur = _conn(fetch=(True,), rowcount=1)
     with patch("src.labels.psycopg2.connect", return_value=conn):
         res = labels.set_label("postgresql://t", LINK, "not_for_me")
-    assert res == {"created": True, "replaced": True}
+    assert res == {"created": True, "replaced": "golden"}
     delete = next(c for c in cur.execute.call_args_list if "DELETE FROM offer_labels" in c[0][0])
     assert "label <> %s" in delete[0][0]
     assert delete[0][1] == ("linkedin:3912345678", "not_for_me")
@@ -95,10 +95,10 @@ def test_cli_uri_saves_and_notifies(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(label_cli, "notify", lambda t, m: sent.append((t, m)))
     calls = []
-    monkeypatch.setattr(labels, "set_label", lambda *a: calls.append(a) or {"created": True, "replaced": False})
+    monkeypatch.setattr(labels, "set_label", lambda *a: calls.append(a) or {"created": True, "replaced": None})
     msg = label_cli.handle_uri(f"jdlabel:golden/{rel}", str(tmp_path), "postgresql://t")
     assert calls == [("postgresql://t", LINK, "golden", "acme_ai_engineer_7.md")]
-    assert sent == [("Offer labelled", msg)] and "saved as golden" in msg
+    assert sent == [("Offer labelled", msg)] and msg.endswith("⭐ saved to golden set")
 
 
 def test_cli_uri_failure_notifies_and_raises(tmp_path, monkeypatch):
@@ -139,3 +139,13 @@ def test_list_labels_joins_offers():
 
 def test_main_usage_returns_1(capsys):
     assert label_cli.main([]) == 1
+
+
+def test_cli_uri_names_the_label_it_replaced(tmp_path, monkeypatch):
+    rel = _note(tmp_path)
+    sent = []
+    monkeypatch.setattr(label_cli, "notify", lambda t, m: sent.append((t, m)))
+    monkeypatch.setattr(labels, "set_label", lambda *a: {"created": True, "replaced": "golden"})
+    msg = label_cli.handle_uri(f"jdlabel:not_for_me/{rel}", str(tmp_path), "postgresql://t")
+    assert msg.endswith("👎 saved to not-for-me set (replaced golden)")
+    assert sent == [("Offer labelled", msg)]

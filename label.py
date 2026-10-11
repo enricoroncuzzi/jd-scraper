@@ -42,9 +42,11 @@ def handle_uri(uri: str, root: str, db_url: str | None) -> str:
         raise
     name = f"{info['title']} - {info['company']}"
     if result["created"]:
-        msg = f"{name}: saved as {label}" + (" (replaced the other label)" if result["replaced"] else "")
+        msg = f"{name}: {labels.ICON[label]} saved to {labels.DISPLAY[label]} set"
+        if result["replaced"]:
+            msg += f" (replaced {labels.DISPLAY[result['replaced']]})"
     else:
-        msg = f"{name}: already {label}"
+        msg = f"{name}: already in {labels.DISPLAY[label]} set"
     notify("Offer labelled", msg)
     return msg
 

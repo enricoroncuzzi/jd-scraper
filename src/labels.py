@@ -15,6 +15,8 @@ from src.storage import OFFER_LABELS_DDL, psycopg2
 from src.tailor.jd_source import _frontmatter, parse_note
 
 LABELS = ("golden", "not_for_me")
+DISPLAY = {"golden": "golden", "not_for_me": "not-for-me"}
+ICON = {"golden": "⭐", "not_for_me": "👎"}
 SCHEME = "jdlabel:"
 
 
@@ -76,8 +78,8 @@ def _connect(db_url: str | None):
 def set_label(db_url: str | None, link: str, label: str, note: str | None = None) -> dict:
     """Idempotently label a posting. Errors propagate so the caller can report them.
 
-    Returns {'created': bool, 'replaced': bool}: created is False when the posting
-    already carried this label; replaced is True when the opposite label was removed.
+    Returns {'created': bool, 'replaced': str | None}: created is False when the posting
+    already carried this label; replaced names the opposite label that was removed, if any.
     """
     if label not in LABELS:
         raise ValueError(f"unknown label '{label}'")
@@ -90,7 +92,7 @@ def set_label(db_url: str | None, link: str, label: str, note: str | None = None
                 "DELETE FROM offer_labels WHERE posting_key = %s AND label <> %s",
                 (key, label),
             )
-            replaced = cur.rowcount > 0
+            replaced = next(l for l in LABELS if l != label) if cur.rowcount > 0 else None
             cur.execute(
                 """
                 INSERT INTO offer_labels (posting_key, link, label, offer_id, note)
