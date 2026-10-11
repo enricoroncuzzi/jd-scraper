@@ -69,13 +69,16 @@ def _duration(start, end) -> str:
     return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
 
 
+_NOT_RECORDED = "NOT RECORDED: no run record for this tier"
+
+
 def _tagged_warnings(report, expected_tiers) -> list[tuple[int | None, str]]:
     """Every warning as (tier or None for day-wide, text without the tier label)."""
     warnings: list[tuple[int | None, str]] = []
     for n in expected_tiers:
         tier = report.tiers.get(n)
         if tier is None:
-            warnings.append((n, "NOT RECORDED: no run record for this tier"))
+            warnings.append((n, _NOT_RECORDED))
             continue
         if tier.status == "running":
             warnings.append((n, "CRASHED: its record was never closed"))
@@ -251,22 +254,20 @@ def _stage_lines(report, tier_no: int, stage: str, label: str, verification_enab
 def _tier_block(report, n: int, settings, warnings: list[str] | None = None) -> str:
     head = f"{TIER_FLAGS.get(n, '')} Tier {n} · {TIER_NAMES.get(n, '?')}"
     warning_lines = [f"⚠ {_sentence(text)}" for text in (warnings or [])]
-    tier = report.tiers.get(n)
+    tier = report.tiers.get(n) if report is not None else None
     if tier is None:
         return "\n".join([f"{head} · NOT RECORDED"] + warning_lines)
     status = {"running": "CRASHED"}.get(tier.status, tier.status).upper()
     queries = [q for q in report.queries if q.tier == n]
     cap_hits = sum(1 for q in queries if q.stop_reason == "cap_hit")
     cap = queries[0].page_cap if queries else "?"
-    found = tier.offers_fetched if tier.offers_fetched is not None else "?"
-    packaged = tier.offers_packaged if tier.offers_packaged is not None else 0
     threshold = settings.get(n, TierSettings()).threshold
     lines = [f"{head} · {status} · {_duration(tier.started_at, tier.finished_at)}"]
     lines += warning_lines
     lines += [
         "",
-        f"Offers: {found} found → {tier.scored} scored → {tier.high} scored {threshold}+ → "
-        f"{packaged} packaged",
+        f"Offers: {_count(tier.offers_fetched)} found → {tier.scored} scored → "
+        f"{tier.high} scored {threshold}+ → {_count(tier.offers_packaged)} packaged",
         "",
         f"Searches: {len(queries)} run, {cap_hits} hit their page limit ({cap} pages)",
         f"LinkedIn rate limits (429): {_count(tier.search_rate_limits)} on search, "
@@ -281,30 +282,103 @@ def _tier_block(report, n: int, settings, warnings: list[str] | None = None) -> 
     return "\n".join(lines)
 
 
+_NO_TELEMETRY = ("⚠ Run health: no telemetry was recorded for today's run. "
+                 "Check the server's cron log: the run may not have started.")
+
+
 def render_day(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> list[str]:
-    """One message per tier, in tier order, the day summary closing the last."""
+    """One block per tier, in tier order. The day summary is a separate message."""
     if report is None:
-        return ["⚠ Run health: no telemetry was recorded for today's run. "
-                "Check the server's cron log: the run may not have started."]
+        return [_NO_TELEMETRY]
     tagged = _tagged_warnings(report, expected_tiers)
-    blocks = [_tier_block(report, n, settings, [text for t, text in tagged if t == n])
-              for n in expected_tiers]
-    blocks[-1] += "\n\n" + _summary_block(report, settings=settings, expected_tiers=expected_tiers)
-    return blocks
+    return [_tier_block(report, n, settings, [text for t, text in tagged if t == n])
+            for n in expected_tiers]
 
 
-def render_messages(report, *, settings, expected_tiers=(1, 2, 3, 4), limit: int = 4096) -> list[str]:
-    """The Telegram messages for the morning report: each block alone, split only if oversize."""
-    messages = []
-    for block in render_day(report, settings=settings, expected_tiers=expected_tiers):
-        messages += pack_messages([block], limit)
-    return messages
+def _legend_terms(report, n: int, block: str, settings) -> list[str]:
+    """Legend entries for only the terms this tier's block actually shows."""
+    threshold = settings.get(n, TierSettings()).threshold
+    terms = []
+    if f"scored {threshold}+" in block:
+        terms.append(f"{threshold}+ = scored at or above the tier threshold")
+    if "429" in block:
+        terms.append("429 = LinkedIn rate-limit responses")
+    if "Held back" in block:
+        terms.append("held back = offers deferred to the next run")
+    if "given up" in block:
+        terms.append("given up = dropped after their retry window")
+    if any(q.tier == n and q.stop_reason == "cap_hit" for q in report.queries):
+        terms.append("page limit hit = the search may have more results")
+    units = {line.rsplit(" ", 1)[-1] for line in block.split("\n") if "day so far" in line}
+    if units:
+        used = {"req": "requests", "tok": "tokens"}
+        terms.append(f"day so far = {' or '.join(used[u] for u in sorted(units))} "
+                     "used against the daily allowance")
+    return terms
+
+
+def render_tier_report(report, n: int, *, settings, expected_tiers=(1, 2, 3, 4)) -> str:
+    """This tier's report block with a legend. NOT RECORDED when no telemetry was recorded."""
+    if report is None:
+        return _tier_block(None, n, settings, [_NOT_RECORDED])
+    tagged = _tagged_warnings(report, expected_tiers)
+    block = _tier_block(report, n, settings, [text for t, text in tagged if t == n])
+    terms = _legend_terms(report, n, block, settings)
+    if terms:
+        block += "\n\nLegend:\n" + "\n".join(f"• {term}" for term in terms)
+    return block
+
+
+def render_tier_messages(report, n: int, *, settings, expected_tiers=(1, 2, 3, 4),
+                         limit: int = 4096) -> list[str]:
+    """The Telegram messages for one tier's report: normally one, split only if oversize."""
+    return pack_messages(
+        [render_tier_report(report, n, settings=settings, expected_tiers=expected_tiers)], limit)
+
+
+def _totals_block(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> str:
+    label = _high_share_label(settings)
+    lines = ["Per-tier totals:"]
+    found = scored = high = packaged = 0
+    for n in expected_tiers:
+        tier = report.tiers.get(n)
+        if tier is None:
+            lines.append(f"{TIER_FLAGS.get(n, '')} Tier {n} · {TIER_NAMES.get(n, '?')}: no record")
+            continue
+        lines.append(
+            f"{TIER_FLAGS.get(n, '')} Tier {n} · {TIER_NAMES.get(n, '?')}: "
+            f"{_count(tier.offers_fetched)} found / {tier.scored} scored / "
+            f"{tier.high} scored {label} / {_count(tier.offers_packaged)} packaged"
+        )
+        found += tier.offers_fetched or 0
+        scored += tier.scored
+        high += tier.high
+        packaged += tier.offers_packaged or 0
+    lines.append(f"TOTAL: {found} found / {scored} scored / {high} scored {label} / "
+                 f"{packaged} packaged")
+    return "\n".join(lines)
+
+
+def render_summary(report, *, settings, expected_tiers=(1, 2, 3, 4)) -> str:
+    """Message 9: the day summary plus the per-tier totals table."""
+    if report is None:
+        return _NO_TELEMETRY
+    return (_summary_block(report, settings=settings, expected_tiers=expected_tiers)
+            + "\n\n" + _totals_block(report, settings=settings, expected_tiers=expected_tiers))
+
+
+def render_summary_messages(report, *, settings, expected_tiers=(1, 2, 3, 4),
+                            limit: int = 4096) -> list[str]:
+    """The day-summary message(s), split only if oversize."""
+    return pack_messages(
+        [render_summary(report, settings=settings, expected_tiers=expected_tiers)], limit)
 
 
 def render_day_detail(report, *, settings) -> str:
     if report is None:
         return "No run recorded for that day."
-    lines = ["\n\n".join(render_day(report, settings=settings)), "", "Searches:"]
+    lines = ["\n\n".join(render_day(report, settings=settings)), "",
+             render_summary(report, settings=settings), "", "Searches:"]
     for q in report.queries:
         reused = getattr(q, "cross_query_duplicates", 0)
         reused_note = f" ({reused} reused from an earlier search)" if reused else ""

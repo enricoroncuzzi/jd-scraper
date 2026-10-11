@@ -8,6 +8,10 @@ SETTINGS = {1: rd.TierSettings(8, True), 2: rd.TierSettings(8, False),
             3: rd.TierSettings(8, True), 4: rd.TierSettings(8, True)}
 
 
+def _summary(report):
+    return rr.render_summary(report, settings=SETTINGS)
+
+
 def _tier(n, **kw):
     base = dict(tier=n, run_uuid=f"u{n}", run_id=n, attempt=1, attempts=1, status="ok",
                 started_at=T0, finished_at=T1, error=None, git_commit="c" * 40, git_dirty=False,
@@ -49,8 +53,8 @@ def _report(tiers=None, **kw):
 def test_healthy_day_is_all_ok_and_has_no_warnings():
     blocks = rr.render_day(_report(), settings=SETTINGS)
     assert len(blocks) == 4
-    summary = blocks[3]
-    assert "ALL OK" in summary and "⚠" not in "\n".join(blocks)
+    summary = _summary(_report())
+    assert "ALL OK" in summary and "⚠" not in "\n".join(blocks) + summary
     assert "134k / 200k tokens (67%)" in summary
     assert "122 / 1000 requests (12%)" in summary
     assert "70k / ? tokens" in summary  # unknown limit: shown, never guessed or divided
@@ -90,14 +94,13 @@ def test_crashed_failed_retried_and_missing_tiers_all_warn():
     assert "⚠ Needed 2 attempts" in joined
     assert "⚠ NOT RECORDED: no run record for this tier" in joined
     blocks = rr.render_day(_report(tiers=tiers), settings=SETTINGS)
-    assert "1 of 4 tiers ok" in blocks[3]
-    assert "NOT RECORDED" in blocks[3].splitlines()[0]
+    assert "1 of 4 tiers ok" in _summary(_report(tiers=tiers))
     assert "CRASHED" in blocks[0].splitlines()[0]
 
 
 def test_limit_past_90_percent_warns():
     limits = [rd.LimitUse("groq", "openai/gpt-oss-20b", "tokens", 200000, 191000, {1: 191000})]
-    assert "96%" in "\n".join(rr.render_day(_report(limits=limits), settings=SETTINGS))
+    assert "96%" in _summary(_report(limits=limits))
 
 
 def test_new_code_dirty_copy_degraded_and_incomplete_telemetry_warn():
@@ -107,7 +110,7 @@ def test_new_code_dirty_copy_degraded_and_incomplete_telemetry_warn():
     tiers[4] = _tier(4, telemetry_ok=False)
     report = _report(tiers=tiers, previous_commit="b" * 40, commit_subject="per-tier page cap",
                      git_dirty=True)
-    joined = "\n".join(rr.render_day(report, settings=SETTINGS))
+    joined = "\n".join(rr.render_day(report, settings=SETTINGS)) + "\n" + _summary(report)
     assert "New code live since the last run: cccccccc \"per-tier page cap\"" in joined
     assert "uncommitted edits" in joined
     assert "⚠ Verification DEGRADED: 4 of 20 batches failed" in joined
@@ -145,15 +148,15 @@ def test_helpers():
 
 def test_a_health_warning_blocks_all_ok():
     tiers = {n: _tier(n, telemetry_ok=False) for n in (1, 2, 3, 4)}
-    block = rr.render_day(_report(tiers=tiers), settings=SETTINGS)[-1]
+    block = _summary(_report(tiers=tiers))
     assert "ALL OK" not in block
     assert "CHECK" in block
-    assert "Telemetry incomplete" in block
+    assert "Telemetry incomplete" in rr.render_day(_report(tiers=tiers), settings=SETTINGS)[3]
 
 
 def test_new_code_alone_does_not_block_all_ok():
     report = _report(previous_commit="b" * 40, commit_subject="per-tier page cap")
-    block = rr.render_day(report, settings=SETTINGS)[-1]
+    block = _summary(report)
     assert "ALL OK" in block
     assert "New code live" in block
 
@@ -217,7 +220,7 @@ def test_day_report_shows_linkedin_429s_and_rate_limit_deferrals_per_tier():
     blocks = rr.render_day(_report(tiers=tiers), settings=SETTINGS)
     assert "LinkedIn rate limits (429): 4 on search, 11 on descriptions" in blocks[2]
     assert "Held back for next run: 3 · given up: -" in blocks[2]
-    assert "ALL OK" in blocks[3]
+    assert "ALL OK" in _summary(_report(tiers=tiers))
 
 
 def test_rate_limit_deferrals_and_429s_past_the_threshold_block_all_ok():
@@ -227,26 +230,28 @@ def test_rate_limit_deferrals_and_429s_past_the_threshold_block_all_ok():
              for n in (1, 2, 3, 4)}
     tiers[4] = _tier(4, offers_fetched=fetched, rate_limit_deferred=over_share,
                      search_rate_limits=0, description_rate_limits=0)
-    block = rr.render_day(_report(tiers=tiers), settings=SETTINGS)[-1]
+    block = _summary(_report(tiers=tiers))
     assert "ALL OK" not in block
     assert "CHECK" in block
-    assert "deferrals" in block
-    assert f"{over_share} of {fetched}" in block
+    tier4 = rr.render_day(_report(tiers=tiers), settings=SETTINGS)[3]
+    assert "deferrals" in tier4
+    assert f"{over_share} of {fetched}" in tier4
 
     at_share = int(fetched * rr.RATE_LIMIT_DEFER_SHARE_WARN)
     tiers[4] = _tier(4, offers_fetched=fetched, rate_limit_deferred=at_share,
                      search_rate_limits=0, description_rate_limits=0)
-    assert "ALL OK" in rr.render_day(_report(tiers=tiers), settings=SETTINGS)[-1]
+    assert "ALL OK" in _summary(_report(tiers=tiers))
 
     tiers[4] = _tier(4, offers_fetched=fetched, rate_limit_deferred=0,
                      search_rate_limits=rr.LINKEDIN_429_WARN, description_rate_limits=0)
-    assert "ALL OK" in rr.render_day(_report(tiers=tiers), settings=SETTINGS)[-1]
+    assert "ALL OK" in _summary(_report(tiers=tiers))
     tiers[4] = _tier(4, offers_fetched=fetched, rate_limit_deferred=0,
                      search_rate_limits=rr.LINKEDIN_429_WARN, description_rate_limits=1)
-    block = rr.render_day(_report(tiers=tiers), settings=SETTINGS)[-1]
+    block = _summary(_report(tiers=tiers))
     assert "ALL OK" not in block
-    assert "429" in block
-    assert str(rr.LINKEDIN_429_WARN + 1) in block
+    tier4 = rr.render_day(_report(tiers=tiers), settings=SETTINGS)[3]
+    assert "429" in tier4
+    assert str(rr.LINKEDIN_429_WARN + 1) in tier4
 
 
 def test_trend_includes_rate_limit_total_and_deferred_count():
@@ -266,11 +271,11 @@ def test_a_rate_limit_give_up_blocks_all_ok():
     tiers = {n: _tier(n, search_rate_limits=0, description_rate_limits=0,
                       rate_limit_deferred=0, rate_limit_dropped=0)
              for n in (1, 2, 3, 4)}
-    assert "ALL OK" in rr.render_day(_report(tiers=tiers), settings=SETTINGS)[-1]
+    assert "ALL OK" in _summary(_report(tiers=tiers))
     tiers[3] = _tier(3, offers_fetched=100, search_rate_limits=0, description_rate_limits=0,
                      rate_limit_deferred=0, rate_limit_dropped=40)
     blocks = rr.render_day(_report(tiers=tiers), settings=SETTINGS)
-    assert "ALL OK" not in blocks[3]
+    assert "ALL OK" not in _summary(_report(tiers=tiers))
     assert "Rate-limit give-ups: 40" in blocks[2]
     assert f"warn above {rr.RATE_LIMIT_DROPPED_WARN}" in blocks[2]
     assert "given up: 40" in blocks[2]
@@ -289,8 +294,8 @@ def test_answering_model_other_than_the_configured_primary_blocks_all_ok():
         rd.StageRow(2, "tailoring", "openrouter", _NEMOTRON, _LIQUID, 4, 0, 10),
     ]
     blocks = rr.render_day(_report(stages=stages), settings=SETTINGS)
-    assert "ALL OK" not in blocks[3]
-    assert "CHECK" in blocks[3]
+    assert "ALL OK" not in _summary(_report(stages=stages))
+    assert "CHECK" in _summary(_report(stages=stages))
     assert "⚠ Scoring: 3 of 10 calls answered by lfm-2.5-2.6b (2), dots-3-note-preview (1)" in blocks[0]
     assert "⚠ Tailoring: 4 of 4 calls answered by lfm-2.5-2.6b (4)" in blocks[1]
     assert f"warn above {round(100 * rr.PRIMARY_MODEL_MISMATCH_SHARE_WARN)}%" in blocks[0]
@@ -305,7 +310,7 @@ def test_primary_model_share_at_the_threshold_stays_all_ok():
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _LIQUID, 2, 0, 100),
         rd.StageRow(1, "verification", "openrouter", _NEMOTRON, _NEMOTRON, 10, 0, 100),
     ]
-    assert "ALL OK" in rr.render_day(_report(stages=stages), settings=SETTINGS)[-1]
+    assert "ALL OK" in _summary(_report(stages=stages))
 
 
 def test_failed_and_unanswered_calls_do_not_count_as_another_model():
@@ -315,7 +320,7 @@ def test_failed_and_unanswered_calls_do_not_count_as_another_model():
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, rd.NO_RESPONSE_MODEL, 20, 20, 0),
         rd.StageRow(1, "verification", "openrouter", _NEMOTRON, _NEMOTRON, 4, 0, 100),
     ]
-    assert "ALL OK" in rr.render_day(_report(stages=stages), settings=SETTINGS)[-1]
+    assert "ALL OK" in _summary(_report(stages=stages))
 
 
 def test_one_fallback_call_on_a_short_stage_stays_all_ok():
@@ -325,7 +330,7 @@ def test_one_fallback_call_on_a_short_stage_stays_all_ok():
         rd.StageRow(1, "tailoring", "openrouter", _NEMOTRON, _LIQUID, 1, 0, 10),
     ]
     blocks = rr.render_day(_report(stages=stages), settings=SETTINGS)
-    assert "ALL OK" in blocks[-1]
+    assert "ALL OK" in _summary(_report(stages=stages))
     assert "answered by" not in "\n".join(blocks)
 
 
@@ -335,9 +340,10 @@ def test_verification_answered_by_groq_instead_of_the_primary_blocks_all_ok():
                     24, 0, 47000),
         rd.StageRow(4, "scoring", "openrouter", _NEMOTRON, _NEMOTRON, 10, 0, 1000),
     ]
-    block = rr.render_day(_report(stages=stages), settings=SETTINGS)[-1]
+    block = _summary(_report(stages=stages))
     assert "ALL OK" not in block
-    assert "⚠ Verification: 24 of 24 calls answered by gpt-oss-20b" in block
+    assert "⚠ Verification: 24 of 24 calls answered by gpt-oss-20b" in \
+        rr.render_day(_report(stages=stages), settings=SETTINGS)[3]
 
 
 def test_unconfigured_limits_render_as_unknown_and_warn():
@@ -348,20 +354,21 @@ def test_unconfigured_limits_render_as_unknown_and_warn():
         LimitUse("openrouter", "*", "requests", None, 0, {}),
     ]
     report = _report(limits=limits, limits_unconfigured=True)
-    block = rr.render_day(report, settings=SETTINGS)[-1]
+    block = _summary(report)
     assert block.count("/ ? ") >= 2
     assert "Provider limits could not be loaded" in block
     assert "ALL OK" not in block
 
 
-def test_each_tier_gets_its_own_message_in_tier_order_with_the_summary_last():
+def test_each_tier_gets_its_own_block_and_the_summary_is_separate():
     blocks = rr.render_day(_report(), settings=SETTINGS)
     assert len(blocks) == 4
     for block, (n, name) in zip(blocks, ((1, "Italy"), (2, "Switzerland"), (3, "EU"), (4, "UK"))):
         assert block.splitlines()[0].startswith(f"{rd.TIER_FLAGS[n]} Tier {n} · {name} · OK · 3h41m")
-    assert all("DAY SUMMARY" not in b for b in blocks[:3])
-    assert "DAY SUMMARY" in blocks[3]
-    assert blocks[3].index("Tailoring") < blocks[3].index("DAY SUMMARY")
+    assert all("DAY SUMMARY" not in b and "Per-tier totals" not in b for b in blocks)
+    summary = _summary(_report())
+    assert "DAY SUMMARY" in summary
+    assert "Per-tier totals" in summary
 
 
 def test_tier_message_shows_the_funnel_and_labeled_lines():
@@ -372,11 +379,29 @@ def test_tier_message_shows_the_funnel_and_labeled_lines():
 
 
 def test_day_summary_has_verdict_run_time_code_limits_and_llm_totals():
-    summary = rr.render_day(_report(), settings=SETTINGS)[3].split("DAY SUMMARY")[1]
+    summary = _summary(_report()).split("DAY SUMMARY")[1]
     assert "Verdict: ALL OK" in summary
     assert "Total run time: 3h41m" in summary
     assert "Code version: cccccccc" in summary
     assert "LLM calls: 131 · 2 failed · slowest 5% over 4.1s" in summary
+
+
+def test_totals_table_lists_each_tier_and_sums_a_total_row():
+    tiers = {1: _tier(1, offers_fetched=100, scored=40, high=4, offers_packaged=2),
+             2: _tier(2, offers_fetched=120, scored=50, high=6, offers_packaged=3),
+             3: _tier(3, offers_fetched=200, scored=90, high=9, offers_packaged=4),
+             4: _tier(4, offers_fetched=150, scored=60, high=7, offers_packaged=1)}
+    totals = _summary(_report(tiers=tiers)).split("Per-tier totals:")[1]
+    assert "Tier 1 · Italy: 100 found / 40 scored / 4 scored 8+ / 2 packaged" in totals
+    assert "Tier 4 · UK: 150 found / 60 scored / 7 scored 8+ / 1 packaged" in totals
+    assert "TOTAL: 570 found / 240 scored / 26 scored 8+ / 10 packaged" in totals
+
+
+def test_totals_table_marks_unknown_found_and_a_missing_tier():
+    tiers = {1: _tier(1, offers_fetched=None, offers_packaged=0)}
+    totals = _summary(_report(tiers=tiers)).split("Per-tier totals:")[1]
+    assert "Tier 1 · Italy: - found" in totals
+    assert "Tier 2 · Switzerland: no record" in totals
 
 
 def test_tier_warnings_land_in_their_tier_and_day_wide_ones_in_the_summary():
@@ -386,20 +411,88 @@ def test_tier_warnings_land_in_their_tier_and_day_wide_ones_in_the_summary():
     blocks = rr.render_day(report, settings=SETTINGS)
     assert "⚠ FAILED: RuntimeError: LinkedIn 403" in blocks[1]
     assert "FAILED" not in blocks[0] + blocks[2] + blocks[3]
-    assert "uncommitted edits" in blocks[3].split("DAY SUMMARY")[1]
-    assert "uncommitted edits" not in "\n".join(blocks[:3])
+    assert "uncommitted edits" in _summary(report)
+    assert "uncommitted edits" not in "\n".join(blocks)
 
 
-def test_render_messages_sends_each_tier_alone_and_splits_only_oversize_ones():
-    messages = rr.render_messages(_report(), settings=SETTINGS)
-    assert len(messages) == 4 and all(len(m) <= 4096 for m in messages)
-    huge = _report(tiers={**{n: _tier(n) for n in (1, 2, 3, 4)}, 2: _tier(2, status="failed", error="e" * 6000)})
-    messages = rr.render_messages(huge, settings=SETTINGS)
-    assert len(messages) > 4 and all(len(m) <= 4096 for m in messages)
-    assert messages[0].startswith("🇮🇹") and messages[-1].count("DAY SUMMARY") == 1
+def test_tier_report_carries_a_legend_for_the_terms_that_appear():
+    block = rr.render_tier_report(_report(), 1, settings=SETTINGS)
+    assert block.startswith("🇮🇹 Tier 1 · Italy")
+    assert "Legend:\n• 8+ = scored at or above the tier threshold" in block
+    assert "• 429 = LinkedIn rate-limit responses" in block
+    assert "• held back = offers deferred to the next run" in block
+    assert "• given up = dropped after their retry window" in block
+    assert "• day so far = requests used against the daily allowance" in block
+
+
+def test_tier_report_legend_only_names_terms_that_appear():
+    # Tier 2 has no verification stages, so no "day so far"; no cap hits here,
+    # so no page-limit term either. The always-rendered funnel keeps the rest.
+    block = rr.render_tier_report(_report(), 2, settings=SETTINGS)
+    assert "day so far" not in block
+    assert "page limit hit" not in block
+    assert "8+ = scored at or above the tier threshold" in block
+
+
+def test_tier_report_includes_page_limit_term_when_a_search_hit_the_cap():
+    report = _report(queries=[rd.QueryRow(2, "AI Engineer", "Zurich", "remote", 20, 20, 200,
+                                          180, "cap_hit")])
+    block = rr.render_tier_report(report, 2, settings=SETTINGS)
+    assert "page limit hit = the search may have more results" in block
+
+
+def test_tier_report_legend_names_tokens_when_the_block_shows_tokens():
+    stages = [rd.StageRow(1, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",
+                          24, 0, 47000)]
+    block = rr.render_tier_report(_report(stages=stages), 1, settings=SETTINGS)
+    assert "day so far 47k/200k tok" in block
+    assert "• day so far = tokens used against the daily allowance" in block
+
+
+def test_tier_report_legend_names_both_units_when_both_appear():
+    stages = [
+        rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
+                    "nvidia/nemotron-3-super-120b-a12b:free", 12, 0, 40000),
+        rd.StageRow(1, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",
+                    24, 0, 47000),
+    ]
+    block = rr.render_tier_report(_report(stages=stages), 1, settings=SETTINGS)
+    assert "• day so far = requests or tokens used against the daily allowance" in block
+
+
+def test_tier_report_without_telemetry_is_not_recorded():
+    block = rr.render_tier_report(None, 1, settings=SETTINGS)
+    assert block == "🇮🇹 Tier 1 · Italy · NOT RECORDED\n⚠ NOT RECORDED: no run record for this tier"
+    assert rr.render_tier_messages(None, 1, settings=SETTINGS) == [block]
+
+
+def test_unknown_found_and_packaged_match_between_tier_report_and_totals():
+    tiers = {n: _tier(n) for n in (1, 2, 3, 4)}
+    tiers[1] = _tier(1, offers_fetched=None, offers_packaged=None)
+    report = _report(tiers=tiers)
+    block = rr.render_tier_report(report, 1, settings=SETTINGS)
+    assert "Offers: - found → 40 scored → 4 scored 8+ → - packaged" in block
+    assert "Tier 1 · Italy: - found / 40 scored / 4 scored 8+ / - packaged" in _summary(report)
+
+
+def test_tier_messages_split_only_when_oversize():
+    assert len(rr.render_tier_messages(_report(), 1, settings=SETTINGS)) == 1
+    huge = _report(tiers={n: _tier(n) for n in (1, 2, 3, 4)} |
+                   {1: _tier(1, status="failed", error="e" * 6000)})
+    messages = rr.render_tier_messages(huge, 1, settings=SETTINGS)
+    assert len(messages) > 1 and all(len(m) <= 4096 for m in messages)
     assert "e" * 6000 in "".join(messages)
 
 
-def test_render_messages_without_telemetry_is_a_single_message():
-    [message] = rr.render_messages(None, settings=SETTINGS)
+def test_summary_messages_split_only_when_oversize():
+    assert len(rr.render_summary_messages(_report(), settings=SETTINGS)) == 1
+    huge = _report(previous_commit="b" * 40, commit_subject="e" * 6000)
+    messages = rr.render_summary_messages(huge, settings=SETTINGS)
+    assert len(messages) > 1 and all(len(m) <= 4096 for m in messages)
+    assert messages[0].count("DAY SUMMARY") == 1
+    assert "e" * 6000 in "".join(messages)
+
+
+def test_summary_messages_without_telemetry_is_a_single_alarm():
+    [message] = rr.render_summary_messages(None, settings=SETTINGS)
     assert "no telemetry was recorded" in message

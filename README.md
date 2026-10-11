@@ -20,7 +20,7 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included. Each run records telemetry for the tier, each search, and each LLM call (`src/telemetry.py`), which the morning report reads.
 5. **Digest** - a ranked `digest.md` per tier lands in Obsidian, alongside a `rejected.md` audit trail of what verification screened out and why, plus a Telegram summary.
 6. **Tailor** - one click on any offer in the digest runs the CV tailoring engine end to end, and the daily run does the same for offers that clear the cutoff. Each offer gets its own package directory.
-7. **Morning health report** - when the four-tier cron run finishes, `orchestrator.py` sends four Telegram messages, one per tier, with a day summary at the end of the last. On the server, `python scripts/run_report.py day` prints the same view (`trend`, `compare`, and `llm` in `scripts/run_report.py`).
+7. **Morning health report** - Telegram gets nine messages a day: each tier sends its results message and then, as soon as that tier finishes, its own health report with a legend; when the whole four-tier cron run ends, `orchestrator.py` sends a final day summary with per-tier totals (found, scored, 8+, packaged). On the server, `python scripts/run_report.py day` prints the same view (`trend`, `compare`, and `llm` in `scripts/run_report.py`).
 
 `LinkedIn -> scrape/dedup/filter -> remote verifier (OpenRouter, Groq fallback) -> LLM scorer (OpenRouter) -> Postgres corpus -> digest.md + Telegram -> [tailor] -> OpenRouter generation + validation gate -> PDF`
 
