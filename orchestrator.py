@@ -60,9 +60,6 @@ def _send_tier_report(tier: int, daily_run_id: str) -> None:
         settings = report_data.load_tier_settings(CONFIGS)
         report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id)
         messages = report_render.render_tier_messages(report, tier, settings=settings)
-        if not messages:
-            print(f"[orchestrator] Tier {tier} report skipped: no telemetry was recorded.")
-            return
         _send_report_messages(f"Tier {tier} report", messages)
     except Exception as e:
         print(f"[orchestrator] Tier {tier} report FAILED: {type(e).__name__}: "

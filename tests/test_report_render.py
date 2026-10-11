@@ -441,9 +441,38 @@ def test_tier_report_includes_page_limit_term_when_a_search_hit_the_cap():
     assert "page limit hit = the search may have more results" in block
 
 
-def test_tier_report_without_telemetry_is_none():
-    assert rr.render_tier_report(None, 1, settings=SETTINGS) is None
-    assert rr.render_tier_messages(None, 1, settings=SETTINGS) == []
+def test_tier_report_legend_names_tokens_when_the_block_shows_tokens():
+    stages = [rd.StageRow(1, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",
+                          24, 0, 47000)]
+    block = rr.render_tier_report(_report(stages=stages), 1, settings=SETTINGS)
+    assert "day so far 47k/200k tok" in block
+    assert "• day so far = tokens used against the daily allowance" in block
+
+
+def test_tier_report_legend_names_both_units_when_both_appear():
+    stages = [
+        rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
+                    "nvidia/nemotron-3-super-120b-a12b:free", 12, 0, 40000),
+        rd.StageRow(1, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",
+                    24, 0, 47000),
+    ]
+    block = rr.render_tier_report(_report(stages=stages), 1, settings=SETTINGS)
+    assert "• day so far = requests or tokens used against the daily allowance" in block
+
+
+def test_tier_report_without_telemetry_is_not_recorded():
+    block = rr.render_tier_report(None, 1, settings=SETTINGS)
+    assert block == "🇮🇹 Tier 1 · Italy · NOT RECORDED\n⚠ NOT RECORDED: no run record for this tier"
+    assert rr.render_tier_messages(None, 1, settings=SETTINGS) == [block]
+
+
+def test_unknown_found_and_packaged_match_between_tier_report_and_totals():
+    tiers = {n: _tier(n) for n in (1, 2, 3, 4)}
+    tiers[1] = _tier(1, offers_fetched=None, offers_packaged=None)
+    report = _report(tiers=tiers)
+    block = rr.render_tier_report(report, 1, settings=SETTINGS)
+    assert "Offers: - found → 40 scored → 4 scored 8+ → - packaged" in block
+    assert "Tier 1 · Italy: - found / 40 scored / 4 scored 8+ / - packaged" in _summary(report)
 
 
 def test_tier_messages_split_only_when_oversize():
