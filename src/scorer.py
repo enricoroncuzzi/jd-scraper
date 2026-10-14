@@ -252,18 +252,20 @@ def score_offers(
     priority_keywords: list[str],
     exclude_keywords: list[str],
     llm_api_key: str,
+    batch_size: int | None = None,
 ) -> tuple[list[ScoredOffer], dict]:
     if not offers:
         return [], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+    size = batch_size or BATCH_SIZE
     chain = _build_chain(llm_api_key)
     counter = _TokenCounter()
-    total_batches = (len(offers) - 1) // BATCH_SIZE + 1
+    total_batches = (len(offers) - 1) // size + 1
 
     all_scoring: list[_ScoringItem] = []
-    for i in range(0, len(offers), BATCH_SIZE):
-        batch = offers[i:i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
+    for i in range(0, len(offers), size):
+        batch = offers[i:i + size]
+        batch_num = i // size + 1
         print(f"[scorer] Scoring batch {batch_num}/{total_batches} ({len(batch)} offers)...")
         try:
             all_scoring.extend(_invoke_batch(chain, batch, profile, priority_keywords, exclude_keywords, counter))

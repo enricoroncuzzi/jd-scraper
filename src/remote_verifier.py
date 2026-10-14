@@ -522,8 +522,14 @@ def verify_offers(
     llm_api_key: str = "",
     groq_tokens_used_today: int = 0,
     openrouter_requests_used_today: int = 0,
+    batch_size: int | None = None,
 ) -> tuple[list[JobOffer], dict]:
     """Mark each offer confirmed, rejected or unconfirmed. Never raises.
+
+    batch_size sets how many offers one OpenRouter request carries (default
+    BATCH_SIZE). Groq's free-plan 8,000 tokens/minute ceiling does not allow
+    more than BATCH_SIZE offers per call, so a larger batch that falls back to
+    Groq is sent there in BATCH_SIZE chunks.
 
     llm_api_key (OpenRouter) is the primary judge. Without it, the stage
     uses Groq only, and a Groq-unavailable run's offers stay unconfirmed.
@@ -582,14 +588,15 @@ def verify_offers(
         OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP - openrouter_requests_used_today
     )
 
-    total_batches = (len(checkable) - 1) // BATCH_SIZE + 1 if checkable else 0
+    size = batch_size or BATCH_SIZE
+    total_batches = (len(checkable) - 1) // size + 1 if checkable else 0
     failed_batches = 0
     used_groq = False
     openrouter_failures = 0
 
-    for i in range(0, len(checkable), BATCH_SIZE):
-        batch = checkable[i:i + BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
+    for i in range(0, len(checkable), size):
+        batch = checkable[i:i + size]
+        batch_num = i // size + 1
         verdicts = None
 
         if not openrouter_exhausted:
@@ -645,9 +652,18 @@ def verify_offers(
                 used_groq = True
                 batch_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 try:
-                    verdicts, _ = _verify_batch(
-                        client, batch, require_italy_eligibility, usage=batch_usage,
-                    )
+                    # A batch larger than BATCH_SIZE (verify_offers' batch_size) is
+                    # sent to Groq in BATCH_SIZE chunks to respect its per-minute ceiling.
+                    collected = {}
+                    for start in range(0, len(batch), BATCH_SIZE):
+                        if start:
+                            time.sleep(_GROQ_BATCH_PAUSE_SECONDS)
+                        chunk_verdicts, _ = _verify_batch(
+                            client, batch[start:start + BATCH_SIZE], require_italy_eligibility,
+                            usage=batch_usage,
+                        )
+                        collected.update(chunk_verdicts)
+                    verdicts = collected
                 except groq.RateLimitError as e:
                     if _is_daily_quota_exceeded(e):
                         print(f"[verifier] Groq daily token budget exhausted at batch "
