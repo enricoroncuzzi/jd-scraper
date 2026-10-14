@@ -124,6 +124,26 @@ def test_applications_are_rekeyed_and_unmatched_ones_get_a_minimal_job(legacy):
     assert _count(legacy, "SELECT count(*) FROM job_applications WHERE dry_run") == 1
 
 
+def test_running_twice_with_an_orphan_application_is_a_clean_no_op(legacy):
+    run = add_run(legacy, 1, T0)
+    add_offer(legacy, run, LINK_A, when=T0)
+    with legacy.cursor() as cur:
+        cur.execute("INSERT INTO applications (link_hash, link, title, company, channel, packaged_at, "
+                    "dry_run) VALUES ('a', %s, 'AI Engineer', 'Acme', 'external_ats', %s, true)",
+                    (LINK_A_OTHER_SLUG, T0))
+        cur.execute("INSERT INTO applications (link_hash, link, title, company, channel, packaged_at, "
+                    "dry_run) VALUES ('b', %s, 'Old Role', 'Gone Co', 'unknown', %s, false)",
+                    ("https://www.linkedin.com/jobs/view/old-role-3999999999", T0))
+    legacy.commit()
+
+    run_migration(legacy, legacy, dry_run=False)
+    second = run_migration(legacy, legacy, dry_run=False)
+
+    assert second.problems() == []
+    assert _count(legacy, "SELECT count(*) FROM jobs") == 2
+    assert _count(legacy, "SELECT count(*) FROM job_applications") == 2
+
+
 def test_labels_are_counted_and_unmatched_ones_fail_the_report(legacy):
     run = add_run(legacy, 1, T0)
     add_offer(legacy, run, LINK_A, when=T0)

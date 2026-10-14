@@ -171,6 +171,17 @@ def migrate_applications(legacy_conn, store_conn, job_ids: dict[str, object],
         for link, title, company, channel, packaged_at, dry_run in applications:
             key = legacy_key(link)
             job_id = job_ids.get(key)
+            if job_id is None:
+                # An orphan application's minimal job is not in job_ids (that map
+                # is built from offers), so a later run must find it by its
+                # sighting rather than insert the sighting a second time.
+                cur.execute(
+                    "SELECT job_id FROM sightings WHERE source = %s AND source_job_id = %s",
+                    (SOURCE, key))
+                existing = cur.fetchone()
+                if existing:
+                    job_id = existing[0]
+                    job_ids[key] = job_id
             if job_id is not None:
                 report.applications_matched += 1
             else:
