@@ -117,3 +117,12 @@ def test_an_alert_earlier_the_same_day_is_marked_but_keeps_the_normal_links():
     jobs = [_job(1, 9, note_day=DAY, alerted_at=ALERT_TIME)]
     entry = next(l for l in render_digest(jobs, DAY, 8, 1, True).split("\n") if l.startswith("- **"))
     assert entry.endswith(" · sent earlier") and "[note](scraped/" in entry and "../../" not in entry
+
+
+def test_a_partial_description_keeps_the_legacy_warning(tmp_path):
+    job = _job(1, 6, status="partial")
+    folder = _legacy_files(tmp_path, [job], True) / "scraped"
+    legacy = next(folder.glob("*.md")).read_text()
+    new = render_note(job, 8, DAY)
+    assert "⚠ description: partial" in new
+    assert _strip_added_fields(new) == legacy

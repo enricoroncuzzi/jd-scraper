@@ -81,6 +81,6 @@ def to_scored_offer(job: DeliveryJob) -> ScoredOffer:
         id=job.note_no, title=job.title, company=job.company, location=job.location_raw,
         link=job.canonical_url, description=job.description,
         description_status=job.description_status if job.description_status in
-        ("ok", "failed", "rate_limited") else "ok",
+        ("ok", "partial", "failed", "rate_limited") else "ok",
         work_mode=job.work_mode, remote_verdict=job.remote_verdict or "not_checked",
         remote_reason=job.remote_reason, score=job.score, comment=job.comment, summary=job.summary)
