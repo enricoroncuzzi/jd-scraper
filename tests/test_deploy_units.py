@@ -2,6 +2,7 @@
 import configparser
 import glob
 import importlib
+import json
 import os
 import re
 import subprocess
@@ -9,8 +10,6 @@ import subprocess
 import pytest
 
 UNITS = sorted(glob.glob("deploy/systemd/*.service"))
-# The watchdog and the backup are oneshot units, not long-running services.
-LONG_RUNNING = [u for u in UNITS if "watchdog" not in u and "backup" not in u]
 
 # The box, PostgreSQL's own working set, the operating system's share (kernel, systemd,
 # sshd, the watchdog oneshot and a pg_dump), and memory reserved for anything else that
@@ -31,15 +30,24 @@ def _read(path):
     return parser
 
 
+def _is_oneshot(path):
+    return _read(path)["Service"].get("Type", "").lower() == "oneshot"
+
+
+# The watchdog, the backup and the stage-2 collectors (run by their own timers) are oneshot
+# units; they are not part of the always-on services' shared memory budget.
+LONG_RUNNING = [u for u in UNITS if not _is_oneshot(u)]
+
 PYTHON_UNITS = [u for u in UNITS if "-m" in _read(u)["Service"]["ExecStart"]]
 
 
 def test_every_expected_unit_exists():
     names = {os.path.basename(u) for u in UNITS}
     assert {"jds-collect-linkedin.service", "jds-process.service", "jds-deliver.service",
-            "jds-watchdog.service", "jds-backup.service"} <= names
+            "jds-watchdog.service", "jds-backup.service", "jds-collect-freehire.service"} <= names
     assert os.path.exists("deploy/systemd/jds-watchdog.timer")
     assert os.path.exists("deploy/systemd/jds-backup.timer")
+    assert os.path.exists("deploy/systemd/jds-collect-freehire.timer")
 
 
 @pytest.mark.parametrize("path", LONG_RUNNING)
@@ -65,6 +73,46 @@ def test_total_memory_ceiling_leaves_room_for_postgres_and_the_other_project():
         return int(value[:-1]) * (1024 if value.endswith("G") else 1)
     total = sum(megabytes(_read(u)["Service"]["MemoryMax"]) for u in LONG_RUNNING)
     assert total <= BOX_MB - POSTGRES_MB - SYSTEM_RESERVE_MB - OTHER_WORKLOAD_MB
+
+
+# Timer-driven collectors are the stage-2 sources; the LinkedIn collector has no timer and
+# stays a long-running service. Deriving the services from the timers keeps this general
+# when a later plan adds another source.
+COLLECTOR_TIMERS = sorted(glob.glob("deploy/systemd/jds-collect-*.timer"))
+COLLECTOR_SERVICES = [timer[: -len(".timer")] + ".service" for timer in COLLECTOR_TIMERS]
+
+
+def _daily_start_minutes(timer_path):
+    value = _read(timer_path)["Timer"]["OnCalendar"]
+    day, clock = value.split()[:2]
+    assert day == "*-*-*", f"{timer_path}: expected a daily timer, got {value!r}"
+    hour, minute = (int(part) for part in clock.split(":")[:2])
+    return hour * 60 + minute
+
+
+def _delivery_minutes():
+    value = json.load(open("config/deliver.json"))["delivery_time"]
+    hour, minute = (int(part) for part in value.split(":"))
+    return hour * 60 + minute
+
+
+def test_oneshot_collectors_run_on_timers_clear_of_delivery_and_each_other():
+    # Every extra source is a oneshot unit on its own daily timer, so its small cap never
+    # coincides with the delivery/Chromium peak or with another collector.
+    assert COLLECTOR_TIMERS, "a stage-2 collector timer must exist"
+    for service in COLLECTOR_SERVICES:
+        assert os.path.exists(service), f"{service} has a timer but no service"
+        service_cfg = _read(service)["Service"]
+        assert service_cfg["Type"] == "oneshot" and "Restart" not in service_cfg
+        assert "--once" in service_cfg["ExecStart"]
+    starts = [_daily_start_minutes(timer) for timer in COLLECTOR_TIMERS]
+    assert len(starts) == len(set(starts)), f"collector timers overlap: {starts}"
+    delivery = _delivery_minutes()
+    for start in starts:
+        assert not (delivery - 60 <= start < delivery + 180), (
+            f"collector start {start} falls in the delivery window around {delivery}")
+    for earlier, later in zip(sorted(starts), sorted(starts)[1:]):
+        assert later - earlier >= 60, f"collectors run too close together: {sorted(starts)}"
 
 
 BACKUP_SCRIPT = "deploy/backup-jobstore.sh"

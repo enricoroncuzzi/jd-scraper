@@ -12,7 +12,7 @@ unless it says otherwise. Nothing here is run by a test.
 | `jds-collect-linkedin` | walks LinkedIn search slices, records sightings | LinkedIn (search), Postgres |
 | `jds-process` | cheap checks, descriptions, language, remote check, scoring | LinkedIn (descriptions), OpenRouter, Groq, Postgres |
 | `jds-deliver` | alerts, daily delivery at 08:00 Rome time, packaging, Neon copy | Telegram, Neon, Postgres |
-| `jds-collect-freehire`, `jds-collect-himalayas` | one pull a day each (stage 2) | their public APIs, Postgres |
+| `jds-collect-freehire.timer`, `jds-collect-himalayas.timer` | one oneshot pull a day each (stage 2), clear of delivery and of each other | their public APIs, Postgres |
 | `jds-watchdog.timer` | every 10 minutes: alerts when a service or the store is down | Telegram, Postgres |
 | `jds-backup.timer` | nightly `pg_dump` of the job store, keeping 7 days | Postgres, local disk |
 
@@ -121,7 +121,7 @@ Possible at any time in the first two weeks; the old code is untouched.
 
 ```bash
 sudo systemctl disable --now jds-deliver jds-process jds-collect-linkedin \
-    jds-collect-freehire jds-collect-himalayas jds-watchdog.timer jds-backup.timer
+    jds-watchdog.timer jds-backup.timer jds-collect-freehire.timer jds-collect-himalayas.timer
 crontab /home/enrico/crontab.bak-<date>            # restores the jds-daily.sh line
 ```
 

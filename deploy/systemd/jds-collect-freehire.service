@@ -1,0 +1,22 @@
+[Unit]
+Description=jd-scraper freehire collector (one pull a day)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=enrico
+Group=enrico
+WorkingDirectory=/home/enrico/jd-scraper
+EnvironmentFile=/home/enrico/jd-scraper/.env
+ExecStart=/home/enrico/jd-scraper/.venv/bin/python -u -m src.sources.service freehire --once
+TimeoutStartSec=1800
+MemoryHigh=150M
+MemoryMax=192M
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
