@@ -105,9 +105,8 @@ class DeliverService:
         for tier in unsent_telegram(conn, local_day):
             delivery = deliveries.get(tier) or TierDelivery(
                 tier, local_day, delivered_jobs(conn, local_day, tier), [], waiting_count(conn, tier))
-            self._send_tier_digest(conn, tier, delivery, local_day, now)
+            did = self._send_tier_digest(conn, tier, delivery, local_day, now) or did
             deliveries.setdefault(tier, delivery)
-            did = True
         everything_delivered = day is None and all(
             already_delivered(conn, local_day, t) for t in tiers) and self.settings.delivery_started(now)
         if (day is not None or everything_delivered) and not unsent_telegram(conn, local_day) \
@@ -118,7 +117,7 @@ class DeliverService:
             messages = render_day_summary(conn, self.cfg, self.settings, deliveries, now, local_day)
             if all([self._send(message) for message in messages]):
                 self._mark_summary_sent(conn, local_day, now)
-            did = True
+                did = True
         return did
 
     def _package(self, conn, now: datetime) -> int:

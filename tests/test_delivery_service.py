@@ -142,3 +142,14 @@ def test_a_telegram_network_failure_does_not_abort_the_tick(store_conn, tmp_path
     service.send = outbox
     service.tick(store_conn, NOW + timedelta(minutes=1))
     assert len([m for m in outbox.sent if m.startswith("Hey Enrico! Tier")]) == 4
+
+
+def test_a_persistently_rejected_send_does_not_report_work_forever(store_conn, make):
+    scored_job(store_conn, 1, 9, when=NOW)
+    outbox = Outbox()
+    outbox.fail = True
+    service, _ = make(outbox)
+    first = service.tick(store_conn, NOW)
+    second = service.tick(store_conn, NOW + timedelta(minutes=1))
+    assert first.did_work is True  # the delivery itself progressed
+    assert second.did_work is False  # every send was rejected, so the loop may idle
