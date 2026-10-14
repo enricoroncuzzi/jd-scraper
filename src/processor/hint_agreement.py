@@ -22,6 +22,8 @@ SHORTCUTS = (
      "remote_hint = 'remote' AND country = 'italy' AND tier = 1", "confirmed"),
     ("hybrid or onsite, tiers 1/3/4 -> rejected",
      "remote_hint IN ('hybrid', 'onsite') AND tier IN (1, 3, 4)", "rejected"),
+    ("remote and open worldwide, tiers 1/3/4 -> confirmed",
+     "remote_hint = 'remote_worldwide' AND tier IN (1, 3, 4)", "confirmed"),
 )
 
 

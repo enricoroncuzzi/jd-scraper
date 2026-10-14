@@ -95,6 +95,8 @@ def test_structured_verdicts_only_where_they_agree_with_the_model_rules(cfg):
     assert structured_verdict("remote", "italy", tier3) is None  # Italy eligibility needs the model
     assert structured_verdict("onsite", "germany", tier3)[0] == "rejected"
     assert structured_verdict("hybrid", "italy", tier1)[0] == "rejected"
+    assert structured_verdict("remote_worldwide", None, tier3)[0] == "confirmed"
+    assert structured_verdict("remote_worldwide", None, tier1)[0] == "confirmed"
     assert structured_verdict(None, "italy", tier1) is None
 
 

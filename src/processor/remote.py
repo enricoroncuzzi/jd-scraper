@@ -25,11 +25,15 @@ def structured_verdict(remote_hint: str | None, country: str | None,
     """A verdict from the source's own work-mode field, or None to ask the model.
 
     Rejected is safe in every tier that requires remote work. Confirmed is safe
-    only where the rule is "fully remote" with no residency condition (tier 1):
-    a remote role in Germany says nothing about whether Italy may apply.
+    for a role open worldwide, and for a remote role located in Italy where the rule
+    is "fully remote" with no residency condition (tier 1): a remote role in
+    Germany says nothing about whether Italy may apply.
     """
     if remote_hint in ("hybrid", "onsite"):
         return "rejected", f"{STRUCTURED_REASON} ({remote_hint})"
+    if remote_hint == "remote_worldwide":
+        # Remote with no country restriction satisfies both rules, Italy's included.
+        return "confirmed", f"{STRUCTURED_REASON} (remote, open worldwide)"
     if remote_hint == "remote" and not policy.require_italy_eligibility and country == "italy":
         return "confirmed", f"{STRUCTURED_REASON} (remote, located in Italy)"
     return None

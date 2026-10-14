@@ -21,7 +21,7 @@ def test_agreement_is_measured_per_shortcut_and_unconfirmed_is_not_a_disagreemen
     _job(store_conn, 11, "remote", "unconfirmed")
     _job(store_conn, 12, "remote", "confirmed", tier=3, country="germany")  # not covered by the shortcut
     _job(store_conn, 20, "onsite", "rejected", tier=3, country="germany")
-    first, second = hint_agreement(store_conn)
+    first, second, _third = hint_agreement(store_conn)
     assert (first["agreed"], first["disagreed"], first["unconfirmed"], first["decided"]) == (9, 1, 1, 10)
     assert first["rate"] == 0.9 and first["ready"] is False  # too few decided and under 95 percent
     assert (second["agreed"], second["decided"]) == (1, 1) and second["ready"] is False
@@ -30,11 +30,11 @@ def test_agreement_is_measured_per_shortcut_and_unconfirmed_is_not_a_disagreemen
 def test_a_shortcut_is_ready_only_with_enough_decided_jobs_above_95_percent(store_conn):
     for n in range(100):
         _job(store_conn, n, "remote", "confirmed")
-    ready, _ = hint_agreement(store_conn)
+    ready, *_ = hint_agreement(store_conn)
     assert ready["ready"] is True
     for n in range(500, 506):
         _job(store_conn, n, "remote", "rejected")
-    again, _ = hint_agreement(store_conn)
+    again, *_ = hint_agreement(store_conn)
     assert again["rate"] == 100 / 106 and again["ready"] is False
 
 
