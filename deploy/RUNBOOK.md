@@ -122,8 +122,9 @@ approves it, one source at a time:
 
 ```bash
 .venv/bin/python -m src.sources.provenance 7        # read this before enabling
+# edit config/sources.json: "freehire": {"enabled": true, ...}   <- must come first:
+# `--sync-slices` returns early while the source is still disabled
 .venv/bin/python -m src.sources.service freehire --sync-slices
-# edit config/sources.json: "freehire": {"enabled": true, ...}
 sudo cp deploy/systemd/jds-collect-freehire.service deploy/systemd/jds-collect-freehire.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now jds-collect-freehire.timer
@@ -144,6 +145,9 @@ sudo systemctl disable --now jds-deliver jds-process jds-collect-linkedin \
     jds-watchdog.timer jds-backup.timer jds-collect-freehire.timer jds-collect-himalayas.timer
 crontab /home/enrico/crontab.bak-<date>            # restores the jds-daily.sh line
 ```
+
+`jds-collect-himalayas.timer` exists only after Plan 7; on a stage-1 box systemd prints "unit
+not found" for it and still disables the rest.
 
 Jobs the new system already handled would be found again by the next old run. To avoid
 repeats, append their hashes to the old dedup files first (one command per tier N = 1..4):
