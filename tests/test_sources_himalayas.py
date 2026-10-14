@@ -99,8 +99,20 @@ def test_garbage_items_are_skipped_not_raised():
     for garbage in (None, 123, "nope", {"title": 123}, {**WORLDWIDE, "title": "   "},
                     {**WORLDWIDE, "companyName": 5}, {**WORLDWIDE, "guid": 5},
                     {**WORLDWIDE, "timezoneRestrictions": "1"},
-                    {**WORLDWIDE, "locationRestrictions": "Italy"}):
+                    {**WORLDWIDE, "locationRestrictions": "Italy"},
+                    {**WORLDWIDE, "locationRestrictions": ["Italy", None]},
+                    {**WORLDWIDE, "locationRestrictions": [None, "Italy"]}):
         assert item_to_card(garbage, 1, NOW) is None
+
+
+def test_non_text_fields_do_not_skip_the_job():
+    card = item_to_card({**WORLDWIDE, "description": 5, "employmentType": {"a": 1}}, 1, NOW)
+    assert card is not None
+    assert card.description == "FunnelStory is hiring." and card.source_detail is None  # excerpt fallback
+    for change in ({"description": ["a"], "excerpt": 5}, {"description": "", "excerpt": ["x"]},
+                   {"description": 5, "excerpt": None}):
+        card = item_to_card({**WORLDWIDE, **change}, 1, NOW)
+        assert card is not None and card.description is None
 
 
 def test_the_company_page_is_never_claimed_himalayas_is_the_canonical_link(store_conn):
@@ -189,14 +201,40 @@ def test_a_throttled_walk_resumes_at_its_page(store_conn):
 
 
 def test_a_walk_with_garbage_items_still_records_the_valid_neighbours(store_conn):
-    junk = [None, 123, {"title": 123}, {**WORLDWIDE, "title": "   "},
-            {**WORLDWIDE, "timezoneRestrictions": "1"}]
-    pages = Pages({"jobs": junk + _jobs(1, 15)}, {"jobs": []})
+    skipping = [None, 123, {"title": 123}, {**WORLDWIDE, "title": "   "},
+                {**WORLDWIDE, "timezoneRestrictions": "1"},
+                {**WORLDWIDE, "locationRestrictions": ["Italy", None]}]
+    coercing = [{**WORLDWIDE, "guid": "https://himalayas.app/companies/c/jobs/g-desc",
+                 "applicationLink": "https://himalayas.app/companies/c/jobs/g-desc", "description": 5},
+                {**WORLDWIDE, "guid": "https://himalayas.app/companies/c/jobs/g-excerpt",
+                 "applicationLink": "https://himalayas.app/companies/c/jobs/g-excerpt",
+                 "description": ["a"], "excerpt": 5},
+                {**WORLDWIDE, "guid": "https://himalayas.app/companies/c/jobs/g-emp",
+                 "applicationLink": "https://himalayas.app/companies/c/jobs/g-emp", "employmentType": {"a": 1}}]
+    valid = _jobs(1, 10)
+    jobs = skipping + coercing + valid
+    pages = Pages({"jobs": jobs}, {"jobs": []})
     walk = _walk(store_conn, pages)
-    assert walk.cards_seen == 20 and walk.new_jobs == 15 and walk.stop_reason == "end_of_results"
+    assert walk.cards_seen == len(jobs) and walk.new_jobs == len(coercing) + len(valid)
+    assert walk.stop_reason == "end_of_results"
     with store_conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM jobs")
-        assert cur.fetchone()[0] == 15
+        assert cur.fetchone()[0] == len(coercing) + len(valid)
+
+
+def test_an_item_that_still_raises_is_skipped(store_conn, monkeypatch):
+    from src.sources import himalayas
+    real = himalayas.item_to_card
+
+    def flaky(job, slice_id, now):
+        if job.get("title") == "explode":
+            raise AttributeError("a shape we did not anticipate")
+        return real(job, slice_id, now)
+
+    monkeypatch.setattr(himalayas, "item_to_card", flaky)
+    pages = Pages({"jobs": [{**WORLDWIDE, "title": "explode"}] + _jobs(1, 10)}, {"jobs": []})
+    walk = _walk(store_conn, pages)
+    assert walk.cards_seen == 11 and walk.new_jobs == 10 and walk.stop_reason == "end_of_results"
 
 
 def test_a_non_dict_body_stops_the_walk_with_an_error(store_conn):

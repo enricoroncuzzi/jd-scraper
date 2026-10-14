@@ -64,6 +64,8 @@ def italy_eligibility(job: dict) -> Eligibility:
     offsets = job.get("timezoneRestrictions") or []
     if not isinstance(restrictions, list) or not isinstance(offsets, list):
         return Eligibility(False, reason="malformed")
+    if not all(isinstance(name, str) for name in restrictions):
+        return Eligibility(False, reason="malformed")
     if offsets and not any(offset in offsets for offset in ITALY_UTC_OFFSETS):
         return Eligibility(False, reason="timezone")
     if not restrictions:
@@ -94,7 +96,12 @@ def item_to_card(job: dict, slice_id: int, now: datetime) -> CardInput | None:
     link = job.get("applicationLink")
     if not (isinstance(link, str) and link.strip()):
         link = guid
-    description = html_to_text(job.get("description", "")) or (job.get("excerpt") or "").strip()
+    raw_description = job.get("description")
+    markup = raw_description if isinstance(raw_description, str) else ""
+    raw_excerpt = job.get("excerpt")
+    excerpt = raw_excerpt.strip() if isinstance(raw_excerpt, str) else ""
+    description = html_to_text(markup) or excerpt
+    employment = job.get("employmentType")
     return CardInput(
         source=SOURCE, source_job_id=guid, source_url=link,
         title=title.strip(), company=company.strip(),
@@ -102,7 +109,7 @@ def item_to_card(job: dict, slice_id: int, now: datetime) -> CardInput | None:
         posted_at=parse_time(job.get("pubDate")), slice_id=slice_id, country=eligibility.country,
         remote_hint=eligibility.remote_hint, tier_hint=eligibility.tier_hint,
         description=description or None, description_source=SOURCE if description else None,
-        source_detail=job.get("employmentType"))
+        source_detail=employment if isinstance(employment, str) else None)
 
 
 def build_slices(cfg: SourceConfig) -> list[SliceSpec]:
@@ -134,8 +141,19 @@ def walk_slice(conn, client: JsonClient, cfg: SourceConfig, row, now: datetime) 
             stop = "error"
             break
         pages += 1
-        cards = [c for c in (item_to_card(j, row.id, now) for j in jobs if isinstance(j, dict))
-                 if c is not None]
+        cards = []
+        for item in jobs:
+            if not isinstance(item, dict):
+                continue
+            try:
+                card = item_to_card(item, row.id, now)
+            except (TypeError, AttributeError, ValueError) as exc:
+                # Enumerated guards are the primary defence; this keeps one unanticipated
+                # shape from aborting the whole drain anyway.
+                print(f"[collect-{SOURCE}] skipped a malformed item: {type(exc).__name__}")
+                continue
+            if card is not None:
+                cards.append(card)
         new, all_known = record_cards(conn, cards, now)
         cards_seen += len(jobs)
         new_jobs += new
