@@ -114,9 +114,9 @@ class PaceBudget:
         with self.conn.cursor() as cur:
             cur.execute(
                 "UPDATE pace_budgets SET next_slot_at = %s, factor = %s, clean_streak = %s, "
-                "cooldown_until = %s, last_kind = %s, wanting = %s::jsonb WHERE host = %s",
+                "cooldown_until = %s, last_kind = %s, wanting = wanting - %s WHERE host = %s",
                 (state.next_slot_at, state.factor, state.clean_streak, state.cooldown_until,
-                 state.last_kind, json.dumps(state.wanting), self.host))
+                 state.last_kind, state.last_kind, self.host))
 
     def _declare_wanting(self, kind: str) -> None:
         with self.conn.cursor() as cur:

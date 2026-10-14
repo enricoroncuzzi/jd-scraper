@@ -161,6 +161,23 @@ def test_a_stale_waiting_marker_does_not_block_the_same_kind(make_budget):
     assert pace_module.YIELD_SECONDS not in fake.sleeps
 
 
+def test_a_marker_declared_while_a_slot_is_held_survives_its_release(make_budget):
+    fake = FakeTime()
+    search = make_budget(fake)
+    other = make_budget(fake)
+    with search.slot("search") as slot:
+        slot.clean()
+        # the description caller arrives while the search request is in flight
+        other._declare_wanting("description")
+        assert "description" in search.snapshot().wanting
+    assert "description" in search.snapshot().wanting
+    # and the search caller immediately comes back, so it must yield a turn
+    before = len(fake.sleeps)
+    with search.slot("search") as slot:
+        slot.clean()
+    assert pace_module.YIELD_SECONDS in fake.sleeps[before:]
+
+
 def test_managed_pace_reopens_a_dropped_connection(store_conn, store_conn_factory):
     from src.linkedin.pace import ManagedPace
 
