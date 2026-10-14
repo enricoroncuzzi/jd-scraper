@@ -3,6 +3,7 @@ import configparser
 import glob
 import importlib
 import os
+import subprocess
 
 import pytest
 
@@ -63,12 +64,67 @@ def test_total_memory_ceiling_leaves_room_for_postgres_and_the_other_project():
     assert total <= BOX_MB - POSTGRES_MB - OTHER_WORKLOAD_MB
 
 
-def test_the_job_store_backup_runs_nightly_and_keeps_seven_days():
+BACKUP_SCRIPT = "deploy/backup-jobstore.sh"
+
+
+def _stub_pg_dump(tmp_path, rc=0):
+    """A fake pg_dump that writes the file named by --file and exits with rc."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "pg_dump"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'for arg in "$@"; do case "$arg" in --file=*) out="${arg#--file=}";; esac; done\n'
+        'echo dump > "$out"\n'
+        f"exit {rc}\n"
+    )
+    stub.chmod(0o755)
+    return bindir
+
+
+def _run_backup(backup_dir, bindir):
+    env = dict(os.environ)
+    env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
+    env["JDS_BACKUP_DIR"] = str(backup_dir)
+    env["JOBSTORE_URL"] = "postgresql:///jds"
+    return subprocess.run([BACKUP_SCRIPT], capture_output=True, text=True, env=env)
+
+
+def test_the_job_store_backup_runs_nightly_and_keeps_seven_days(tmp_path):
     timer = _read("deploy/systemd/jds-backup.timer")["Timer"]
     assert "OnCalendar" in timer
     assert _read("deploy/systemd/jds-backup.service")["Service"]["Type"] == "oneshot"
-    script = open("deploy/backup-jobstore.sh").read()
-    assert "pg_dump" in script and "-mtime +7" in script
+
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    old = []
+    for index in range(9):
+        dump = backup_dir / f"jobstore-old{index}.dump"
+        dump.write_text("old")
+        os.utime(dump, (1_000_000 + index, 1_000_000 + index))  # old8 is the newest pre-existing
+        old.append(dump.name)
+
+    result = _run_backup(backup_dir, _stub_pg_dump(tmp_path))
+    assert result.returncode == 0, result.stderr
+
+    # Retention is by count, not by mtime: 9 old plus 1 fresh leaves exactly 7.
+    kept = sorted(p.name for p in backup_dir.glob("jobstore-*.dump"))
+    assert len(kept) == 7, kept
+    fresh = sorted(set(kept) - set(old))
+    assert len(fresh) == 1, f"the just-written dump must be the newest kept: {kept}"
+    for index in range(3):  # the three oldest pre-existing dumps are pruned
+        assert f"jobstore-old{index}.dump" not in kept
+
+
+def test_a_failed_dump_leaves_no_partial_and_no_new_backup(tmp_path):
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    (backup_dir / "jobstore-old.dump").write_text("old")
+
+    result = _run_backup(backup_dir, _stub_pg_dump(tmp_path, rc=1))
+    assert result.returncode != 0
+    # A dump that dies midway must not leave a file behind to be counted later.
+    assert sorted(p.name for p in backup_dir.iterdir()) == ["jobstore-old.dump"]
 
 
 def test_the_backup_script_named_by_the_unit_is_executable():
