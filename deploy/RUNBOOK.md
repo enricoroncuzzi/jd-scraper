@@ -57,6 +57,10 @@ sudo systemctl daemon-reload                           # do NOT enable anything 
 sudo systemd-analyze verify /etc/systemd/system/jds-*.service
 ```
 
+`verify` only comes back clean once the live tree holds this release: `jds-backup.service` runs
+`/home/enrico/jd-scraper/deploy/backup-jobstore.sh`. Units installed from a separate checkout
+before the deploy report exactly that one missing file.
+
 ### Sizing the memory caps from measurement
 
 `MemoryMax` in the unit files is a first guess. The box has 1.9 GB and no swap. For now
@@ -82,13 +86,17 @@ On a machine that can reach a Neon branch copy of production (ask for a branch; 
 this at production data you cannot recreate):
 
 ```bash
-createdb jds_rehearsal
+sudo -u postgres createdb -O enrico jds_rehearsal     # the enrico role has no CREATEDB
 JOBSTORE_URL=postgresql:///jds_rehearsal .venv/bin/python scripts/migrate_neon_to_jobstore.py \
     --neon-url "$NEON_BRANCH_URL" --seen-dir data --expect-fallback 38
 ```
 
 This is a dry run. It must end `DRY RUN: nothing was written.` with no `PROBLEM:` lines:
-every `offers` row, application and label accounted for, and 38 title-only fallback rows.
+every `offers` row, application and label accounted for. The title-only fallback count (38 when
+the captain counted it) is a snapshot that grows with each daily run: a higher count prints
+`WARNING: expected 38 ...` and exits 1 although nothing is wrong. Check that the extra rows
+are recent (`description = title || ' at ' || company`, grouped by run day); the success test
+is `DRY RUN: nothing was written.` / `COMMITTED.` and no `PROBLEM:` line.
 Run it again with `--commit` against the rehearsal database and keep the printed report.
 
 ## 4. Switch-over day
@@ -102,8 +110,11 @@ walk while the cron wrapper holds `/home/enrico/.jd-scraper.lock`, but do not re
    `crontab -e` and comment out the `jds-daily.sh` line.
 3. Deploy the code if it is not already there (`git pull --ff-only`, `pip install -r requirements.txt`).
 4. Migrate for real:
-   `.venv/bin/python scripts/migrate_neon_to_jobstore.py --neon-url "$DATABASE_URL" --seen-dir data --expect-fallback 38 --commit`
-   It must print `COMMITTED.` If it prints `NOT COMMITTED`, stop: nothing was written.
+   `JOBSTORE_URL=postgresql:///jds .venv/bin/python scripts/migrate_neon_to_jobstore.py --neon-url "$(grep '^DATABASE_URL=' .env | cut -d= -f2-)" --seen-dir data --expect-fallback 38 --commit`
+   It must print `COMMITTED.` (a `WARNING:` about the fallback count alone is expected drift,
+   see section 3). If it prints `NOT COMMITTED`, stop: nothing was written. Do not `source .env`
+   in the shell: an unquoted `&` in the URL cuts it short. The Python entry points read `.env`
+   themselves, except this script, which only reads the environment.
 5. Create the slices and check the count (132 for the four tiers and four roles):
    `.venv/bin/python -m src.linkedin.collector --sync-slices`
 6. Start, in this order, checking `status` after each:
