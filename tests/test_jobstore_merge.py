@@ -132,3 +132,30 @@ def test_equal_first_seen_prefers_the_job_with_a_description_in_either_order(sto
     c = record_sighting(store_conn, _linkedin("333333", company="Beta"), NOW).job_id
     d = record_sighting(store_conn, _freehire("fh-2", company="Beta"), NOW).job_id
     assert merge_jobs(store_conn, d, c) == d
+
+
+def test_merge_repoints_child_rows_and_carries_the_paid_verdict(store_conn):
+    old = record_sighting(store_conn, _linkedin(), NOW).job_id
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage = 'expired', stage_reason = 'posting_too_old', "
+                    "remote_verdict = 'confirmed', remote_reason = 'stable', score = 9, summary = 's', "
+                    "comment = 'c', language = 'en' WHERE id = %s", (old,))
+        cur.execute("INSERT INTO llm_calls (id, stage, provider, request_model, latency_ms, batch_size, "
+                    "attempt, outcome, prompt_version, started_at) VALUES "
+                    "(gen_random_uuid(), 'verification', 'openrouter', 'm', 1, 1, 1, 'ok', 'v', %s) "
+                    "RETURNING id", (NOW,))
+        call_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO llm_call_jobs (call_id, job_id) VALUES (%s, %s)", (call_id, old))
+        cur.execute("INSERT INTO job_applications (job_id, channel) VALUES (%s, 'external_ats')", (old,))
+    fresh = record_sighting(store_conn, _freehire(), NOW + timedelta(hours=1)).job_id
+    assert resolve_identity(store_conn, fresh) == fresh  # seen outranks expired, so the fresh row survives
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE id = %s", (old,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT job_id FROM llm_call_jobs")
+        assert [row[0] for row in cur.fetchall()] == [fresh]
+        cur.execute("SELECT job_id, channel FROM job_applications")
+        assert cur.fetchall() == [(fresh, "external_ats")]
+        cur.execute("SELECT remote_verdict, remote_reason, score, summary, comment, language "
+                    "FROM jobs WHERE id = %s", (fresh,))
+        assert cur.fetchone() == ("confirmed", "stable", 9, "s", "c", "en")

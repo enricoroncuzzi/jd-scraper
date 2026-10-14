@@ -49,9 +49,11 @@ def find_twin(conn, job_id: str) -> str | None:
 def _load(cur, job_id: str) -> dict:
     cur.execute(
         "SELECT id, stage, first_seen_at, last_seen_at, posted_at, canonical_url, description, "
-        "description_status, description_source FROM jobs WHERE id = %s", (job_id,))
+        "description_status, description_source, remote_verdict, remote_reason, score, summary, "
+        "comment, language FROM jobs WHERE id = %s", (job_id,))
     keys = ("id", "stage", "first_seen_at", "last_seen_at", "posted_at", "canonical_url",
-            "description", "description_status", "description_source")
+            "description", "description_status", "description_source", "remote_verdict",
+            "remote_reason", "score", "summary", "comment", "language")
     return dict(zip(keys, cur.fetchone()))
 
 
@@ -97,6 +99,24 @@ def merge_jobs(conn, a: str, b: str) -> str:
                     "stage_changed_at = now(), attempts = 0, next_attempt_at = now() WHERE id = %s",
                     (keep["id"],),
                 )
+        # The dropped job's child rows must not cascade away, and a verdict or score
+        # already paid for must not be bought again: re-point the model-call links
+        # and any application package to the survivor, then carry what it lacks.
+        cur.execute(
+            "INSERT INTO llm_call_jobs (call_id, job_id) SELECT call_id, %s FROM llm_call_jobs "
+            "WHERE job_id = %s ON CONFLICT DO NOTHING", (keep["id"], drop["id"]))
+        cur.execute(
+            "UPDATE job_applications SET job_id = %s WHERE job_id = %s "
+            "AND NOT EXISTS (SELECT 1 FROM job_applications WHERE job_id = %s)",
+            (keep["id"], drop["id"], keep["id"]))
+        cur.execute(
+            "UPDATE jobs SET remote_verdict = COALESCE(remote_verdict, %s), "
+            "remote_reason = CASE WHEN remote_reason = '' THEN %s ELSE remote_reason END, "
+            "score = COALESCE(score, %s), summary = CASE WHEN summary = '' THEN %s ELSE summary END, "
+            "comment = CASE WHEN comment = '' THEN %s ELSE comment END, "
+            "language = COALESCE(language, %s) WHERE id = %s",
+            (drop["remote_verdict"], drop["remote_reason"], drop["score"], drop["summary"],
+             drop["comment"], drop["language"], keep["id"]))
         cur.execute("DELETE FROM jobs WHERE id = %s", (drop["id"],))
     return keep["id"]
 

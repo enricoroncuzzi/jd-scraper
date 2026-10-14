@@ -138,3 +138,32 @@ def test_run_cheap_checks_handles_oldest_first_and_skips_jobs_merged_away(store_
     assert run_cheap_checks(store_conn, replace(cfg, cheap_checks_per_tick=1), NOW) == 1
     assert run_cheap_checks(store_conn, cfg, NOW) == 1
     assert run_cheap_checks(store_conn, cfg, NOW) == 0
+
+
+def test_an_expired_described_twin_keeps_its_model_rows_and_verdict(store_conn, cfg):
+    from src.processor.describe import expire_stale
+    old = record_sighting(store_conn, _card(posted_at=NOW - timedelta(days=40)), NOW).job_id
+    check_one(store_conn, old, cfg, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET remote_verdict = 'confirmed', remote_reason = 'stable' WHERE id = %s",
+                    (old,))
+        cur.execute("INSERT INTO llm_calls (id, stage, provider, request_model, latency_ms, batch_size, "
+                    "attempt, outcome, prompt_version, started_at) VALUES "
+                    "(gen_random_uuid(), 'verification', 'openrouter', 'm', 1, 1, 1, 'ok', 'v', %s) "
+                    "RETURNING id", (NOW,))
+        call_id = cur.fetchone()[0]
+        cur.execute("INSERT INTO llm_call_jobs (call_id, job_id) VALUES (%s, %s)", (call_id, old))
+    store_conn.commit()
+    assert expire_stale(store_conn, cfg, NOW) == 1
+    store_conn.commit()
+    fresh = record_sighting(store_conn, _card(
+        "777777", source="freehire", source_job_id="fh", source_url="https://freehire.me/fh",
+        canonical_url="https://boards.greenhouse.io/acme/jobs/1", country="italy",
+        description=ENGLISH, description_source="freehire"), NOW + timedelta(hours=1)).job_id
+    assert check_one(store_conn, fresh, cfg, NOW + timedelta(hours=1)) == "tiered"
+    store_conn.commit()
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM llm_call_jobs")
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT remote_verdict FROM jobs WHERE id = %s", (fresh,))
+        assert cur.fetchone()[0] == "confirmed"
