@@ -102,6 +102,7 @@ def test_oneshot_collectors_run_on_timers_clear_of_delivery_and_each_other():
     assert COLLECTOR_TIMERS, "a stage-2 collector timer must exist"
     for service in COLLECTOR_SERVICES:
         assert os.path.exists(service), f"{service} has a timer but no service"
+        assert "Install" not in _read(service), "an enabled oneshot would run at boot, outside its timer"
         service_cfg = _read(service)["Service"]
         assert service_cfg["Type"] == "oneshot" and "Restart" not in service_cfg
         assert "--once" in service_cfg["ExecStart"]

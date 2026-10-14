@@ -17,6 +17,3 @@ MemoryMax=192M
 Nice=5
 NoNewPrivileges=true
 PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target

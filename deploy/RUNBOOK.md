@@ -115,6 +115,26 @@ walk while the cron wrapper holds `/home/enrico/.jd-scraper.lock`, but do not re
    first delivered day (`.venv/bin/python -m src.delivery.golden_check output/<date>`), and run
    `jd-sync` on the Mac to confirm the day folder arrives as before.
 
+### Enabling a stage-2 source (after its provenance report)
+
+Each extra source ships disabled. Once its provenance report has been read and the captain
+approves it, one source at a time:
+
+```bash
+.venv/bin/python -m src.sources.provenance 7        # read this before enabling
+.venv/bin/python -m src.sources.service freehire --sync-slices
+# edit config/sources.json: "freehire": {"enabled": true, ...}
+sudo cp deploy/systemd/jds-collect-freehire.service deploy/systemd/jds-collect-freehire.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now jds-collect-freehire.timer
+```
+
+The service is a oneshot run by the timer at 03:00, clear of delivery and of the other
+collectors; enable the timer, not the service (the service has no `[Install]` section on
+purpose). Each run records a heartbeat, so the watchdog allows the collector its
+`interval_hours` plus a few hours of silence between runs. Disable it with the other timers
+in section 5.
+
 ## 5. Rollback
 
 Possible at any time in the first two weeks; the old code is untouched.
