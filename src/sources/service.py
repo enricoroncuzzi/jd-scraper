@@ -13,6 +13,7 @@ import sys
 import requests
 from dotenv import load_dotenv
 
+from src.jobstore import heartbeat
 from src.jobstore.db import connect, store_url, utcnow
 from src.jobstore.schema import init_store
 from src.linkedin.catalog import sync_slices
@@ -57,13 +58,27 @@ def collect_due_slices(conn, name: str, cfg: SourceConfig, client: JsonClient, *
     """Drain every slice that is due right now, for a oneshot timer run.
 
     The daily timer starts the collector once; a single `collect_source_once` would walk
-    only the first due slice, so a oneshot run drains them all before exiting."""
-    ticks = []
+    only the first due slice, so a oneshot run drains them all before exiting. It leaves a
+    heartbeat the watchdog reads between runs, marked error if any slice failed."""
+    service = f"collect-{name}"
+    heartbeat.start(conn, service, now=now_fn())
+    conn.commit()
+    ticks: list[Tick] = []
+    error = False
     while True:
         tick = collect_source_once(conn, name, cfg, client, now_fn=now_fn)
         if not tick.did_work:
-            return ticks
+            break
         ticks.append(tick)
+        error = error or tick.detail.get("stop_reason") == "error"
+        heartbeat.beat(conn, service, "error" if error else "ok",
+                       {"slices": len(ticks), "new_jobs": sum(t.detail.get("new_jobs", 0) for t in ticks)},
+                       now=now_fn())
+        conn.commit()
+    if not ticks:
+        heartbeat.beat(conn, service, "idle", {"slices": 0}, now=now_fn())
+        conn.commit()
+    return ticks
 
 
 def main(argv: list[str] | None = None, *, get=requests.get) -> int:
@@ -82,16 +97,18 @@ def main(argv: list[str] | None = None, *, get=requests.get) -> int:
 
     if args.sync_slices or args.once:
         conn = connect(store_url())
+        failed = False
         try:
             init_store(conn)
             counts = sync_slices(conn, specs, source=args.source)
             conn.commit()
             print(f"[collect-{args.source}] slices: {counts}")
             if args.once:
-                collect_due_slices(conn, args.source, cfg, client)
+                ticks = collect_due_slices(conn, args.source, cfg, client)
+                failed = bool(ticks) and all(t.detail.get("stop_reason") == "error" for t in ticks)
         finally:
             conn.close()
-        return 0
+        return 1 if failed else 0
 
     synced = {"done": False}
 

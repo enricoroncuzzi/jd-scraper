@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 
 from src.linkedin.catalog import sync_slices
+from src.jobstore import heartbeat
 from src.sources import service
 from src.sources.base import JsonClient
 from src.sources.freehire import build_slices
@@ -85,6 +86,37 @@ def test_oneshot_mode_drains_every_due_slice(store_conn):
     with store_conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM slices WHERE due_at <= %s", (NOW,))
         assert cur.fetchone()[0] == 0
+
+
+def test_a_drain_records_a_heartbeat_for_the_collector(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    store_conn.commit()
+    pages = Pages(*[_body(_hits(index, 1)) for index in range(8)])
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages), now_fn=lambda: NOW)
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "ok"
+    assert beats["collect-freehire"].detail["slices"] == 8
+
+
+def test_a_drain_that_only_errors_beats_error(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    store_conn.commit()
+    body = {**_body(_hits(0, 5)), "meta": {"ignored_params": [{"param": "category"}]}}
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages(*[body] * 8)),
+                               now_fn=lambda: NOW)
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "error"
+
+
+def test_a_oneshot_run_of_only_errors_exits_nonzero(store_conn, store_conn_factory, monkeypatch):
+    cfg = _cfg(page_size=5)
+    monkeypatch.setattr(service, "load_source_config", lambda name: cfg)
+    monkeypatch.setattr(service, "store_url", lambda: "unused")
+    monkeypatch.setattr(service, "connect", lambda url: store_conn_factory(store_conn))
+    body = {**_body(_hits(0, 5)), "meta": {"ignored_params": [{"param": "category"}]}}
+    assert service.main(["freehire", "--once"], get=Pages(*[body] * 8)) == 1
 
 
 def test_a_disabled_source_refuses_to_run(tmp_path, monkeypatch, capsys):

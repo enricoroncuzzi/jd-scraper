@@ -86,6 +86,35 @@ def test_a_failed_down_alert_is_retried_not_remembered(settings, tmp_path):
     assert len(watchdog.run(settings, Outbox(), connect_fn=down, state_path=state, now=NOW)) == 1
 
 
+def test_source_silence_allowances_allow_the_interval_plus_slack(tmp_path):
+    path = tmp_path / "sources.json"
+    path.write_text('{"freehire": {"enabled": true, "interval_hours": 24}, '
+                    '"himalayas": {"enabled": false, "interval_hours": 24}}')
+    assert watchdog.source_silence_allowances(str(path)) == {"collect-freehire": timedelta(hours=27)}
+
+
+def test_a_timer_collector_gets_its_interval_plus_slack_before_it_counts_as_silent(settings, store_conn):
+    from src.delivery import health
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "ok", now=NOW)
+    store_conn.commit()
+    expected = DeliverySettings(**{**settings.__dict__, "expected_services": ("collect-freehire",)})
+    allowance = {"collect-freehire": timedelta(hours=27)}
+    assert health.service_issues(store_conn, expected, NOW + timedelta(hours=20), allowance) == []
+    issues = health.service_issues(store_conn, expected, NOW + timedelta(hours=40), allowance)
+    assert len(issues) == 1 and "collect-freehire has been silent" in issues[0].message
+
+
+def test_an_error_beat_shows_in_the_day_summary_line(settings, store_conn):
+    from src.delivery import health
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    expected = DeliverySettings(**{**settings.__dict__, "expected_services": ("collect-freehire",)})
+    lines = health.health_lines(store_conn, expected, NOW, {"collect-freehire": timedelta(hours=27)})
+    assert lines == ["collect-freehire: error, last beat 0m ago, up 0m"]
+
+
 def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     record_sighting(store_conn, CardInput(source="linkedin", source_job_id="1", source_url="https://l/1",
                                           title="t", company="c"), NOW)

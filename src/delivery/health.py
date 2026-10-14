@@ -28,14 +28,16 @@ def _age(delta: timedelta) -> str:
     return f"{minutes // 60}h{minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
 
 
-def service_issues(conn, settings: DeliverySettings, now: datetime) -> list[HealthIssue]:
+def service_issues(conn, settings: DeliverySettings, now: datetime,
+                   silence_allowance: dict[str, timedelta] | None = None) -> list[HealthIssue]:
+    allowances = silence_allowance or {}
     beats = {beat.service: beat for beat in heartbeat.read_all(conn)}
     issues = []
     for name in settings.expected_services:
         beat = beats.get(name)
         if beat is None:
             issues.append(HealthIssue(f"service:{name}", f"{name} has never reported in"))
-        elif now - beat.beat_at > SERVICE_DOWN_AFTER:
+        elif now - beat.beat_at > allowances.get(name, SERVICE_DOWN_AFTER):
             issues.append(HealthIssue(
                 f"service:{name}", f"{name} has been silent for {_age(now - beat.beat_at)} "
                                    f"(last state: {beat.state})"))
@@ -56,14 +58,17 @@ def collection_issue(conn, now: datetime) -> HealthIssue | None:
     return None
 
 
-def evaluate_health(conn, settings: DeliverySettings, now: datetime) -> list[HealthIssue]:
-    issues = service_issues(conn, settings, now)
+def evaluate_health(conn, settings: DeliverySettings, now: datetime,
+                    silence_allowance: dict[str, timedelta] | None = None) -> list[HealthIssue]:
+    issues = service_issues(conn, settings, now, silence_allowance)
     silent = collection_issue(conn, now)
     return issues + ([silent] if silent else [])
 
 
-def health_lines(conn, settings: DeliverySettings, now: datetime) -> list[str]:
+def health_lines(conn, settings: DeliverySettings, now: datetime,
+                 silence_allowance: dict[str, timedelta] | None = None) -> list[str]:
     """One line per expected service for the day summary."""
+    allowances = silence_allowance or {}
     beats = {beat.service: beat for beat in heartbeat.read_all(conn)}
     lines = []
     for name in settings.expected_services:
@@ -71,7 +76,7 @@ def health_lines(conn, settings: DeliverySettings, now: datetime) -> list[str]:
         if beat is None:
             lines.append(f"{name}: never reported")
         else:
-            down = now - beat.beat_at > SERVICE_DOWN_AFTER
+            down = now - beat.beat_at > allowances.get(name, SERVICE_DOWN_AFTER)
             lines.append(f"{name}: {'DOWN' if down else beat.state}, last beat {_age(now - beat.beat_at)} ago, "
                          f"up {_age(now - beat.started_at)}")
     return lines
@@ -83,10 +88,11 @@ def _ledger(conn) -> dict[str, datetime]:
         return {key[len("health:"):]: datetime.fromisoformat(value["sent_at"]) for key, value in cur.fetchall()}
 
 
-def run_health_check(conn, settings: DeliverySettings, send, now: datetime) -> list[str]:
+def run_health_check(conn, settings: DeliverySettings, send, now: datetime,
+                     silence_allowance: dict[str, timedelta] | None = None) -> list[str]:
     """Send alerts for new or long-running issues and a note for cleared ones.
     Returns the messages sent. A failed send is retried on the next check."""
-    issues = {issue.key: issue for issue in evaluate_health(conn, settings, now)}
+    issues = {issue.key: issue for issue in evaluate_health(conn, settings, now, silence_allowance)}
     ledger = _ledger(conn)
     sent = []
     with conn.cursor() as cur:

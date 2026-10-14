@@ -9,7 +9,7 @@ that normally holds its ledger is the thing that is down.
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
@@ -20,16 +20,28 @@ from src.telegram import send_message
 
 STATE_PATH = "data/watchdog_state.json"
 SOURCES_CONFIG_PATH = "config/sources.json"
+SOURCE_SILENCE_SLACK_HOURS = 3
 
 
-def enabled_sources(path: str = SOURCES_CONFIG_PATH) -> list[str]:
-    """Extra sources switched on in config/sources.json; none when the file is absent."""
+def _enabled_source_configs(path: str) -> dict[str, dict]:
     try:
         with open(path) as handle:
             data = json.load(handle)
     except (OSError, ValueError):
-        return []
-    return sorted(name for name, cfg in data.items() if isinstance(cfg, dict) and cfg.get("enabled"))
+        return {}
+    return {name: cfg for name, cfg in data.items() if isinstance(cfg, dict) and cfg.get("enabled")}
+
+
+def enabled_sources(path: str = SOURCES_CONFIG_PATH) -> list[str]:
+    """Extra sources switched on in config/sources.json; none when the file is absent."""
+    return sorted(_enabled_source_configs(path))
+
+
+def source_silence_allowances(path: str = SOURCES_CONFIG_PATH) -> dict[str, timedelta]:
+    """The timer-driven collectors beat once a day, so the watchdog allows each one its
+    interval plus a few hours of silence instead of the one-hour always-on limit."""
+    return {f"collect-{name}": timedelta(hours=int(cfg.get("interval_hours", 24)) + SOURCE_SILENCE_SLACK_HOURS)
+            for name, cfg in _enabled_source_configs(path).items()}
 
 
 def expected_services(settings: DeliverySettings, sources: list[str]) -> tuple[str, ...]:
@@ -60,7 +72,8 @@ def _forget_store_down(path: str) -> bool:
 
 
 def run(settings: DeliverySettings, send, *, connect_fn=lambda: connect(store_url()),
-        state_path: str = STATE_PATH, now: datetime | None = None) -> list[str]:
+        state_path: str = STATE_PATH, now: datetime | None = None,
+        silence_allowance: dict[str, timedelta] | None = None) -> list[str]:
     now = now or utcnow()
     try:
         conn = connect_fn()
@@ -72,7 +85,7 @@ def run(settings: DeliverySettings, send, *, connect_fn=lambda: connect(store_ur
                 return [text]
         return []
     try:
-        sent = run_health_check(conn, settings, send, now)
+        sent = run_health_check(conn, settings, send, now, silence_allowance)
         if _forget_store_down(state_path):
             text = "OK again: the job store is reachable"
             if send(text) is not False:
@@ -91,7 +104,7 @@ def main() -> int:
     def send(text: str):
         return send_message(text, settings.telegram_token, settings.telegram_chat_id, parse_mode=None)
 
-    for line in run(settings, send):
+    for line in run(settings, send, silence_allowance=source_silence_allowances()):
         print(line)
     return 0
 
