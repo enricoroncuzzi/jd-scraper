@@ -58,7 +58,8 @@ def _send_tier_report(tier: int, daily_run_id: str) -> None:
             return
         telemetry.drain_buffers(telemetry.buffer_dir(), db_url)  # land any stragglers first
         settings = report_data.load_tier_settings(CONFIGS)
-        report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id)
+        report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id,
+                                      finished_through=tier)
         messages = report_render.render_tier_messages(report, tier, settings=settings)
         _send_report_messages(f"Tier {tier} report", messages)
     except Exception as e:
@@ -77,7 +78,8 @@ def _send_day_summary(daily_run_id: str) -> None:
             return
         telemetry.drain_buffers(telemetry.buffer_dir(), db_url)  # land any stragglers first
         settings = report_data.load_tier_settings(CONFIGS)
-        report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id)
+        report = report_data.load_day(db_url, settings=settings, daily_run_id=daily_run_id,
+                                      finished_through=len(CONFIGS))
         messages = report_render.render_summary_messages(report, settings=settings)
         _send_report_messages("Day summary", messages)
     except Exception as e:

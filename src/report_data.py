@@ -8,6 +8,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import psycopg2
 import psycopg2.extras
@@ -138,6 +139,7 @@ class DayReport:
     p95_latency_ms: float | None
     attempt_log: list = field(default_factory=list)
     limits_unconfigured: bool = False
+    finished_through: int = 0
 
 
 @dataclass
@@ -278,8 +280,18 @@ def _connect(db_url: str):
     return apply_transaction_timeouts(conn)
 
 
+def started_before_today(started_at: datetime, now: datetime | None = None) -> bool:
+    """True when a run began on an earlier Europe/Rome day, so it is over."""
+    rome = ZoneInfo("Europe/Rome")
+    today = (now or datetime.now(timezone.utc)).astimezone(rome).date()
+    return started_at.astimezone(rome).date() < today
+
+
 def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: str | None = None,
-             day: date | None = None) -> DayReport | None:
+             day: date | None = None, finished_through: int = 0) -> DayReport | None:
+    """finished_through: the highest tier whose process has already exited, so
+    any of its records still marked running died rather than being in progress.
+    A run from an earlier day is over, so every one of its tiers has exited."""
     conn = _connect(db_url)
     try:
         with _cursor(conn) as cur:
@@ -354,6 +366,8 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
                 (daily_run_id,))
             totals = cur.fetchone()
             started = min(r["started_at"] for r in rows if r["started_at"] is not None)
+            if started_before_today(started):
+                finished_through = max(finished_through, *tiers)
             finished_values = [r["finished_at"] for r in rows if r["finished_at"] is not None]
             # Provider limits reset on UTC midnights. The header is the UTC day
             # the run closed on. Each tier's "day so far" is that tier's own
@@ -388,6 +402,7 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
             llm_calls=int(totals["calls"]), llm_failed=int(totals["failed"]),
             p95_latency_ms=totals["p95"],
             attempt_log=attempt_log, limits_unconfigured=limits_unconfigured,
+            finished_through=finished_through,
         )
     finally:
         conn.close()

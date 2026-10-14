@@ -179,6 +179,17 @@ def test_tier_report_is_plain_text_one_send_per_message(monkeypatch):
     assert all(c.kwargs["parse_mode"] is None for c in send.call_args_list)
 
 
+def test_reports_tell_the_renderer_which_tiers_have_exited(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    with patch("orchestrator.load_dotenv"), \
+         patch("orchestrator.telemetry.drain_buffers"), \
+         patch("orchestrator.report_data.load_day", return_value=None) as load, \
+         patch("orchestrator.send_message"):
+        orchestrator._send_tier_report(2, "day-1")
+        orchestrator._send_day_summary("day-1")
+    assert [c.kwargs["finished_through"] for c in load.call_args_list] == [2, len(orchestrator.CONFIGS)]
+
+
 def test_tier_report_without_telemetry_still_sends_not_recorded(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
     monkeypatch.setenv("TELEGRAM_TOKEN", "t")

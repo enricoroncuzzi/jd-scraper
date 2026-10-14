@@ -80,7 +80,7 @@ def _tagged_warnings(report, expected_tiers) -> list[tuple[int | None, str]]:
         if tier is None:
             warnings.append((n, _NOT_RECORDED))
             continue
-        if tier.status == "running":
+        if tier.status == "running" and _later_work_started(report, n, tier.attempt):
             warnings.append((n, "CRASHED: its record was never closed"))
         elif tier.status == "failed":
             warnings.append((n, f"FAILED: {tier.error or 'no error text'}"))
@@ -94,6 +94,7 @@ def _tagged_warnings(report, expected_tiers) -> list[tuple[int | None, str]]:
         if tier.telemetry_ok is False:
             warnings.append((n, "telemetry incomplete: some records may be missing"))
         warnings.extend((n, text) for text in _rate_limit_warnings(tier))
+        warnings.extend((n, text) for text in _throttled_search_warnings(report, n))
         warnings.extend((n, text) for text in _primary_model_warnings(report, n))
     day_wide = []
     for limit in report.limits:
@@ -150,6 +151,45 @@ def _primary_model_warnings(report, tier_no: int) -> list[str]:
 
 def _count(value) -> str:
     return "-" if value is None else str(value)
+
+
+def _later_work_started(report, tier_no: int, attempt: int) -> bool:
+    """True when this tier attempt is known to be over.
+
+    Either its process has already exited (the orchestrator reports a tier only
+    after that, see DayReport.finished_through), or something after it already
+    has a record: a later attempt of the same tier, or any later tier. The
+    newest running tier of a live run has none of these, so it is still in
+    progress. The day's finished_at is not this signal. It is the latest tier
+    that has already closed, which is set while a later tier is still running.
+    """
+    if tier_no <= getattr(report, "finished_through", 0):
+        return True
+    log = list(getattr(report, "attempt_log", None) or [])
+    if any(entry.tier == tier_no and entry.attempt > attempt for entry in log):
+        return True
+    if any(entry.tier > tier_no for entry in log):
+        return True
+    return any(n > tier_no for n in report.tiers)
+
+
+def _running_status(report, tier_no: int, status: str, attempt: int) -> str:
+    """Label a still-open tier. CRASHED only when later work shows it died."""
+    if status != "running":
+        return status
+    if _later_work_started(report, tier_no, attempt):
+        return "CRASHED"
+    return "running"
+
+
+def _throttled_search_warnings(report, tier_no: int) -> list[str]:
+    cut = sum(1 for q in report.queries
+              if q.tier == tier_no and q.stop_reason == "throttled_empty")
+    if not cut:
+        return []
+    noun = "search" if cut == 1 else "searches"
+    return [f"search cut short by throttling: {cut} {noun} "
+            f"stopped after HTTP 429 and did not recover"]
 
 
 def _rate_limit_warnings(tier) -> list[str]:
@@ -257,9 +297,10 @@ def _tier_block(report, n: int, settings, warnings: list[str] | None = None) -> 
     tier = report.tiers.get(n) if report is not None else None
     if tier is None:
         return "\n".join([f"{head} · NOT RECORDED"] + warning_lines)
-    status = {"running": "CRASHED"}.get(tier.status, tier.status).upper()
+    status = _running_status(report, n, tier.status, tier.attempt).upper()
     queries = [q for q in report.queries if q.tier == n]
     cap_hits = sum(1 for q in queries if q.stop_reason == "cap_hit")
+    throttled = sum(1 for q in queries if q.stop_reason == "throttled_empty")
     cap = queries[0].page_cap if queries else "?"
     threshold = settings.get(n, TierSettings()).threshold
     lines = [f"{head} · {status} · {_duration(tier.started_at, tier.finished_at)}"]
@@ -269,7 +310,8 @@ def _tier_block(report, n: int, settings, warnings: list[str] | None = None) -> 
         f"Offers: {_count(tier.offers_fetched)} found → {tier.scored} scored → "
         f"{tier.high} scored {threshold}+ → {_count(tier.offers_packaged)} packaged",
         "",
-        f"Searches: {len(queries)} run, {cap_hits} hit their page limit ({cap} pages)",
+        (f"Searches: {len(queries)} run, {cap_hits} hit their page limit ({cap} pages)"
+         + (f", {throttled} cut short by throttling" if throttled else "")),
         f"LinkedIn rate limits (429): {_count(tier.search_rate_limits)} on search, "
         f"{_count(tier.description_rate_limits)} on descriptions",
         f"Held back for next run: {_count(tier.rate_limit_deferred)} · "
@@ -309,6 +351,8 @@ def _legend_terms(report, n: int, block: str, settings) -> list[str]:
         terms.append("given up = dropped after their retry window")
     if any(q.tier == n and q.stop_reason == "cap_hit" for q in report.queries):
         terms.append("page limit hit = the search may have more results")
+    if "cut short by throttling" in block:
+        terms.append("cut short by throttling = the search stopped early after HTTP 429")
     units = {line.rsplit(" ", 1)[-1] for line in block.split("\n") if "day so far" in line}
     if units:
         used = {"req": "requests", "tok": "tokens"}
@@ -395,7 +439,7 @@ def render_day_detail(report, *, settings) -> str:
             for n, t in sorted(report.tiers.items())
         ]
     for t in sorted(entries, key=lambda e: (e.tier, e.attempt)):
-        status = {"running": "CRASHED"}.get(t.status, t.status)
+        status = _running_status(report, t.tier, t.status, t.attempt)
         lines.append(f"  T{t.tier} attempt {t.attempt} of {t.attempts} · {status} · "
                      f"{_duration(t.started_at, t.finished_at)}"
                      + (f" · error: {t.error}" if t.error else ""))
