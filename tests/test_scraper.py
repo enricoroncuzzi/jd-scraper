@@ -281,6 +281,93 @@ def test_fetch_offers_rate_limits_description_when_503_or_504_exhausted(monkeypa
     assert offers[0].description_status == "rate_limited"
 
 
+def test_fetch_offers_rate_limits_description_on_linkedin_999_instead_of_scoring_fallback_text(monkeypatch):
+    """LinkedIn answers a logged-out client it has flagged with HTTP 999. That is
+    a refusal, not a page: it must not come back as a "<title> at <company>"
+    partial description that verification and scoring then treat as the job."""
+    description_calls = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "seeMoreJobPostings" in url:
+            resp.status_code = 200
+            resp.text = SEARCH_HTML
+        else:
+            description_calls["n"] += 1
+            resp.status_code = 999
+            resp.text = EMPTY_PAGE_HTML
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    offers = fetch_offers(["AI Engineer"], "Europe", "r86400")
+
+    assert len(offers) == 1
+    assert offers[0].description == ""
+    assert offers[0].description != "AI Engineer at Some Company"
+    assert offers[0].description_status == "rate_limited"
+    assert description_calls["n"] == scraper._DESC_MAX_RETRIES
+
+
+def test_a_999_on_a_description_is_retried_and_a_later_200_is_used(monkeypatch):
+    statuses = iter([999, 999, 200])
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = next(statuses)
+        resp.text = DESCRIPTION_HTML
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    description, status = scraper._fetch_description("https://example.com/j", "T", "C")
+
+    assert status == "ok"
+    assert "RAG pipelines" in description
+
+
+def test_a_999_followed_by_a_network_error_is_still_rate_limited(monkeypatch):
+    calls = {"n": 0}
+
+    def mock_get(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            resp = MagicMock()
+            resp.status_code = 999
+            return resp
+        raise requests.RequestException("reset")
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+
+    assert scraper._fetch_description("https://example.com/j", "T", "C") == ("", "rate_limited")
+
+
+def test_pacing_slows_after_a_999_like_after_a_429(monkeypatch):
+    monkeypatch.setattr("src.scraper.time.sleep", lambda _: None)
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: a)
+    statuses = iter([999, 200])
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.status_code = next(statuses)
+        resp.text = DESCRIPTION_HTML
+        return resp
+
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    scraper._pace.reset()
+    try:
+        scraper._fetch_description("https://example.com/j", "T", "C")
+        assert scraper._pace.factor > 1
+    finally:
+        scraper._pace.reset()
+
+
 def test_pacing_increases_after_a_429_and_resets_after_a_clean_description(monkeypatch):
     """The gap after a throttled description is longer than the normal gap.
     Each later description that is not rate-limited steps the gap back down,
@@ -1311,6 +1398,37 @@ def test_description_429s_are_counted_but_503s_are_not():
     limited = type("R", (), {"status_code": 429, "text": ""})()
     unavailable = type("R", (), {"status_code": 503, "text": ""})()
     with patch("src.scraper.requests.get", side_effect=[limited, unavailable, ok]), \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.count") as count:
+        scraper._fetch_description("https://example.com/j", "T", "C")
+    count.assert_called_once_with("description_rate_limits")
+
+
+def test_search_999s_are_retried_and_counted_as_rate_limits():
+    ok = type("R", (), {"status_code": 200, "text": ""})()
+    refused = type("R", (), {"status_code": 999, "text": ""})()
+    with patch("src.scraper.requests.get", side_effect=[refused, ok]) as get, \
+         patch("src.scraper.time.sleep"), \
+         patch("src.scraper.telemetry.count") as count:
+        response = scraper._fetch_search_page("r", "l", "t", None, 0)
+    assert response is ok
+    assert get.call_count == 2
+    count.assert_called_once_with("search_rate_limits")
+
+
+def test_search_999_raises_after_the_retry_ladder_is_exhausted():
+    refused = type("R", (), {"status_code": 999, "text": ""})()
+    with patch("src.scraper.requests.get", return_value=refused) as get, \
+         patch("src.scraper.time.sleep"):
+        with pytest.raises(RuntimeError, match="999"):
+            scraper._fetch_search_page("r", "l", "t", None, 0)
+    assert get.call_count == scraper._SEARCH_MAX_RETRIES
+
+
+def test_description_999s_are_counted_as_rate_limits():
+    ok = type("R", (), {"status_code": 200, "text": "<p></p>"})()
+    refused = type("R", (), {"status_code": 999, "text": ""})()
+    with patch("src.scraper.requests.get", side_effect=[refused, ok]), \
          patch("src.scraper.time.sleep"), \
          patch("src.scraper.telemetry.count") as count:
         scraper._fetch_description("https://example.com/j", "T", "C")

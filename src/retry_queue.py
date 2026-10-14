@@ -23,7 +23,7 @@ re-verifying. They expire after `MAX_AGE_DAYS`, counted from the FIRST
 deferral: a job posting goes stale, and a queue that grows without bound on a
 run of bad days is its own bug.
 
-An offer whose description LinkedIn refused (HTTP 429/503/504) is a different
+An offer whose description LinkedIn refused (HTTP 429/999/503/504) is a different
 entry on the same queue: `description_status` is `rate_limited`, the next run
 refetches the page instead of scoring the empty text, and it is dropped after
 `RATE_LIMIT_MAX_AGE_DAYS` so a throttle cannot defer it forever.

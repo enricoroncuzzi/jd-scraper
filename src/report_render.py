@@ -20,7 +20,7 @@ _LIMIT_WARN_RATIO = 0.9
 # The morning report and `scripts/run_report.py day` both read these.
 # Deferral warns when the share of fetched offers is strictly above this.
 RATE_LIMIT_DEFER_SHARE_WARN = 0.05
-# Per-tier LinkedIn HTTP 429 responses (search pages + descriptions).
+# Per-tier LinkedIn HTTP 429 and 999 responses (search pages + descriptions).
 # Above this the run is not healthy, even if every description still arrived.
 LINKEDIN_429_WARN = 20
 # Offers whose rate-limit carry-over window closed this run. Any give-up

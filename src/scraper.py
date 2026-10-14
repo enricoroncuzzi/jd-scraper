@@ -90,11 +90,16 @@ class _DescriptionBreaker:
             self.consecutive = 0
 
 
+_RATE_LIMIT_STATUSES = (429, 999)
+_RETRYABLE_STATUSES = (*_RATE_LIMIT_STATUSES, 503, 504)
+
+
 def _note_response(status_code: int, saw_429: bool) -> bool:
-    """Raise the inter-request gap on HTTP 429. A completed request that never
-    saw a 429 puts the gap back to normal before the caller sleeps. 503/504
-    stay on the retry ladder and do not count as a 429."""
-    if status_code == 429:
+    """Raise the inter-request gap on HTTP 429, or on 999, LinkedIn's anti-bot
+    refusal of a logged-out client, which is throttling by another status. A
+    completed request that never saw either puts the gap back to normal before
+    the caller sleeps. 503/504 stay on the retry ladder and do not count."""
+    if status_code in _RATE_LIMIT_STATUSES:
         _pace.slow()
         return True
     if not saw_429 and status_code not in (503, 504):
@@ -204,8 +209,8 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
             response.saw_429 = saw_429
             break
 
-        if response.status_code in (429, 503, 504):
-            if response.status_code == 429:
+        if response.status_code in _RETRYABLE_STATUSES:
+            if response.status_code in _RATE_LIMIT_STATUSES:
                 telemetry.count("search_rate_limits")
             saw_429 = _note_response(response.status_code, saw_429)
             if attempt == _SEARCH_MAX_RETRIES - 1:
@@ -460,7 +465,7 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             response = requests.get(url, headers=HEADERS, timeout=15)
         except requests.RequestException:
             if attempt == _DESC_MAX_RETRIES - 1:
-                # A 429, 503, or 504 earlier in this fetch means the page was
+                # A 429, 999, 503, or 504 earlier in this fetch means the page was
                 # throttled, even if the last attempt died on the network.
                 return "", "rate_limited" if saw_throttle else "failed"
             wait = _wait_with_jitter(_DESC_BASE_WAIT * (2 ** min(attempt, 3)), _DESC_WAIT_CAP)
@@ -492,8 +497,8 @@ def _fetch_description(url: str, title: str, company: str) -> tuple[str, str]:
             # Step 4: title + company as last resort
             return fallback, "partial"
 
-        if response.status_code in (429, 503, 504):
-            if response.status_code == 429:
+        if response.status_code in _RETRYABLE_STATUSES:
+            if response.status_code in _RATE_LIMIT_STATUSES:
                 telemetry.count("description_rate_limits")
             saw_429 = _note_response(response.status_code, saw_429)
             saw_throttle = True
