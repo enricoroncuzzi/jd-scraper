@@ -281,7 +281,9 @@ the repo root on `sys.path` — don't add a second conftest for that purpose.
 ## CI
 
 `.github/workflows/tests.yml` runs the pytest suite on every pull request
-(and on push to `main`) - one job, no matrix, no secrets. The Python
+(and on push to `main`) - one job, no matrix. It runs a throwaway `postgres:17`
+service container for the job-store tests, whose password is a CI-only literal,
+not a secret. The Python
 version is pinned to match the production VPS's `.venv` (see "Deploying
 to the VPS" above), not a developer's local `.venv` - update the pin when
 the server's Python moves, not when a laptop's does. The suite must pass
