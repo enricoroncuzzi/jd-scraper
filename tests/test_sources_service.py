@@ -133,16 +133,22 @@ def test_a_one_hour_interval_drains_each_slice_once(store_conn):
     assert len(ticks) == 8
 
 
-def test_a_crash_during_a_drain_leaves_an_error_beat(store_conn):
+def test_a_crash_during_a_drain_leaves_an_error_beat(store_conn, monkeypatch):
     cfg = _cfg(page_size=5)
     sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
     store_conn.commit()
-    body = _body([{**ATS_HIT, "company": {"name": "Acme"}}])  # item_to_card does company.strip()
-    with pytest.raises(AttributeError):
-        service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages(body)), now_fn=lambda: NOW)
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("store write failed")
+
+    # A malformed hit is skipped, not a crash, so break a step a walk cannot guard against.
+    monkeypatch.setattr("src.sources.freehire.record_cards", crash)
+    with pytest.raises(RuntimeError):
+        service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages(_body(_hits(0, 1)))),
+                                   now_fn=lambda: NOW)
     beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
     assert beats["collect-freehire"].state == "error"
-    assert beats["collect-freehire"].detail == {"crashed": "AttributeError"}
+    assert beats["collect-freehire"].detail == {"crashed": "RuntimeError"}
 
 
 def test_a_disabled_source_refuses_to_run(tmp_path, monkeypatch, capsys):
