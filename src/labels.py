@@ -138,9 +138,11 @@ def list_labels(db_url: str | None, label: str) -> list[dict]:
             cur.execute(OFFER_LABELS_DDL)
             cur.execute(
                 """
-                SELECT o.title, o.company, o.score, l.labeled_at, l.link
+                SELECT COALESCE(o.title, j.title), COALESCE(o.company, j.company),
+                       COALESCE(o.score, j.score), l.labeled_at, l.link
                 FROM offer_labels l
                 LEFT JOIN offers o ON o.id = l.offer_id
+                LEFT JOIN jobs j ON j.id = l.job_id
                 WHERE l.label = %s
                 ORDER BY l.labeled_at DESC
                 """,
