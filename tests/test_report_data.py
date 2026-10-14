@@ -115,3 +115,12 @@ def test_report_connect_is_bounded():
         "SET LOCAL statement_timeout = '15000ms'",
         "SET LOCAL lock_timeout = '5000ms'",
     ]
+
+
+def test_a_run_from_an_earlier_rome_day_is_over():
+    from datetime import datetime, timezone
+    now = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
+    assert rd.started_before_today(datetime(2026, 10, 13, 5, 0, tzinfo=timezone.utc), now)
+    assert not rd.started_before_today(datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc), now)
+    # 23:30 UTC on the 13th is already the 14th in Rome.
+    assert not rd.started_before_today(datetime(2026, 10, 13, 23, 30, tzinfo=timezone.utc), now)
