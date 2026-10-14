@@ -12,6 +12,7 @@ from src.delivery.jobs import DeliveryJob, to_scored_offer
 from src.writer import _format_digest, _format_note, _note_filename
 
 OFFER_CAP = 20
+HIMALAYAS_URL = "https://himalayas.app"
 
 
 def note_filename(job: DeliveryJob) -> str:
@@ -22,7 +23,11 @@ def render_note(job: DeliveryJob, threshold: int, note_day: date) -> str:
     tag = "high-score" if job.score >= threshold else "low-score"
     text = _format_note(to_scored_offer(job), tag, note_day.isoformat(), job.tier)
     extra = f"source: {job.source}\nalso_seen_on: [{', '.join(job.also_seen_on)}]\n"
-    return text.replace("\ntags: [", "\n" + extra + "tags: [", 1)
+    text = text.replace("\ntags: [", "\n" + extra + "tags: [", 1)
+    if "himalayas" in (job.source, *job.also_seen_on):
+        # Himalayas asks for a mention and a link back wherever its data is shown.
+        text = text.replace("\n**Scraped:**", f"\n**Source:** Himalayas ({HIMALAYAS_URL})\n**Scraped:**", 1)
+    return text
 
 
 def _mark_alerted_entry(line: str, job: DeliveryJob, digest_day: date) -> str:

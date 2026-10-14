@@ -119,6 +119,15 @@ def test_an_alert_earlier_the_same_day_is_marked_but_keeps_the_normal_links():
     assert entry.endswith(" · sent earlier") and "[note](scraped/" in entry and "../../" not in entry
 
 
+def test_himalayas_jobs_carry_the_attribution_line_and_other_notes_do_not():
+    plain = render_note(_job(1, 9), 8, DAY)
+    assert "**Source:**" not in plain
+    for kwargs in ({"source": "himalayas"}, {"also_seen_on": ["himalayas"]}):
+        note = render_note(_job(1, 9, **kwargs), 8, DAY)
+        assert "**Source:** Himalayas (https://himalayas.app)\n**Scraped:** 2026-10-14" in note
+        assert note.index("**Source:**") < note.index("## Job Description")
+
+
 def test_a_partial_description_keeps_the_legacy_warning(tmp_path):
     job = _job(1, 6, status="partial")
     folder = _legacy_files(tmp_path, [job], True) / "scraped"
