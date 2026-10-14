@@ -154,14 +154,16 @@ loses nothing.
 
 The job store is backed up nightly by `jds-backup.timer` (03:30, `Persistent=true`), which
 runs `deploy/backup-jobstore.sh`: a `pg_dump` of `JOBSTORE_URL` into
-`backups/jobstore-<stamp>.dump`, then deletes dumps older than 7 days. It is enabled with the
-other units in section 4 and disabled with them in section 5. The backup directory defaults to
-`/home/enrico/jd-scraper/backups` and can be moved with `JDS_BACKUP_DIR`.
+`/home/enrico/backups/jobstore-<stamp>.dump`, then keeps the 7 newest dumps. It is enabled
+with the other units in section 4 and disabled with them in section 5. The backup directory
+defaults to `/home/enrico/backups`, outside the repository so a deploy-time `git clean -fdx`
+cannot delete it, and can be moved with `JDS_BACKUP_DIR`.
 
 The job store holds only jobs in flight plus a copy of what Neon already has, so the backup is
 a cheap safety net rather than the system of record. To restore, stop the services, then
-`pg_restore --clean --if-exists -d jds backups/jobstore-<newest>.dump` before starting them
-again. Copy the dumps off the box if losing the day's unfinished work would matter.
+`pg_restore --clean --if-exists -d jds /home/enrico/backups/jobstore-<newest>.dump` before
+starting them again. Copy the dumps off the box if losing the day's unfinished work would
+matter.
 
 ## 8. Retirement of the old pipeline (after two stable weeks)
 

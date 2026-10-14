@@ -4,7 +4,7 @@
 # deploy/systemd/jds-backup.service via deploy/systemd/jds-backup.timer.
 set -eu
 
-BACKUP_DIR="${JDS_BACKUP_DIR:-/home/enrico/jd-scraper/backups}"
+BACKUP_DIR="${JDS_BACKUP_DIR:-/home/enrico/backups}"
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 # Dump to a hidden temp file and only rename it once pg_dump succeeds, so a dump that

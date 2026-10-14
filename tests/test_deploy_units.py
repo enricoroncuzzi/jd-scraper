@@ -3,6 +3,7 @@ import configparser
 import glob
 import importlib
 import os
+import re
 import subprocess
 
 import pytest
@@ -114,6 +115,18 @@ def test_the_job_store_backup_runs_nightly_and_keeps_seven_days(tmp_path):
     assert len(fresh) == 1, f"the just-written dump must be the newest kept: {kept}"
     for index in range(3):  # the three oldest pre-existing dumps are pruned
         assert f"jobstore-old{index}.dump" not in kept
+
+
+def test_the_default_backup_directory_is_outside_the_deploy_repo():
+    # A default inside /home/enrico/jd-scraper would be staged by `git add -A` and wiped by
+    # `git clean -fdx` during a deploy; the dumps belong outside the working tree.
+    match = re.search(r"JDS_BACKUP_DIR:-([^}]*)\}", open(BACKUP_SCRIPT).read())
+    assert match, "the backup script must read JDS_BACKUP_DIR with a default"
+    default = os.path.abspath(match.group(1))
+    assert os.path.isabs(default)
+    deploy_repo = "/home/enrico/jd-scraper"
+    assert os.path.commonpath([deploy_repo, default]) != deploy_repo, (
+        f"default backup dir {default} lives inside {deploy_repo}")
 
 
 def test_a_failed_dump_leaves_no_partial_and_no_new_backup(tmp_path):
