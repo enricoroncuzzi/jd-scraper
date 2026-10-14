@@ -1157,6 +1157,131 @@ def test_stop_reason_duplicate_page():
     assert rec["stop_reason"] == "duplicate_page"
 
 
+def _scripted_search(script):
+    """Search GETs consume (status_code, html) pairs in order. Running out means
+    the scraper issued a request the scenario does not allow."""
+    calls = {"search_starts": []}
+    items = iter(script)
+
+    def mock_get(url, **kwargs):
+        response = MagicMock()
+        if "seeMoreJobPostings" in url:
+            calls["search_starts"].append(kwargs.get("params", {}).get("start", 0))
+            status, html = next(items)
+            response.status_code = status
+            response.text = html
+        else:
+            response.status_code = 200
+            response.text = DESCRIPTION_HTML
+        return response
+
+    return mock_get, calls
+
+
+def _run_scripted_search(monkeypatch, script):
+    mock_get, calls = _scripted_search(script)
+    sleeps = []
+    monkeypatch.setattr("src.scraper.requests.get", mock_get)
+    monkeypatch.setattr("src.scraper.time.sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr("src.scraper.random.uniform", lambda a, b: 1.0)
+    with patch("src.scraper.telemetry.add_query") as add_query:
+        offers = fetch_offers(["AI Engineer"], "Europe", "r86400", max_pages_per_query=5)
+    return offers, calls, sleeps, add_query.call_args.kwargs
+
+
+def test_throttled_empty_page_is_retried_and_recovered(monkeypatch):
+    # A 429 that then "succeeds" with an empty page is not the end of the
+    # search: the same offset is asked again, and cards that come back are kept.
+    first = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    recovered = _search_html([(2, "ML Engineer", "Berlin, Germany")])
+    offers, calls, _, rec = _run_scripted_search(monkeypatch, [
+        (200, first),
+        (429, ""),
+        (200, EMPTY_PAGE_HTML),
+        (200, recovered),
+        (200, EMPTY_PAGE_HTML),
+    ])
+    assert calls["search_starts"] == [0, 1, 1, 1, 2]
+    assert [o.title for o in offers] == ["AI Engineer", "ML Engineer"]
+    assert rec["stop_reason"] == "empty_page"
+    assert rec["pages_walked"] == 3
+
+
+def test_throttled_empty_page_that_stays_empty_records_throttled_empty(monkeypatch):
+    first = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    offers, calls, sleeps, rec = _run_scripted_search(monkeypatch, [
+        (200, first),
+        (429, ""),
+        (200, EMPTY_PAGE_HTML),
+        (200, EMPTY_PAGE_HTML),
+        (200, EMPTY_PAGE_HTML),
+        (200, EMPTY_PAGE_HTML),
+    ])
+    assert calls["search_starts"] == [0, 1, 1, 1, 1, 1]
+    assert [o.title for o in offers] == ["AI Engineer"]
+    assert rec["stop_reason"] == "throttled_empty"
+    assert rec["pages_walked"] == 2
+    assert rec["cards_seen"] == 1
+    # The 429 ladder sleeps once, then each re-request of the same page waits
+    # longer than the one before it. Nothing after that page is requested.
+    assert sleeps[-3:] == [60, 120, 240]
+
+
+def test_throttled_duplicate_page_is_retried_and_recovered(monkeypatch):
+    first = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    repeated = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    recovered = _search_html([(2, "ML Engineer", "Berlin, Germany")])
+    offers, calls, _, rec = _run_scripted_search(monkeypatch, [
+        (200, first),
+        (429, ""),
+        (200, repeated),
+        (200, recovered),
+        (200, EMPTY_PAGE_HTML),
+    ])
+    assert calls["search_starts"] == [0, 1, 1, 1, 2]
+    assert [o.title for o in offers] == ["AI Engineer", "ML Engineer"]
+    assert rec["stop_reason"] == "empty_page"
+
+
+def test_throttled_duplicate_page_that_stays_repeated_records_throttled_empty(monkeypatch):
+    first = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    repeated = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    _, calls, _, rec = _run_scripted_search(monkeypatch, [
+        (200, first),
+        (429, ""),
+        (200, repeated),
+        (200, repeated),
+        (200, repeated),
+        (200, repeated),
+    ])
+    assert calls["search_starts"] == [0, 1, 1, 1, 1, 1]
+    assert rec["stop_reason"] == "throttled_empty"
+    assert rec["offers_kept"] == 1
+
+
+def test_plain_empty_page_without_a_429_makes_no_extra_request(monkeypatch):
+    first = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    offers, calls, _, rec = _run_scripted_search(monkeypatch, [
+        (200, first),
+        (200, EMPTY_PAGE_HTML),
+    ])
+    assert calls["search_starts"] == [0, 1]
+    assert [o.title for o in offers] == ["AI Engineer"]
+    assert rec["stop_reason"] == "empty_page"
+
+
+def test_a_429_on_an_earlier_page_does_not_retry_a_later_empty_page(monkeypatch):
+    first = _search_html([(1, "AI Engineer", "Berlin, Germany")])
+    offers, calls, _, rec = _run_scripted_search(monkeypatch, [
+        (429, ""),
+        (200, first),
+        (200, EMPTY_PAGE_HTML),
+    ])
+    assert calls["search_starts"] == [0, 0, 1]
+    assert [o.title for o in offers] == ["AI Engineer"]
+    assert rec["stop_reason"] == "empty_page"
+
+
 def test_stop_reason_end_of_results_after_page_zero():
     rec = _run_query([_page(10, 0), scraper._EndOfResults("400")], cap=5)
     assert rec["stop_reason"] == "end_of_results" and rec["offers_kept"] == 10

@@ -96,6 +96,64 @@ def test_crashed_failed_retried_and_missing_tiers_all_warn():
     blocks = rr.render_day(_report(tiers=tiers), settings=SETTINGS)
     assert "1 of 4 tiers ok" in _summary(_report(tiers=tiers))
     assert "CRASHED" in blocks[0].splitlines()[0]
+    # The same abandoned tier is CRASHED in the Telegram tier message.
+    morning = rr.render_tier_messages(_report(tiers=tiers), 1, settings=SETTINGS)[0]
+    assert "Tier 1 · Italy · CRASHED" in morning
+    assert "CRASHED: its record was never closed" in morning
+
+
+def test_an_in_progress_tier_is_running_in_the_morning_report_and_the_day_report():
+    # Tier 4 is the newest record and nothing has started after it, so the run
+    # is still on it. That is the 2026-10-14 false CRASHED.
+    tiers = {n: _tier(n) for n in (1, 2, 3)}
+    tiers[4] = _tier(4, status="running", finished_at=None)
+    report = _report(tiers=tiers)
+    morning = rr.render_tier_messages(report, 4, settings=SETTINGS)[0]
+    assert "Tier 4 · UK · RUNNING" in morning
+    assert "CRASHED" not in morning
+    detail = rr.render_day_detail(report, settings=SETTINGS)
+    assert "Tier 4 · UK · RUNNING" in detail
+    assert "T4 attempt 1 of 1 · running" in detail
+    assert "CRASHED" not in detail
+    assert "CRASHED" not in _summary(report)
+
+
+def test_an_earlier_attempt_left_running_is_crashed_once_a_later_attempt_starts():
+    log = [
+        rd.AttemptView(4, 1, 2, "running", T0, None, None),
+        rd.AttemptView(4, 2, 2, "ok", T0, T1, None),
+    ]
+    tiers = {n: _tier(n) for n in (1, 2, 3, 4)}
+    tiers[4] = _tier(4, status="ok", attempt=2, attempts=2)
+    text = rr.render_day_detail(_report(tiers=tiers, attempt_log=log), settings=SETTINGS)
+    assert "T4 attempt 1 of 2 · CRASHED" in text
+    assert "T4 attempt 2 of 2 · ok" in text
+    morning = rr.render_tier_messages(
+        _report(tiers=tiers, attempt_log=log), 4, settings=SETTINGS)[0]
+    assert "CRASHED" not in morning.splitlines()[0]
+
+
+def test_a_search_cut_short_by_throttling_is_not_a_clean_day():
+    queries = [rd.QueryRow(3, "AI Engineer", "Europe", "remote", 25, 100, 250, 200,
+                           "throttled_empty")]
+    report = _report(queries=queries)
+    summary = _summary(report)
+    assert "ALL OK" not in summary
+    assert "CHECK" in summary
+    morning = rr.render_tier_messages(report, 3, settings=SETTINGS)[0]
+    assert "cut short by throttling" in morning
+    detail = rr.render_day_detail(report, settings=SETTINGS)
+    assert "stopped: throttled_empty" in detail
+    assert "cut short by throttling" in detail
+
+
+def test_a_normal_empty_page_does_not_warn():
+    queries = [rd.QueryRow(3, "AI Engineer", "Europe", "remote", 5, 100, 40, 40, "empty_page")]
+    report = _report(queries=queries)
+    rendered = "\n".join(rr.render_day(report, settings=SETTINGS)) + "\n" + _summary(report)
+    assert "ALL OK" in rendered
+    assert "cut short by throttling" not in rendered
+    assert "stopped: empty_page" in rr.render_day_detail(report, settings=SETTINGS)
 
 
 def test_limit_past_90_percent_warns():

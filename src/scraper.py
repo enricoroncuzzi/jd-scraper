@@ -23,6 +23,13 @@ _SEARCH_MAX_RETRIES = 20
 _SEARCH_BASE_WAIT = 60   # seconds
 _SEARCH_WAIT_CAP = 900   # 15 min max per wait
 
+# An empty or repeated page that arrives on a search request which itself saw
+# HTTP 429 is not trusted as the end of the result set. The same start offset
+# is requested again this many times, waiting with the search-429 backoff
+# between tries. A page that never recovers is recorded as throttled_empty.
+# A page with no 429 on that request is unchanged: it ends the query at once.
+_THROTTLED_PAGE_RETRIES = 3
+
 _DESC_MAX_RETRIES = 8
 _DESC_BASE_WAIT = 30
 _DESC_WAIT_CAP = 300
@@ -192,6 +199,9 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
 
         if response.status_code == 200:
             _note_response(200, saw_429)
+            # The pagination loop reads this. Only a real bool counts: a mock
+            # response must not look throttled just because the attribute is missing.
+            response.saw_429 = saw_429
             break
 
         if response.status_code in (429, 503, 504):
@@ -209,6 +219,23 @@ def _fetch_search_page(role: str, location: str, time_range: str, work_mode: str
             raise RuntimeError(f"LinkedIn search returned {response.status_code}")
 
     return response
+
+
+def _page_was_throttled(response) -> bool:
+    return getattr(response, "saw_429", False) is True
+
+
+def _exhausted_page_reason(cards: list[dict], seen_links: set[str]) -> str | None:
+    """Why this page ends the query, or None when it still has a new card.
+
+    LinkedIn repeats the last page instead of returning an empty one once a
+    query is exhausted, so a page with nothing new ends it the same way.
+    """
+    if not cards:
+        return "empty_page"
+    if all(card["link"] in seen_links for card in cards):
+        return "duplicate_page"
+    return None
 
 
 def _parse_cards(html: str) -> list[dict]:
@@ -293,6 +320,29 @@ def _fetch_for_query(
                 _pace.pause()
             try:
                 response = _fetch_search_page(role, location, time_range, work_mode, next_start)
+                cards = _parse_cards(response.text)
+                reason = _exhausted_page_reason(cards, seen_links)
+                if reason is not None and _page_was_throttled(response):
+                    # The 429 retry ladder already returned this page. Ask for the
+                    # same offset again before treating it as the end of the search.
+                    for attempt in range(_THROTTLED_PAGE_RETRIES):
+                        wait = _wait_with_jitter(
+                            _SEARCH_BASE_WAIT * (2 ** min(attempt, 4)), _SEARCH_WAIT_CAP)
+                        print(f"[scraper] HTTP 429 then {reason} for "
+                              f"{role}/{location}/{work_mode} at start {next_start}; "
+                              f"retrying the same page in {wait:.0f}s "
+                              f"(attempt {attempt + 1}/{_THROTTLED_PAGE_RETRIES})...")
+                        time.sleep(wait)
+                        response = _fetch_search_page(
+                            role, location, time_range, work_mode, next_start)
+                        cards = _parse_cards(response.text)
+                        reason = _exhausted_page_reason(cards, seen_links)
+                        if reason is None:
+                            break
+                    else:
+                        cards_seen += len(cards)
+                        stop_reason = "throttled_empty"
+                        break
             except _EndOfResults:
                 if page == 0:
                     raise
@@ -309,18 +359,12 @@ def _fetch_for_query(
                       f"- ending pagination here, keeping {len(offers)} offers already fetched.")
                 stop_reason = "end_of_results"
                 break
-            cards = _parse_cards(response.text)
             cards_seen += len(cards)
-            if not cards:
-                stop_reason = "empty_page"
+            if reason is not None:
+                stop_reason = reason
                 break
 
             new_cards = [c for c in cards if c["link"] not in seen_links]
-            if not new_cards:
-                # LinkedIn repeats the last page instead of returning an empty one
-                # once a query is exhausted, so a page with nothing new ends it.
-                stop_reason = "duplicate_page"
-                break
             # "Full" is measured against the widest page this query has actually
             # seen, i.e. the endpoint's own page size as observed right now, so
             # the cap-hit report below keeps working when that size moves again.

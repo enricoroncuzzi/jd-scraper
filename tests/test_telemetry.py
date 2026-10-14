@@ -361,6 +361,19 @@ def test_add_query_rejects_an_unknown_stop_reason_without_raising():
             p.stop()
 
 
+def test_add_query_records_a_throttled_empty_stop():
+    session, patches = _enabled_session()
+    try:
+        telemetry.add_query(role="r", location="l", work_mode=None, pages_walked=2, page_cap=100,
+                            cards_seen=250, offers_kept=200, stop_reason="throttled_empty")
+        queries = [l["data"] for l in _lines(session.buffer_path) if l["kind"] == "query"]
+        assert [q["stop_reason"] for q in queries] == ["throttled_empty"]
+        assert session.telemetry_ok is True
+    finally:
+        for p in patches:
+            p.stop()
+
+
 def test_add_query_records_cross_query_duplicates_and_defaults_it_to_zero():
     session, patches = _enabled_session()
     try:
