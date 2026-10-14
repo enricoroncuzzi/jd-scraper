@@ -1,0 +1,7 @@
+{
+  "delivery_time": "08:00",
+  "timezone": "Europe/Rome",
+  "archive_every_minutes": 30,
+  "alert_poll_seconds": 60,
+  "expected_services": ["collect-linkedin", "process", "deliver"]
+}
