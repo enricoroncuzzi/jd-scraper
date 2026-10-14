@@ -69,3 +69,12 @@ def test_the_job_store_backup_runs_nightly_and_keeps_seven_days():
     assert _read("deploy/systemd/jds-backup.service")["Service"]["Type"] == "oneshot"
     script = open("deploy/backup-jobstore.sh").read()
     assert "pg_dump" in script and "-mtime +7" in script
+
+
+def test_the_backup_script_named_by_the_unit_is_executable():
+    # systemd runs ExecStart as an exec, not through a shell, so a committed mode of
+    # 100644 makes jds-backup.service exit 203/EXEC every night with no dump written.
+    target = _read("deploy/systemd/jds-backup.service")["Service"]["ExecStart"].split()[0]
+    script_path = target.replace("/home/enrico/jd-scraper/", "")
+    assert os.path.exists(script_path), f"{target} does not exist in the checkout"
+    assert os.access(script_path, os.X_OK), f"{target} is not executable (systemd reports 203/EXEC)"
