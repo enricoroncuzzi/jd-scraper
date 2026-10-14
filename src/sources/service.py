@@ -1,4 +1,4 @@
-"""One service per extra source: collect-freehire.
+"""One service per extra source: collect-freehire, collect-himalayas.
 
     python -m src.sources.service freehire --sync-slices   # create the slices, then exit
     python -m src.sources.service freehire --once          # walk one due slice, then exit
@@ -19,12 +19,12 @@ from src.jobstore.schema import init_store
 from src.linkedin.catalog import sync_slices
 from src.linkedin.walk import claim_due_slice
 from src.services.runner import Tick, run_service
-from src.sources import freehire
+from src.sources import freehire, himalayas
 from src.sources.base import (
     JsonClient, SourceConfig, SourceError, SourceWalk, finish_source_walk, load_source_config,
 )
 
-MODULES = {"freehire": freehire}
+MODULES = {"freehire": freehire, "himalayas": himalayas}
 
 # A daily timer fires at the same clock time every day, but a walk finishes a few seconds
 # after it started. Scheduling the next walk an hour short of a full interval keeps the slice

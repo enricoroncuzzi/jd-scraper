@@ -44,10 +44,12 @@ PYTHON_UNITS = [u for u in UNITS if "-m" in _read(u)["Service"]["ExecStart"]]
 def test_every_expected_unit_exists():
     names = {os.path.basename(u) for u in UNITS}
     assert {"jds-collect-linkedin.service", "jds-process.service", "jds-deliver.service",
-            "jds-watchdog.service", "jds-backup.service", "jds-collect-freehire.service"} <= names
+            "jds-watchdog.service", "jds-backup.service", "jds-collect-freehire.service",
+            "jds-collect-himalayas.service"} <= names
     assert os.path.exists("deploy/systemd/jds-watchdog.timer")
     assert os.path.exists("deploy/systemd/jds-backup.timer")
     assert os.path.exists("deploy/systemd/jds-collect-freehire.timer")
+    assert os.path.exists("deploy/systemd/jds-collect-himalayas.timer")
 
 
 @pytest.mark.parametrize("path", LONG_RUNNING)

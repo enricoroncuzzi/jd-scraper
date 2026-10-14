@@ -55,8 +55,8 @@ def test_a_too_short_interval_is_rejected(tmp_path):
         load_source_config("freehire", str(path))
 
 
-def test_the_shipped_config_ships_the_source_disabled():
-    for name in ("freehire",):
+def test_the_shipped_config_ships_both_sources_disabled():
+    for name in ("freehire", "himalayas"):
         cfg = load_source_config(name)
         assert cfg.enabled is False and "jd-scraper" in cfg.user_agent
 
