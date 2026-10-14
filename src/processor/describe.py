@@ -65,17 +65,18 @@ def _linkedin_id(cur, job_id) -> str | None:
 
 
 def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
-                  get=requests.get, sleep=time.sleep) -> bool:
-    """Fetch one description. Returns False when no job is waiting for one."""
+                  get=requests.get, sleep=time.sleep) -> str | None:
+    """Fetch one description. Returns None when no job is waiting for one, else one
+    of 'described', 'refused', 'gone' or 'unreadable'."""
     with conn.cursor() as cur:
         job = _next_job(cur, now)
         if job is None:
-            return False
+            return None
         linkedin_id = _linkedin_id(cur, job.id)
         if linkedin_id is None:
             set_stage(cur, job.id, "expired", "no_description_source", now)
             conn.commit()
-            return True
+            return "gone"
     result = fetch_description(pace, linkedin_id, get=get, sleep=sleep)
     with conn.cursor() as cur:
         if result.status == "ok":
@@ -85,14 +86,17 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
                 (result.text, job.id))
             job.description = result.text
             finish_with_description(cur, job, now)
+            outcome = "described"
         elif result.status == "refused":
             cur.execute(
                 "UPDATE jobs SET description_status = 'rate_limited', "
                 "first_refused_at = COALESCE(first_refused_at, %s) WHERE id = %s", (now, job.id))
             defer(cur, job.id, now, refusal_delay(job.attempts + 1, cfg))
+            outcome = "refused"
         elif result.status == "gone":
             cur.execute("UPDATE jobs SET description_status = 'failed' WHERE id = %s", (job.id,))
             set_stage(cur, job.id, "expired", "posting_gone", now)
+            outcome = "gone"
         else:
             if job.attempts + 1 >= UNREADABLE_ATTEMPTS:
                 cur.execute("UPDATE jobs SET description_status = 'failed', attempts = attempts + 1 "
@@ -100,8 +104,9 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
                 set_stage(cur, job.id, "expired", "description_unreadable", now)
             else:
                 defer(cur, job.id, now, refusal_delay(job.attempts + 1, cfg))
+            outcome = "unreadable"
     conn.commit()
-    return True
+    return outcome
 
 
 def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
@@ -110,16 +115,10 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     (refused) ends the round: more requests now would only be refused too."""
     done = 0
     while done < cfg.descriptions_per_tick:
-        before = _refused_count(conn)
-        if not describe_next(conn, pace, cfg, now, get=get, sleep=sleep):
+        outcome = describe_next(conn, pace, cfg, now, get=get, sleep=sleep)
+        if outcome is None:
             break
         done += 1
-        if _refused_count(conn) > before:
+        if outcome == "refused":
             break
     return done
-
-
-def _refused_count(conn) -> int:
-    with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM jobs WHERE description_status = 'rate_limited'")
-        return cur.fetchone()[0]

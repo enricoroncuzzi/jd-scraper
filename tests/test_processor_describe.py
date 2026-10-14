@@ -91,7 +91,7 @@ def test_refusal_delay_doubles_from_30_minutes_to_12_hours(cfg):
 def test_a_fetched_description_moves_the_job_to_described(store_conn, cfg):
     job_id = _tiered_job(store_conn, cfg)
     assert describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)),
-                         sleep=lambda _s: None) is True
+                         sleep=lambda _s: None) == "described"
     stage, reason, status, attempts, _next, refused, source = _state(store_conn, job_id)
     assert (stage, reason, status, attempts, refused, source) == ("described", "", "ok", 0, None, "linkedin")
 
@@ -122,7 +122,7 @@ def test_a_job_waiting_out_a_backoff_is_not_fetched_early(store_conn, cfg):
     describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
     get = ScriptedGet()
     assert describe_next(store_conn, FakePace(), cfg, NOW + timedelta(minutes=10), get=get,
-                         sleep=lambda _s: None) is False
+                         sleep=lambda _s: None) is None
     assert get.calls == []
 
 
@@ -149,6 +149,18 @@ def test_a_refusal_ends_the_round_so_the_rest_are_not_hammered(store_conn, cfg):
     for n in range(3):
         _tiered_job(store_conn, cfg, f"390000000{n + 1}")
     get = ScriptedGet(*[response(429)] * 4)
+    assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
+    assert len(get.calls) == 4
+
+
+def test_a_rate_limited_backlog_is_attempted_once_per_round(store_conn, cfg):
+    # A job already rate_limited is refused again without the table count changing,
+    # so the round must stop on the fetch outcome itself, not on a count of rows.
+    for n in range(5):
+        _tiered_job(store_conn, cfg, f"39000000{n + 1:02d}")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_status = 'rate_limited'")
+    get = ScriptedGet(*[response(429)] * 20)
     assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
     assert len(get.calls) == 4
 
