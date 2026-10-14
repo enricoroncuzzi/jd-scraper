@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
 
 from src.linkedin.catalog import sync_slices
 from src.jobstore import heartbeat
@@ -117,6 +118,18 @@ def test_a_oneshot_run_of_only_errors_exits_nonzero(store_conn, store_conn_facto
     monkeypatch.setattr(service, "connect", lambda url: store_conn_factory(store_conn))
     body = {**_body(_hits(0, 5)), "meta": {"ignored_params": [{"param": "category"}]}}
     assert service.main(["freehire", "--once"], get=Pages(*[body] * 8)) == 1
+
+
+def test_a_crash_during_a_drain_leaves_an_error_beat(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    store_conn.commit()
+    body = _body([{**ATS_HIT, "company": {"name": "Acme"}}])  # item_to_card does company.strip()
+    with pytest.raises(AttributeError):
+        service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages(body)), now_fn=lambda: NOW)
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "error"
+    assert beats["collect-freehire"].detail == {"crashed": "AttributeError"}
 
 
 def test_a_disabled_source_refuses_to_run(tmp_path, monkeypatch, capsys):

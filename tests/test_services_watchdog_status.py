@@ -115,6 +115,18 @@ def test_an_error_beat_shows_in_the_day_summary_line(settings, store_conn):
     assert lines == ["collect-freehire: error, last beat 0m ago, up 0m"]
 
 
+def test_an_error_beat_is_an_issue_only_for_a_timer_collector(settings, store_conn):
+    from src.delivery import health
+    expected = DeliverySettings(**{**settings.__dict__, "expected_services": ("collect-freehire",)})
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    issues = health.service_issues(store_conn, expected, NOW, {"collect-freehire": timedelta(hours=27)})
+    assert len(issues) == 1
+    assert issues[0].message == "collect-freehire: last run ended in error {'slices': 8}"
+    assert health.service_issues(store_conn, expected, NOW, {}) == []
+
+
 def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     record_sighting(store_conn, CardInput(source="linkedin", source_job_id="1", source_url="https://l/1",
                                           title="t", company="c"), NOW)

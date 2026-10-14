@@ -65,16 +65,22 @@ def collect_due_slices(conn, name: str, cfg: SourceConfig, client: JsonClient, *
     conn.commit()
     ticks: list[Tick] = []
     error = False
-    while True:
-        tick = collect_source_once(conn, name, cfg, client, now_fn=now_fn)
-        if not tick.did_work:
-            break
-        ticks.append(tick)
-        error = error or tick.detail.get("stop_reason") == "error"
-        heartbeat.beat(conn, service, "error" if error else "ok",
-                       {"slices": len(ticks), "new_jobs": sum(t.detail.get("new_jobs", 0) for t in ticks)},
-                       now=now_fn())
+    try:
+        while True:
+            tick = collect_source_once(conn, name, cfg, client, now_fn=now_fn)
+            if not tick.did_work:
+                break
+            ticks.append(tick)
+            error = error or tick.detail.get("stop_reason") == "error"
+            heartbeat.beat(conn, service, "error" if error else "ok",
+                           {"slices": len(ticks), "new_jobs": sum(t.detail.get("new_jobs", 0) for t in ticks)},
+                           now=now_fn())
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 - a crash must still leave a truthful error beat
+        conn.rollback()
+        heartbeat.beat(conn, service, "error", {"crashed": type(exc).__name__}, now=now_fn())
         conn.commit()
+        raise
     if not ticks:
         heartbeat.beat(conn, service, "idle", {"slices": 0}, now=now_fn())
         conn.commit()

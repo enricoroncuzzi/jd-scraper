@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -84,6 +84,24 @@ def test_the_day_summary_folds_in_the_per_tier_collection_reports(store_conn, cf
     assert "Groq 65,000/200,000 tokens" in message
     assert "process: running" in message and "deliver: never reported" in message
     assert "linkedin: 1 new jobs" in message
+
+
+def test_the_day_summary_lists_a_timer_collector_and_its_error(store_conn, cfg, settings, tmp_path, monkeypatch):
+    from src.delivery import health
+    sources = tmp_path / "sources.json"
+    sources.write_text('{"freehire": {"enabled": true, "interval_hours": 24}}')
+    monkeypatch.setattr(health, "SOURCES_CONFIG_PATH", str(sources))
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    deliveries = {t: deliver_tier(store_conn, cfg, settings, t, DAY, NOW) for t in (1, 2, 3, 4)}
+    (message,) = render_day_summary(store_conn, cfg, settings, deliveries, NOW, DAY)
+    assert "collect-freehire: error" in message
+    # A beat inside the collector's interval is not DOWN, even though it is over an hour old.
+    heartbeat.beat(store_conn, "collect-freehire", "ok", now=NOW - timedelta(hours=20))
+    store_conn.commit()
+    (message,) = render_day_summary(store_conn, cfg, settings, deliveries, NOW, DAY)
+    assert "collect-freehire: ok" in message and "collect-freehire: DOWN" not in message
 
 
 def test_long_summaries_are_split_for_telegram(store_conn, cfg, settings):

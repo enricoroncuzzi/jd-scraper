@@ -16,11 +16,41 @@ SERVICE_DOWN_AFTER = timedelta(hours=1)
 COLLECTION_SILENT_AFTER = timedelta(hours=6)
 REPEAT_ALERT_AFTER = timedelta(hours=6)
 
+# Where the operator lists extra sources, and how the watchdog and the day summary learn about
+# them: one source of truth for both, so the summary cannot disagree with the watchdog.
+SOURCES_CONFIG_PATH = "config/sources.json"
+SOURCE_SILENCE_SLACK_HOURS = 3
+
 
 @dataclass(frozen=True)
 class HealthIssue:
     key: str
     message: str
+
+
+def _enabled_source_configs(path: str) -> dict[str, dict]:
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return {name: cfg for name, cfg in data.items() if isinstance(cfg, dict) and cfg.get("enabled")}
+
+
+def enabled_sources(path: str | None = None) -> list[str]:
+    """Extra sources switched on in config/sources.json; none when the file is absent."""
+    return sorted(_enabled_source_configs(path or SOURCES_CONFIG_PATH))
+
+
+def expected_services(settings: DeliverySettings, sources: list[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(settings.expected_services + tuple(f"collect-{name}" for name in sources)))
+
+
+def source_silence_allowances(path: str | None = None) -> dict[str, timedelta]:
+    """The timer-driven collectors beat once a day, so health allows each one its interval
+    plus a few hours of silence instead of the one-hour always-on limit."""
+    return {f"collect-{name}": timedelta(hours=int(cfg.get("interval_hours", 24)) + SOURCE_SILENCE_SLACK_HOURS)
+            for name, cfg in _enabled_source_configs(path or SOURCES_CONFIG_PATH).items()}
 
 
 def _age(delta: timedelta) -> str:
@@ -41,6 +71,9 @@ def service_issues(conn, settings: DeliverySettings, now: datetime,
             issues.append(HealthIssue(
                 f"service:{name}", f"{name} has been silent for {_age(now - beat.beat_at)} "
                                    f"(last state: {beat.state})"))
+        elif name in allowances and beat.state == "error":
+            issues.append(HealthIssue(f"service:{name}",
+                                      f"{name}: last run ended in error {beat.detail}"))
     return issues
 
 

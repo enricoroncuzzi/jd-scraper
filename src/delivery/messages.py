@@ -8,10 +8,11 @@ A day sends the four tier digest messages plus this one day summary (the captain
 decision): the four per-tier collection reports are folded into the day summary
 rather than sent as separate messages.
 """
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from src.delivery.daily import TierDelivery
-from src.delivery.health import health_lines
+from src.delivery.health import enabled_sources, expected_services, health_lines, source_silence_allowances
 from src.delivery.jobs import to_scored_offer
 from src.delivery.settings import DeliverySettings
 from src.llm_limits import limit_for
@@ -124,6 +125,9 @@ def render_day_summary(conn, cfg: ProcessorConfig, settings: DeliverySettings,
     for tier in sorted(cfg.policies):
         collection_lines.extend(
             render_tier_report(conn, tier, cfg.policies[tier], deliveries.get(tier), now).split("\n"))
+    # One source of truth: the same enabled sources and silence allowance the watchdog uses,
+    # so the Services block cannot disagree with the alerts.
+    service_settings = replace(settings, expected_services=expected_services(settings, enabled_sources()))
     blocks = [
         "\n".join([f"Day summary - {day.isoformat()}"] + rows
                   + ([f"Not yet in a tier: {unassigned}"] if unassigned else [])),
@@ -131,7 +135,7 @@ def render_day_summary(conn, cfg: ProcessorConfig, settings: DeliverySettings,
                   + [f"{name}: {count} new jobs" for name, count in _source_totals(conn, since).items()]
                   + [f"Jobs still waiting for processing: {waiting}"]),
         "\n".join(_budget_lines(conn, now)),
-        "\n".join(["Services"] + health_lines(conn, settings, now)),
+        "\n".join(["Services"] + health_lines(conn, service_settings, now, source_silence_allowances())),
     ]
     return pack_messages(blocks)
 

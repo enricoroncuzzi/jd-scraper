@@ -13,39 +13,14 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
-from src.delivery.health import REPEAT_ALERT_AFTER, run_health_check
+from src.delivery.health import (
+    REPEAT_ALERT_AFTER, enabled_sources, expected_services, run_health_check, source_silence_allowances,
+)
 from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore.db import connect, store_url, utcnow
 from src.telegram import send_message
 
 STATE_PATH = "data/watchdog_state.json"
-SOURCES_CONFIG_PATH = "config/sources.json"
-SOURCE_SILENCE_SLACK_HOURS = 3
-
-
-def _enabled_source_configs(path: str) -> dict[str, dict]:
-    try:
-        with open(path) as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return {}
-    return {name: cfg for name, cfg in data.items() if isinstance(cfg, dict) and cfg.get("enabled")}
-
-
-def enabled_sources(path: str = SOURCES_CONFIG_PATH) -> list[str]:
-    """Extra sources switched on in config/sources.json; none when the file is absent."""
-    return sorted(_enabled_source_configs(path))
-
-
-def source_silence_allowances(path: str = SOURCES_CONFIG_PATH) -> dict[str, timedelta]:
-    """The timer-driven collectors beat once a day, so the watchdog allows each one its
-    interval plus a few hours of silence instead of the one-hour always-on limit."""
-    return {f"collect-{name}": timedelta(hours=int(cfg.get("interval_hours", 24)) + SOURCE_SILENCE_SLACK_HOURS)
-            for name, cfg in _enabled_source_configs(path).items()}
-
-
-def expected_services(settings: DeliverySettings, sources: list[str]) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(settings.expected_services + tuple(f"collect-{name}" for name in sources)))
 
 
 def _store_down_due(path: str, now: datetime) -> bool:
