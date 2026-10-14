@@ -99,6 +99,24 @@ def test_a_4xx_fails_at_once():
     assert len(get.calls) == 1
 
 
+def test_a_non_json_200_is_retried_like_a_server_error():
+    bad = _response(200)
+    bad.json.side_effect = ValueError("not json")
+    client, sleeps = _client(Scripted(bad, _response(body={"ok": True})))
+    assert client.get_json("/jobs", {}) == {"ok": True}
+    assert 5 in sleeps
+
+
+def test_a_200_that_is_never_json_raises_source_error():
+    bad = []
+    for _ in range(4):
+        resp = _response(200)
+        resp.json.side_effect = ValueError("not json")
+        bad.append(resp)
+    with pytest.raises(SourceError, match="invalid JSON"):
+        _client(Scripted(*bad))[0].get_json("/jobs", {})
+
+
 def test_record_cards_counts_new_jobs_and_flags_a_fully_known_page(store_conn):
     cards = [CardInput(source="freehire", source_job_id=f"j{n}", source_url=f"https://freehire.me/{n}",
                        title=f"t{n}", company="c") for n in range(3)]

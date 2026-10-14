@@ -75,7 +75,15 @@ class JsonClient:
                     if remaining is not None and remaining.isdigit() and int(remaining) <= 2:
                         reset = response.headers.get("X-RateLimit-Reset", "5")
                         self._sleep(int(reset) + 1 if reset.isdigit() else 5)
-                    return response.json()
+                    try:
+                        return response.json()
+                    except ValueError:
+                        # A 200 with an HTML error page (proxy, maintenance) is not JSON;
+                        # retry it like a 5xx instead of letting it abort the whole drain.
+                        problem = "invalid JSON"
+                        if attempt < len(RETRY_WAITS):
+                            self._sleep(RETRY_WAITS[attempt])
+                        continue
                 if status == 429:
                     retry_after = response.headers.get("Retry-After", "")
                     self._sleep(int(retry_after) if retry_after.isdigit() else RETRY_WAITS[min(attempt, 2)])
