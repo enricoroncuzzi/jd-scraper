@@ -61,16 +61,20 @@ sudo systemd-analyze verify /etc/systemd/system/jds-*.service
 
 `MemoryMax` in the unit files is a first guess. The box has 1.9 GB and no swap. For now
 jd-scraper has the whole server (the other project is expected to move to its own box), so
-the ceilings are sized for jd-scraper plus PostgreSQL alone; keep the reserve for anything
-else that shares the machine at zero until that changes. Measure before trusting the guess:
+the ceilings are sized for jd-scraper plus PostgreSQL plus the operating system (kernel,
+systemd, sshd, the watchdog oneshot and a `pg_dump`): the test's `SYSTEM_RESERVE_MB` is 250 MB
+and the `OTHER_WORKLOAD_MB` reserve for anything else that shares the machine stays zero until
+that changes. The first-guess ceilings leave about 34 MB of slack on top of that. Measure
+before trusting the guess:
 
 1. On a quiet day run each service for an hour under load (`systemctl start`, let it work).
 2. Read the peak: `systemctl show -p MemoryPeak jds-process jds-collect-linkedin jds-deliver`.
 3. For `jds-deliver`, force a tailoring run during the hour (a job scoring 8 or more) so the
    Chromium peak is included.
 4. Set `MemoryMax` to about 1.3 times the peak and `MemoryHigh` to about 1.1 times, edit the
-   unit files in the repo, and keep the sum plus Postgres (about 400 MB) below the box size
-   minus whatever is reserved for other workloads.
+   unit files in the repo, and keep the sum plus Postgres (about 400 MB) plus the operating
+   system's share (about 250 MB) below the box size minus whatever is reserved for other
+   workloads.
 
 ## 3. Rehearsal (days before the switch)
 

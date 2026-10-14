@@ -12,13 +12,15 @@ UNITS = sorted(glob.glob("deploy/systemd/*.service"))
 # The watchdog and the backup are oneshot units, not long-running services.
 LONG_RUNNING = [u for u in UNITS if "watchdog" not in u and "backup" not in u]
 
-# The box, PostgreSQL's own working set, and memory reserved for anything else that
-# shares the server. The captain's decision: jd-scraper has the whole server for now
-# (the other project is expected to get its own), so the reserve is 0 and the
-# ceilings are sized for jd-scraper plus PostgreSQL alone. Raise the reserve if that
-# changes, and re-measure before trusting these first-guess ceilings.
+# The box, PostgreSQL's own working set, the operating system's share (kernel, systemd,
+# sshd, the watchdog oneshot and a pg_dump), and memory reserved for anything else that
+# shares the server. The captain's decision: jd-scraper has the whole server for now (the
+# other project is expected to get its own), so OTHER_WORKLOAD_MB is 0 and the ceilings are
+# sized for jd-scraper, PostgreSQL and the OS alone. Raise a reserve if that changes, and
+# re-measure before trusting these first-guess ceilings.
 BOX_MB = 1900
 POSTGRES_MB = 400
+SYSTEM_RESERVE_MB = 250
 OTHER_WORKLOAD_MB = 0
 
 
@@ -62,7 +64,7 @@ def test_total_memory_ceiling_leaves_room_for_postgres_and_the_other_project():
     def megabytes(value):
         return int(value[:-1]) * (1024 if value.endswith("G") else 1)
     total = sum(megabytes(_read(u)["Service"]["MemoryMax"]) for u in LONG_RUNNING)
-    assert total <= BOX_MB - POSTGRES_MB - OTHER_WORKLOAD_MB
+    assert total <= BOX_MB - POSTGRES_MB - SYSTEM_RESERVE_MB - OTHER_WORKLOAD_MB
 
 
 BACKUP_SCRIPT = "deploy/backup-jobstore.sh"
