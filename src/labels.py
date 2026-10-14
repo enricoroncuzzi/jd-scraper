@@ -88,6 +88,7 @@ def set_label(db_url: str | None, link: str, label: str, note: str | None = None
     try:
         with conn.cursor() as cur:
             cur.execute(OFFER_LABELS_DDL)
+            cur.execute("ALTER TABLE offer_labels ADD COLUMN IF NOT EXISTS job_id UUID")
             cur.execute(
                 "DELETE FROM offer_labels WHERE posting_key = %s AND label <> %s",
                 (key, label),
@@ -118,6 +119,7 @@ def remove_label(db_url: str | None, link: str, label: str) -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(OFFER_LABELS_DDL)
+            cur.execute("ALTER TABLE offer_labels ADD COLUMN IF NOT EXISTS job_id UUID")
             cur.execute(
                 "DELETE FROM offer_labels WHERE posting_key = %s AND label = %s",
                 (posting_key(link), label),
@@ -136,18 +138,35 @@ def list_labels(db_url: str | None, label: str) -> list[dict]:
     try:
         with conn.cursor() as cur:
             cur.execute(OFFER_LABELS_DDL)
-            cur.execute(
-                """
-                SELECT COALESCE(o.title, j.title), COALESCE(o.company, j.company),
-                       COALESCE(o.score, j.score), l.labeled_at, l.link
-                FROM offer_labels l
-                LEFT JOIN offers o ON o.id = l.offer_id
-                LEFT JOIN jobs j ON j.id = l.job_id
-                WHERE l.label = %s
-                ORDER BY l.labeled_at DESC
-                """,
-                (label,),
-            )
+            cur.execute("ALTER TABLE offer_labels ADD COLUMN IF NOT EXISTS job_id UUID")
+            cur.execute("SELECT to_regclass('jobs') IS NOT NULL")
+            has_archive = bool(cur.fetchone()[0])
+            if has_archive:
+                cur.execute(
+                    """
+                    SELECT COALESCE(o.title, j.title), COALESCE(o.company, j.company),
+                           COALESCE(o.score, j.score), l.labeled_at, l.link
+                    FROM offer_labels l
+                    LEFT JOIN offers o ON o.id = l.offer_id
+                    LEFT JOIN jobs j ON j.id = l.job_id
+                    WHERE l.label = %s
+                    ORDER BY l.labeled_at DESC
+                    """,
+                    (label,),
+                )
+            else:
+                # The archive tables may not exist yet (archive --init has not run):
+                # label list must keep working against the legacy offers table alone.
+                cur.execute(
+                    """
+                    SELECT o.title, o.company, o.score, l.labeled_at, l.link
+                    FROM offer_labels l
+                    LEFT JOIN offers o ON o.id = l.offer_id
+                    WHERE l.label = %s
+                    ORDER BY l.labeled_at DESC
+                    """,
+                    (label,),
+                )
             rows = cur.fetchall()
         conn.commit()
     finally:

@@ -139,6 +139,16 @@ def test_list_labels_joins_offers():
     assert "LEFT JOIN jobs j ON j.id = l.job_id" in sql
 
 
+def test_list_labels_falls_back_when_the_archive_jobs_table_is_absent():
+    conn, cur = _conn(fetch=(False,))
+    cur.fetchall.return_value = [("T", "C", 8, datetime(2026, 1, 1), LINK)]
+    with patch("src.labels.psycopg2.connect", return_value=conn):
+        rows = labels.list_labels("postgresql://t", "golden")
+    assert rows[0]["title"] == "T"
+    sql = [c[0][0] for c in cur.execute.call_args_list][-1]
+    assert "JOIN offers" in sql and "LEFT JOIN jobs" not in sql
+
+
 def test_main_usage_returns_1(capsys):
     assert label_cli.main([]) == 1
 
