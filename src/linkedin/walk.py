@@ -126,6 +126,11 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
             if not result.known:
                 page_known = False
                 new_jobs += 1
+        # Persist how far the walk got in the same transaction as its sightings, so a
+        # hard stop (deploy kill, OOM, DB error) resumes here instead of at offset 0.
+        with conn.cursor() as cur:
+            cur.execute("UPDATE slices SET resume_start = %s WHERE id = %s",
+                        (start + len(page.cards), row.id))
         conn.commit()
 
         cards_seen += len(page.cards)

@@ -1,6 +1,8 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 
 from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
 from src.linkedin.search import RETRY_WAITS
@@ -137,6 +139,24 @@ def test_an_unfinished_slice_resumes_where_it_stopped(store_conn):
     get = ScriptedGet(response(200, page_html()))
     _walk(store_conn, get, resume_start=40)
     assert get.calls[0]["start"] == 40
+
+
+def test_a_crash_after_a_page_persists_the_resume_offset(store_conn):
+    class Boom(RuntimeError):
+        pass
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(200, page_html(*ids(10, 10))),
+                      Boom("process died"))
+    row = _seed_slice(store_conn)
+    with pytest.raises(Boom):
+        walk_slice(store_conn, FakePace(), row, _cfg(), NOW, get=get, sleep=lambda _s: None)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT resume_start FROM slices WHERE id = %s", (row.id,))
+        assert cur.fetchone()[0] == 20
+    # the next walk resumes at the persisted offset instead of the start
+    get2 = ScriptedGet(response(200, page_html()))
+    walk_slice(store_conn, FakePace(), replace(row, resume_start=20), _cfg(), NOW,
+               get=get2, sleep=lambda _s: None)
+    assert get2.calls[0]["start"] == 20
 
 
 def _slice_state(conn):
