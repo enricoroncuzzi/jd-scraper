@@ -188,3 +188,11 @@ def test_stale_jobs_expire(store_conn, cfg):
     assert _state(store_conn, refused)[:2] == ("expired", "description_refused")
     assert _state(store_conn, old)[:2] == ("expired", "posting_too_old")
     assert _state(store_conn, fresh)[0] == "seen"
+
+
+def test_a_description_round_beats_before_every_fetch(store_conn, cfg, pulses):
+    for n in range(3):
+        _tiered_job(store_conn, cfg, f"390000000{n + 1}")
+    get = ScriptedGet(*[response(200, FRAGMENT)] * 3)
+    assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 3
+    assert [call["describing"] for call in pulses] == [0, 1, 2, 3]

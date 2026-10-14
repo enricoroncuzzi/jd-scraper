@@ -197,3 +197,13 @@ def test_managed_pace_reopens_a_dropped_connection(store_conn, store_conn_factor
         slot.clean()
     assert len(opened) == 2 and opened[0].closed and not opened[1].closed
     opened[1].close()
+
+
+def test_a_throttle_is_logged_with_the_new_spacing(make_budget, capsys):
+    budget = make_budget(FakeTime())
+    with budget.slot("description") as slot:
+        slot.throttled()
+    assert "LinkedIn throttled a description request: spacing now x2, cooling down 60s" in capsys.readouterr().out
+    with budget.slot("search") as slot:
+        slot.clean()
+    assert "throttled" not in capsys.readouterr().out

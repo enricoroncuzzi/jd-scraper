@@ -15,6 +15,7 @@ from src.linkedin.description import fetch_description
 from src.processor.cheap import finish_with_description
 from src.processor.config import ProcessorConfig
 from src.processor.state import JobRow, defer, load_job, set_stage
+from src.services.pulse import pulse
 
 UNREADABLE_ATTEMPTS = 3
 
@@ -115,6 +116,7 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     (refused) ends the round: more requests now would only be refused too."""
     done = 0
     while done < cfg.descriptions_per_tick:
+        pulse({"describing": done})
         outcome = describe_next(conn, pace, cfg, now, get=get, sleep=sleep)
         if outcome is None:
             break

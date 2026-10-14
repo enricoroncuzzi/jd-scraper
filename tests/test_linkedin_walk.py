@@ -221,3 +221,12 @@ def test_claim_due_slice_only_returns_slices_of_the_asked_source(store_conn):
     assert claim_due_slice(store_conn, NOW).area == "Italy"
     assert claim_due_slice(store_conn, NOW, "freehire").area == "countries=it"
     assert claim_due_slice(store_conn, NOW, "himalayas") is None
+
+
+def test_a_walk_beats_before_every_page_it_fetches(store_conn, pulses):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(200, page_html(*ids(10, 10))),
+                      response(200, page_html()))
+    result, _ = _walk(store_conn, get)
+    assert result.pages == 3
+    assert [call["pages"] for call in pulses] == [0, 1, 2]
+    assert pulses[0]["slice"] == "AI Engineer / Italy" and pulses[2]["new_jobs"] == 20

@@ -182,6 +182,8 @@ class PaceBudget:
                     after_clean(state)
                 elif slot.outcome == "throttled":
                     after_throttle(state, now)
+                    print(f"[pace] LinkedIn throttled a {kind} request: spacing now "
+                          f"x{state.factor:g}, cooling down {COOLDOWN_SECONDS:g}s")
                 state.last_kind = kind
                 state.wanting.pop(kind, None)
                 state.next_slot_at = now + timedelta(
