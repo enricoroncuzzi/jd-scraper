@@ -118,7 +118,8 @@ walk while the cron wrapper holds `/home/enrico/.jd-scraper.lock`, but do not re
 ### Enabling a stage-2 source (after its provenance report)
 
 Each extra source ships disabled. Once its provenance report has been read and the captain
-approves it, one source at a time:
+approves it, one source at a time (shown for freehire; for Himalayas substitute `himalayas`
+in the config key, the service argument and the unit names):
 
 ```bash
 .venv/bin/python -m src.sources.provenance 7        # read this before enabling
@@ -130,8 +131,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now jds-collect-freehire.timer
 ```
 
-The service is a oneshot run by the timer at 03:00, clear of delivery and of the other
-collectors; enable the timer, not the service (the service has no `[Install]` section on
+The service is a oneshot run by its timer (freehire at 03:00, Himalayas at 04:00), clear of
+delivery and of the other collectors; enable the timer, not the service (the service has no `[Install]` section on
 purpose). Each run records a heartbeat, so the watchdog allows the collector its
 `interval_hours` plus a few hours of silence between runs. Disable it with the other timers
 in section 5.
@@ -146,8 +147,8 @@ sudo systemctl disable --now jds-deliver jds-process jds-collect-linkedin \
 crontab /home/enrico/crontab.bak-<date>            # restores the jds-daily.sh line
 ```
 
-`jds-collect-himalayas.timer` exists only after Plan 7; on a stage-1 box systemd prints "unit
-not found" for it and still disables the rest.
+A stage-2 timer that was never installed (section 4) makes systemd print "unit not found" for
+it; the rest are still disabled.
 
 Jobs the new system already handled would be found again by the next old run. To avoid
 repeats, append their hashes to the old dedup files first (one command per tier N = 1..4):

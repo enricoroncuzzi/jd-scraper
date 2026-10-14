@@ -26,7 +26,7 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 
 The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the digest, and every tailored offer lands in its own directory.
 
-The redesign turns this into long-running services (a LinkedIn collector, a processor, a delivery service, a watchdog and a nightly backup) around a server-side PostgreSQL job store. The operational procedure for installing, switching to, watching and rolling back those services lives in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
+The redesign turns this into long-running services (a LinkedIn collector, daily freehire.me and Himalayas collectors, a processor, a delivery service, a watchdog and a nightly backup) around a server-side PostgreSQL job store. The operational procedure for installing, switching to, watching and rolling back those services lives in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
 
 ## CV tailoring, working today
 
