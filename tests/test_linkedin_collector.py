@@ -49,3 +49,17 @@ def test_the_collector_waits_while_the_legacy_cron_run_holds_its_lock(store_conn
         blocked = tick_fn(store_conn)
     assert not blocked.did_work and "legacy" in blocked.detail["waiting"] and get.calls == []
     assert tick_fn(store_conn).did_work  # the lock is free again
+
+
+def test_a_poison_slice_is_isolated_and_the_next_slice_is_walked(store_conn):
+    from unittest import mock
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 14400),
+            SliceSpec("linkedin", "ML Engineer", "Germany", 3, 43200))
+    with mock.patch("src.linkedin.walk.record_sighting", side_effect=ValueError("poison")):
+        tick = collect_once(store_conn, FakePace(), CFG, now=NOW,
+                            get=ScriptedGet(response(200, page_html(*ids(0, 3)))),
+                            sleep=lambda _s: None)
+    assert tick.did_work and tick.detail["stop_reason"] == "error"
+    next_tick = collect_once(store_conn, FakePace(), CFG, now=NOW + timedelta(minutes=1),
+                             get=ScriptedGet(response(200, page_html())), sleep=lambda _s: None)
+    assert next_tick.detail["slice"] == "ML Engineer / Germany"

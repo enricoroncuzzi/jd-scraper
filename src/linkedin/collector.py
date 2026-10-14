@@ -11,6 +11,7 @@ import sys
 import time
 from datetime import datetime
 
+import psycopg2
 import requests
 from dotenv import load_dotenv
 
@@ -20,21 +21,41 @@ from src.linkedin.catalog import (
     CollectorConfig, build_slices, load_collector_config, load_tier_configs, sync_slices,
 )
 from src.linkedin.pace import ManagedPace
-from src.linkedin.walk import claim_due_slice, finish_walk, walk_slice
+from src.linkedin.walk import WalkResult, claim_due_slice, finish_walk, walk_slice
 from src.services.legacy_guard import legacy_run_active
 from src.services.runner import Tick, run_service
 
 SERVICE = "collect-linkedin"
 
 
+def _current_resume_start(conn, slice_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT resume_start FROM slices WHERE id = %s", (slice_id,))
+        return cur.fetchone()[0]
+
+
 def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = None,
                  get=requests.get, sleep=time.sleep) -> Tick:
-    """Walk the next due slice, if any."""
+    """Walk the next due slice, if any.
+
+    One slice's unexpected failure must not wedge the collector on a poison card:
+    it becomes a retryable `error` (due again in 30 minutes, resuming where the
+    last committed page stopped) and the next slice gets its turn. A connection
+    that is actually gone is re-raised for the runner to reconnect.
+    """
     started = now or utcnow()
     row = claim_due_slice(conn, started)
     if row is None:
         return Tick(False, {"due_slices": 0})
-    result = walk_slice(conn, pace, row, cfg, started, get=get, sleep=sleep)
+    try:
+        result = walk_slice(conn, pace, row, cfg, started, get=get, sleep=sleep)
+    except (psycopg2.OperationalError, psycopg2.InterfaceError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - a poison slice must not stop the service
+        conn.rollback()
+        print(f"[{SERVICE}] tier {row.tier} {row.role} / {row.area} failed: "
+              f"{type(exc).__name__}: {exc}")
+        result = WalkResult(0, 0, 0, "error", 0, _current_resume_start(conn, row.id))
     finish_walk(conn, row, result, started, now or utcnow())
     conn.commit()
     print(f"[{SERVICE}] tier {row.tier} {row.role} / {row.area}: {result.pages} pages, "

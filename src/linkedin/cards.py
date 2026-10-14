@@ -38,6 +38,12 @@ def _entity_job_id(card) -> str | None:
     return tail if tail.isdigit() else None
 
 
+def _clean_text(element) -> str:
+    """Visible text with NUL removed: Postgres TEXT refuses a literal NUL, and one
+    poisoned card would otherwise wedge the whole collector on that slice."""
+    return element.get_text(strip=True).replace("\x00", "") if element else ""
+
+
 def parse_cards(html: str) -> list[Card]:
     """Cards with a title, a link and a job id. Same selectors the old scraper used."""
     soup = BeautifulSoup(html, "html.parser")
@@ -56,9 +62,9 @@ def parse_cards(html: str) -> list[Card]:
         cards.append(Card(
             job_id=job_id,
             url=url,
-            title=title.get_text(strip=True),
-            company=company.get_text(strip=True) if company else "N/A",
-            location=location.get_text(strip=True) if location else "N/A",
+            title=_clean_text(title),
+            company=_clean_text(company) or "N/A",
+            location=_clean_text(location) or "N/A",
             posted_at=_posted_at(item),
         ))
     return cards

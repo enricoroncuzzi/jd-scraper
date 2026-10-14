@@ -55,3 +55,16 @@ def test_blocks_without_a_title_are_skipped_and_the_urn_is_the_id_fallback():
 
 def test_an_empty_page_has_no_cards():
     assert parse_cards("<html><body></body></html>") == []
+
+
+def test_nul_bytes_in_card_text_are_stripped():
+    html = (
+        '<li><div class="base-search-card" data-entity-urn="urn:li:jobPosting:3900000010">'
+        '<a class="base-card__full-link" href="https://www.linkedin.com/jobs/view/job-3900000010"></a>'
+        '<h3 class="base-search-card__title">Job \x003900000010</h3>'
+        '<h4 class="base-search-card__subtitle">Comp\x00any</h4>'
+        '<span class="job-search-card__location">Mil\x00an</span></div></li>')
+    card = parse_cards(html)[0]
+    assert card.title == "Job 3900000010"
+    assert card.company == "Company"
+    assert card.location == "Milan"
