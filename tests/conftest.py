@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # used to put the production DATABASE_URL into the environment, and the
 # autouse fixture below then deleted it before the integration guard compared.
 _PROCESS_DATABASE_URL = os.environ.get("DATABASE_URL")
+_PROCESS_JOBSTORE_URL = os.environ.get("JOBSTORE_URL")
 
 
 def _tests_do_not_read_dotenv(*args, **kwargs):
@@ -31,8 +32,18 @@ def _block_production_database_url(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _block_production_jobstore_url(monkeypatch):
+    """Unit tests must never reach the real job store. Store tests get their
+    own throwaway database from tests/store_db.py."""
+    monkeypatch.delenv("JOBSTORE_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_usage_log(tmp_path, monkeypatch):
     """Handler tests that forget to redirect this path used to append to the
     checkout's data/usage_log.jsonl, which is the file the daily budget reads."""
     import main
     monkeypatch.setattr(main, "_USAGE_LOG_PATH", str(tmp_path / "usage_log.jsonl"))
+
+
+from tests.store_db import store_conn, store_conn_factory, store_url_fixture  # noqa: E402,F401

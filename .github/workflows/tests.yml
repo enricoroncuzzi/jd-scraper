@@ -8,6 +8,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A throwaway PostgreSQL for the job-store tests (tests/store_db.py). The password is a
+    # literal for this CI-only container, not a secret.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: jds_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      JDS_TEST_STORE_URL: postgresql://postgres:postgres@localhost:5432/jds_test
     steps:
       - uses: actions/checkout@v4
 
