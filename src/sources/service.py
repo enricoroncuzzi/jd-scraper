@@ -25,6 +25,11 @@ from src.sources.base import (
 
 MODULES = {"freehire": freehire}
 
+# A daily timer fires at the same clock time every day, but a walk finishes a few seconds
+# after it started. Scheduling the next walk an hour short of a full interval keeps the slice
+# due when the next day's timer fires instead of skipping every other day.
+DUE_SLACK_SECONDS = 3600
+
 
 def collect_source_once(conn, name: str, cfg: SourceConfig, client: JsonClient, *,
                         now_fn=utcnow) -> Tick:
@@ -38,7 +43,8 @@ def collect_source_once(conn, name: str, cfg: SourceConfig, client: JsonClient, 
         conn.rollback()
         print(f"[collect-{name}] {row.role} / {row.area}: {exc}")
         walk = SourceWalk(0, 0, 0, "error", row.resume_start)
-    finish_source_walk(conn, row, walk, started, now_fn(), cfg.interval_hours * 3600)
+    finish_source_walk(conn, row, walk, started, now_fn(),
+                       cfg.interval_hours * 3600 - DUE_SLACK_SECONDS)
     conn.commit()
     print(f"[collect-{name}] {row.role} / {row.area}: {walk.pages} pages, {walk.cards_seen} hits, "
           f"{walk.new_jobs} new, stop={walk.stop_reason}")

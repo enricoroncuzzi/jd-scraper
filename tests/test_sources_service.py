@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 from src.linkedin.catalog import sync_slices
@@ -46,6 +46,33 @@ def test_nothing_due_means_no_work(store_conn):
     cfg = _cfg()
     tick = service.collect_source_once(store_conn, "freehire", cfg, _client(cfg, Pages()), now_fn=lambda: NOW)
     assert not tick.did_work
+
+
+def _clock(start, step_seconds=20):
+    state = {"now": start}
+
+    def now_fn():
+        current = state["now"]
+        state["now"] = current + timedelta(seconds=step_seconds)
+        return current
+    return now_fn
+
+
+def test_a_daily_timer_walks_every_slice_on_both_days(store_conn):
+    # The timer fires at the same clock time each day; a walk that finishes a few seconds
+    # after 03:00 must still be due at the next day's 03:00, or every other day is skipped.
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    store_conn.commit()
+    first = service.collect_due_slices(
+        store_conn, "freehire", cfg,
+        _client(cfg, Pages(*[_body(_hits(index, 1)) for index in range(8)])), now_fn=_clock(NOW))
+    assert len(first) == 8
+    second = service.collect_due_slices(
+        store_conn, "freehire", cfg,
+        _client(cfg, Pages(*[_body(_hits(index, 1)) for index in range(8)])),
+        now_fn=_clock(NOW + timedelta(days=1)))
+    assert len(second) == 8
 
 
 def test_oneshot_mode_drains_every_due_slice(store_conn):
