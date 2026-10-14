@@ -62,6 +62,8 @@ def html_to_text(markup: str) -> str:
 def italy_eligibility(job: dict) -> Eligibility:
     restrictions = job.get("locationRestrictions") or []
     offsets = job.get("timezoneRestrictions") or []
+    if not isinstance(restrictions, list) or not isinstance(offsets, list):
+        return Eligibility(False, reason="malformed")
     if offsets and not any(offset in offsets for offset in ITALY_UTC_OFFSETS):
         return Eligibility(False, reason="timezone")
     if not restrictions:
@@ -72,8 +74,15 @@ def italy_eligibility(job: dict) -> Eligibility:
 
 
 def item_to_card(job: dict, slice_id: int, now: datetime) -> CardInput | None:
-    guid, title, company = job.get("guid") or job.get("applicationLink"), job.get("title"), job.get("companyName")
-    if not (guid and title and company):
+    """A card for one feed item, or None. Total: a malformed item never raises, it is skipped."""
+    if not isinstance(job, dict):
+        return None
+    guid = job.get("guid") or job.get("applicationLink")
+    title = job.get("title")
+    company = job.get("companyName")
+    if not (isinstance(guid, str) and guid.strip()
+            and isinstance(title, str) and title.strip()
+            and isinstance(company, str) and company.strip()):
         return None
     expires = parse_time(job.get("expiryDate"))
     if expires is not None and expires < now:
@@ -82,9 +91,12 @@ def item_to_card(job: dict, slice_id: int, now: datetime) -> CardInput | None:
     if not eligibility.eligible:
         return None
     restrictions = job.get("locationRestrictions") or []
+    link = job.get("applicationLink")
+    if not (isinstance(link, str) and link.strip()):
+        link = guid
     description = html_to_text(job.get("description", "")) or (job.get("excerpt") or "").strip()
     return CardInput(
-        source=SOURCE, source_job_id=guid, source_url=job.get("applicationLink") or guid,
+        source=SOURCE, source_job_id=guid, source_url=link,
         title=title.strip(), company=company.strip(),
         location=", ".join(restrictions) if restrictions else "Worldwide",
         posted_at=parse_time(job.get("pubDate")), slice_id=slice_id, country=eligibility.country,
@@ -114,9 +126,16 @@ def walk_slice(conn, client: JsonClient, cfg: SourceConfig, row, now: datetime) 
         except SourceError:
             stop = "error"
             break
+        if not isinstance(body, dict):
+            stop = "error"
+            break
         jobs = body.get("jobs") or []
+        if not isinstance(jobs, list):
+            stop = "error"
+            break
         pages += 1
-        cards = [c for c in (item_to_card(j, row.id, now) for j in jobs) if c is not None]
+        cards = [c for c in (item_to_card(j, row.id, now) for j in jobs if isinstance(j, dict))
+                 if c is not None]
         new, all_known = record_cards(conn, cards, now)
         cards_seen += len(jobs)
         new_jobs += new

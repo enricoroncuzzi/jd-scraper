@@ -95,6 +95,14 @@ def test_an_empty_description_falls_back_to_the_excerpt():
     assert card.description == "FunnelStory is hiring."
 
 
+def test_garbage_items_are_skipped_not_raised():
+    for garbage in (None, 123, "nope", {"title": 123}, {**WORLDWIDE, "title": "   "},
+                    {**WORLDWIDE, "companyName": 5}, {**WORLDWIDE, "guid": 5},
+                    {**WORLDWIDE, "timezoneRestrictions": "1"},
+                    {**WORLDWIDE, "locationRestrictions": "Italy"}):
+        assert item_to_card(garbage, 1, NOW) is None
+
+
 def test_the_company_page_is_never_claimed_himalayas_is_the_canonical_link(store_conn):
     result = record_sighting(store_conn, item_to_card(WORLDWIDE, None, NOW), NOW)
     with store_conn.cursor() as cur:
@@ -178,3 +186,19 @@ def test_a_throttled_walk_resumes_at_its_page(store_conn):
     client = JsonClient(_cfg(), get=resumed, sleep=lambda _s: None, clock=lambda: 0.0)
     walk_slice(store_conn, client, _cfg(), row, NOW)
     assert resumed.calls[0][1]["page"] == 2
+
+
+def test_a_walk_with_garbage_items_still_records_the_valid_neighbours(store_conn):
+    junk = [None, 123, {"title": 123}, {**WORLDWIDE, "title": "   "},
+            {**WORLDWIDE, "timezoneRestrictions": "1"}]
+    pages = Pages({"jobs": junk + _jobs(1, 15)}, {"jobs": []})
+    walk = _walk(store_conn, pages)
+    assert walk.cards_seen == 20 and walk.new_jobs == 15 and walk.stop_reason == "end_of_results"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs")
+        assert cur.fetchone()[0] == 15
+
+
+def test_a_non_dict_body_stops_the_walk_with_an_error(store_conn):
+    walk = _walk(store_conn, Pages("not json"))
+    assert walk.stop_reason == "error" and walk.pages == 0
