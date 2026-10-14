@@ -66,8 +66,8 @@ def clean_text(text: str) -> str:
     return re.sub(r"[ \t]+\n", "\n", re.sub(r"\n{3,}", "\n\n", plain)).strip()
 
 
-def parse_time(value: str | None) -> datetime | None:
-    if not value:
+def parse_time(value) -> datetime | None:
+    if not (isinstance(value, str) and value):
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -76,22 +76,32 @@ def parse_time(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _text(item: dict, key: str) -> str | None:
+    value = item.get(key)
+    return value.strip() or None if isinstance(value, str) else None
+
+
 def item_to_card(item: dict, slice_id: int, tier_hint: int, skip_reality: tuple = ()) -> CardInput | None:
-    """A CardInput for one search hit, or None for a hit we do not take."""
-    slug, title, company = item.get("public_slug"), item.get("title"), item.get("company")
+    """A CardInput for one search hit, or None. Total: a malformed hit never raises, it is skipped."""
+    if not isinstance(item, dict):
+        return None
+    slug, title, company = _text(item, "public_slug"), _text(item, "title"), _text(item, "company")
     if not (slug and title and company) or item.get("closed_at"):
         return None
-    if (item.get("reality") or {}).get("class") in skip_reality:
+    reality = item.get("reality")
+    if isinstance(reality, dict) and reality.get("class") in skip_reality:
         return None
-    codes = [str(c).lower() for c in item.get("countries") or []]
-    description = clean_text(item.get("description", ""))
+    countries = item.get("countries")
+    codes = [c.lower() for c in countries if isinstance(c, str)] if isinstance(countries, list) else []
+    raw_description = item.get("description")
+    description = clean_text(raw_description) if isinstance(raw_description, str) else ""
     return CardInput(
         source=SOURCE, source_job_id=slug, source_url=PAGE_URL.format(slug=slug),
-        title=title.strip(), company=company.strip(), location=item.get("location") or "N/A",
+        title=title, company=company, location=_text(item, "location") or "N/A",
         posted_at=parse_time(item.get("posted_at") or item.get("created_at")), slice_id=slice_id,
-        canonical_url=item.get("url") or None, country=freehire_country(codes),
-        remote_hint=item.get("work_mode"), tier_hint=tier_hint, description=description or None,
-        description_source=SOURCE if description else None, source_detail=item.get("source"))
+        canonical_url=_text(item, "url"), country=freehire_country(codes),
+        remote_hint=_text(item, "work_mode"), tier_hint=tier_hint, description=description or None,
+        description_source=SOURCE if description else None, source_detail=_text(item, "source"))
 
 
 def build_slices(cfg: SourceConfig) -> list[SliceSpec]:
@@ -137,10 +147,17 @@ def walk_slice(conn, client: JsonClient, cfg: SourceConfig, row, now: datetime) 
         except SourceError:
             stop = "error"
             break
-        ignored = (body.get("meta") or {}).get("ignored_params")
+        if not isinstance(body, dict):
+            stop = "error"
+            break
+        meta = body.get("meta")
+        ignored = meta.get("ignored_params") if isinstance(meta, dict) else None
         if ignored:
             raise SourceError(f"freehire ignored parameters {ignored}: results would be unfiltered")
         items = body.get("data") or []
+        if not isinstance(items, list):
+            stop = "error"
+            break
         pages += 1
         cards = [c for c in (item_to_card(i, row.id, row.tier, skip) for i in items) if c is not None]
         new, all_known = record_cards(conn, cards, now)

@@ -182,3 +182,34 @@ def test_the_ten_thousand_result_ceiling_ends_the_walk_without_a_request(store_c
     pages = Pages()
     walk = _walk(store_conn, pages, _cfg(page_size=3000), resume_start=9000)
     assert walk.stop_reason == "cap_hit" and pages.calls == []
+
+
+@pytest.mark.parametrize("item", [
+    None, "a string", ["a", "list"],
+    {**ATS_HIT, "title": 123}, {**ATS_HIT, "company": ["Acme"]}, {**ATS_HIT, "public_slug": {"x": 1}},
+    {**ATS_HIT, "title": "   "},
+])
+def test_garbage_hits_are_skipped_not_raised(item):
+    assert item_to_card(item, 1, 1) is None
+
+
+def test_non_text_optional_fields_do_not_skip_the_hit():
+    card = item_to_card({**ATS_HIT, "countries": "it", "description": 42, "location": 7, "url": 9,
+                         "posted_at": 1760000000, "work_mode": ["remote"], "source": None,
+                         "reality": "fresh"}, 1, 3, skip_reality=("likely-evergreen",))
+    assert (card.title, card.company, card.location) == ("ML Engineer", "Acme GmbH", "N/A")
+    assert (card.country, card.canonical_url, card.posted_at, card.remote_hint, card.source_detail) == (
+        None, None, None, None, None)
+    assert card.description is None and card.description_source is None
+
+
+def test_a_walk_with_garbage_hits_still_records_the_valid_neighbours(store_conn):
+    garbage = [None, {**ATS_HIT, "public_slug": "bad", "title": 123}]
+    walk = _walk(store_conn, Pages(_body(garbage + _hits(0, 1))), _cfg(page_size=5))
+    assert (walk.pages, walk.cards_seen, walk.new_jobs, walk.stop_reason) == (1, 3, 1, "end_of_results")
+
+
+@pytest.mark.parametrize("body", [["a", "list"], "text", {"data": "not a list"}])
+def test_a_malformed_body_stops_the_walk_with_an_error(store_conn, body):
+    walk = _walk(store_conn, Pages(body))
+    assert walk.stop_reason == "error" and walk.pages == 0 and not walk.finished
