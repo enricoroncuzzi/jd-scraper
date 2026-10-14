@@ -1,0 +1,24 @@
+[Unit]
+Description=jd-scraper process (LLM stages and description fetches)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=enrico
+Group=enrico
+WorkingDirectory=/home/enrico/jd-scraper
+EnvironmentFile=/home/enrico/jd-scraper/.env
+ExecStart=/home/enrico/jd-scraper/.venv/bin/python -u -m src.processor.runner
+Restart=always
+RestartSec=10
+TimeoutStopSec=300
+MemoryHigh=256M
+MemoryMax=320M
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

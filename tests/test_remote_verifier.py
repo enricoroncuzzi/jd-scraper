@@ -1036,3 +1036,43 @@ def test_openrouter_verification_routes_nemotron_primary_with_structured_fallbac
     assert all(model.endswith(":free") for model in request["models"])
     assert "qwen" not in request["model"]
     assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]
+
+
+def test_a_larger_batch_size_means_fewer_openrouter_requests(monkeypatch):
+    """verify_offers(batch_size=12) sends 12 offers in one OpenRouter request."""
+    from src import remote_verifier as rv
+
+    calls = []
+
+    def fake_openrouter(chain, batch, require_italy, usage, allowed):
+        calls.append(len(batch))
+        usage["openrouter_requests"] += 1
+        return {o.id: rv._VerdictItem(id=o.id, verdict="confirmed", reason="ok") for o in batch}
+
+    monkeypatch.setattr(rv, "_openrouter_chain", lambda key: object())
+    monkeypatch.setattr(rv, "_verify_batch_openrouter", fake_openrouter)
+    offers = [JobOffer(id=i, title=f"t{i}", company="c", link=f"l{i}", description="Fully remote role.",
+                       description_status="ok") for i in range(24)]
+    rv.verify_offers(offers, False, "", llm_api_key="k", batch_size=12)
+    assert calls == [12, 12]
+    calls.clear()
+    rv.verify_offers([o.model_copy() for o in offers], False, "", llm_api_key="k")
+    assert calls == [8, 8, 8]
+
+
+def test_a_large_batch_that_falls_back_to_groq_is_sent_in_chunks_of_eight(monkeypatch):
+    from src import remote_verifier as rv
+
+    chunks = []
+
+    def fake_groq(client, batch, require_italy, usage=None):
+        chunks.append(len(batch))
+        return {o.id: rv._VerdictItem(id=o.id, verdict="unconfirmed", reason="x") for o in batch}, usage
+
+    monkeypatch.setattr(rv, "_client", lambda key: object())
+    monkeypatch.setattr(rv, "_verify_batch", fake_groq)
+    monkeypatch.setattr(rv.time, "sleep", lambda _s: None)
+    offers = [JobOffer(id=i, title=f"t{i}", company="c", link=f"l{i}", description="Fully remote role.",
+                       description_status="ok") for i in range(12)]
+    rv.verify_offers(offers, False, "groq-key", llm_api_key="", batch_size=12)
+    assert chunks == [8, 4]

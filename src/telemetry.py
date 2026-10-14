@@ -54,11 +54,20 @@ _LLM_COLUMNS = ("id", "run_uuid", "stage", "provider", "request_model", "respons
 
 _current = None
 _warned_sites: set[str] = set()
+# The job-store services set a sink so LLM calls land in the server database
+# (src/processor/llm_sink.py) instead of the per-tier session buffer.
+_llm_sink = None
+
+
+def set_llm_sink(sink) -> None:
+    global _llm_sink
+    _llm_sink = sink
 
 
 def _reset_for_tests() -> None:
-    global _current
+    global _current, _llm_sink
     _current = None
+    _llm_sink = None
     _warned_sites.clear()
 
 
@@ -411,6 +420,9 @@ def _emit_llm_call(call: LLMCall, latency_ms: int) -> None:
         "batch_size": call.batch_size, "attempt": call.attempt, "outcome": call.outcome,
         "error": call.error, "prompt_version": call.prompt_version, "started_at": call.started_at,
     }
+    if _llm_sink is not None:
+        _llm_sink(data)
+        return
     if session is not None:
         if session.enabled:
             session._append("llm_call", data)

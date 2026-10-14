@@ -1,0 +1,15 @@
+[Unit]
+Description=jd-scraper watchdog (alerts when a service or the job store is down)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=enrico
+Group=enrico
+WorkingDirectory=/home/enrico/jd-scraper
+EnvironmentFile=/home/enrico/jd-scraper/.env
+ExecStart=/home/enrico/jd-scraper/.venv/bin/python -u -m src.services.watchdog
+MemoryMax=128M
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true

@@ -1,0 +1,151 @@
+import json
+import os
+from dataclasses import replace
+from datetime import date, time, timedelta
+from zoneinfo import ZoneInfo
+
+import httpx
+import openai
+import pytest
+
+from src.delivery.autopackage import (
+    PackagingConfig, candidates, classify_through_pace, run_packaging,
+)
+from src.delivery.settings import DeliverySettings
+from src.processor.config import load_processor_config
+from tests.delivery_helpers import NOW, scored_job
+from tests.linkedin_fakes import FakePace
+
+DAY = date(2026, 10, 14)
+
+
+@pytest.fixture(scope="module")
+def cfg():
+    return load_processor_config()
+
+
+@pytest.fixture
+def env(tmp_path):
+    master, css = tmp_path / "CV_master.md", tmp_path / "CV_css.md"
+    master.write_text("cv")
+    css.write_text("css")
+    settings = DeliverySettings(output_path=str(tmp_path / "out"), delivery_time=time(8, 0),
+                                timezone=ZoneInfo("Europe/Rome"), telegram_token="t", telegram_chat_id="c")
+    return settings, PackagingConfig(str(master), str(css), "llm-key")
+
+
+class Tailor:
+    def __init__(self, tmp_path, fail=None):
+        self.calls, self.fail, self.tmp_path = [], fail or {}, tmp_path
+
+    def __call__(self, note, root, master, css, key):
+        self.calls.append(note)
+        if note in self.fail:
+            raise self.fail[note]
+        directory = self.tmp_path / f"pkg{len(self.calls)}"
+        directory.mkdir()
+        return str(directory)
+
+
+def _delivered(conn, n, score=9, **kw):
+    return scored_job(conn, n, score, stage="delivered", note_day=DAY, **kw)
+
+
+def test_candidates_are_confirmed_above_threshold_with_a_note_and_no_package_yet(store_conn, cfg):
+    good = _delivered(store_conn, 1)
+    _delivered(store_conn, 2, score=7)
+    _delivered(store_conn, 3, verdict="unconfirmed")
+    scored_job(store_conn, 4, 9)  # scored but no note written yet
+    tier2 = _delivered(store_conn, 5, tier=2, verdict="not_checked", location="Zurich, Switzerland")
+    packaged = _delivered(store_conn, 6)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO job_applications (job_id, channel) VALUES (%s, 'unknown')", (packaged,))
+    assert {j.id for j in candidates(store_conn, cfg, NOW)} == {good, tier2}
+
+
+def test_candidates_skip_a_job_whose_packaging_failed_recently(store_conn, cfg):
+    job = _delivered(store_conn, 1)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO kv_state (key, value) VALUES (%s, %s::jsonb)",
+                    (f"package_fail:{job}", json.dumps({"attempts": 1, "stopped": False,
+                                                         "next_try_at": (NOW + timedelta(hours=1)).isoformat()})))
+    store_conn.commit()
+    assert candidates(store_conn, cfg, NOW) == []
+
+
+def test_a_candidate_is_classified_tailored_recorded_and_not_notified_in_dry_run(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    job = _delivered(store_conn, 1)
+    tailor, notified = Tailor(tmp_path), []
+    results = run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                            classify=lambda link: "external_ats",
+                            notify=lambda *a: notified.append(a))
+    assert len(results) == 1 and results[0]["dry_run"] is True and notified == []
+    assert tailor.calls[0].startswith(os.path.join(settings.output_path, "2026-10-14", "tier1", "scraped"))
+    manifest = json.load(open(os.path.join(results[0]["directory"], "APPLICATION_PACKAGE.json")))
+    assert manifest["channel"] == "external_ats" and manifest["dry_run"] is True
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT channel, dry_run FROM job_applications WHERE job_id = %s", (job,))
+        assert cur.fetchone() == ("external_ats", True)
+        cur.execute("SELECT application_channel FROM jobs WHERE id = %s", (job,))
+        assert cur.fetchone()[0] == "external_ats"
+    assert run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                         classify=lambda link: "x") == []  # never tailored twice
+
+
+def test_live_mode_sends_the_package_ready_notice(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    live = replace(cfg, policies={t: replace(p, autoapply_dry_run=False) for t, p in cfg.policies.items()})
+    _delivered(store_conn, 1)
+    notified = []
+    run_packaging(store_conn, live, settings, pkg, FakePace(), now=NOW, tailor_run=Tailor(tmp_path),
+                  classify=lambda link: "unknown", notify=lambda *a: notified.append(a))
+    assert len(notified) == 1 and notified[0][3:] == ("t", "c")
+
+
+def test_a_failed_tailoring_skips_the_job_and_continues(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    first, second = _delivered(store_conn, 1, score=10), _delivered(store_conn, 2, score=9)
+    from src.delivery.daily import note_path
+    from src.delivery.jobs import load_jobs
+    bad_note = note_path(settings, load_jobs(store_conn, "j.id = %s", (first,))[0], DAY)
+    tailor = Tailor(tmp_path, fail={bad_note: ValueError("HALTED: missing metric")})
+    results = run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                            classify=lambda link: "unknown")
+    assert [r["job_id"] for r in results] == [second]
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM job_applications WHERE job_id = %s", (first,))
+        assert cur.fetchone()[0] == 0  # retried on the next pass
+
+
+def test_an_openrouter_daily_quota_stops_the_loop(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    _delivered(store_conn, 1, score=10)
+    _delivered(store_conn, 2, score=9)
+    quota = openai.RateLimitError(
+        "quota", response=httpx.Response(429, request=httpx.Request("POST", "https://openrouter.ai")),
+        body={"code": "token_quota_exceeded"})
+
+    def tailor(note, *args):
+        raise quota
+
+    assert run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                         classify=lambda link: "unknown") == []
+
+
+def test_a_missing_cv_source_fails_before_anything_is_tailored(store_conn, cfg, env):
+    settings, pkg = env
+    _delivered(store_conn, 1)
+    with pytest.raises(FileNotFoundError, match="CV_MASTER_PATH"):
+        run_packaging(store_conn, cfg, settings, replace(pkg, cv_master_path="/nope"), FakePace(),
+                      now=NOW, tailor_run=Tailor(None), classify=lambda link: "x")
+
+
+def test_a_linkedin_classify_request_goes_through_the_shared_pace_but_other_hosts_do_not():
+    pace = FakePace()
+    assert classify_through_pace(pace, "https://www.linkedin.com/jobs/view/1", lambda l: "linkedin_easy_apply") \
+        == "linkedin_easy_apply"
+    assert pace.events == [("description", "clean")]
+    assert classify_through_pace(pace, "https://boards.greenhouse.io/acme/1", lambda l: "external_ats") \
+        == "external_ats"
+    assert len(pace.events) == 1

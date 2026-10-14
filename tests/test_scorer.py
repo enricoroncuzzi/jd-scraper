@@ -570,3 +570,21 @@ def test_each_scoring_attempt_is_recorded_with_the_responding_model():
     assert [r["attempt"] for r in recorded] == [1, 2]
     assert all(r["stage"] == "scoring" and r["provider"] == "openrouter" for r in recorded)
     assert all(len(r["prompt_version"]) == 12 for r in recorded)
+
+
+def test_batch_size_controls_how_many_offers_one_scoring_request_carries(monkeypatch):
+    from src import scorer
+    sizes = []
+    monkeypatch.setattr(scorer, "_build_chain", lambda key: object())
+
+    def fake_invoke(chain, batch, profile, priority, exclude, counter, max_retries=10):
+        sizes.append(len(batch))
+        return [scorer._ScoringItem(id=o.id, score=7) for o in batch]
+
+    monkeypatch.setattr(scorer, "_invoke_batch", fake_invoke)
+    offers = [JobOffer(id=i, title="t", company="c", link=f"l{i}", description="d") for i in range(16)]
+    scorer.score_offers(offers, "profile", [], [], "key", batch_size=8)
+    assert sizes == [8, 8]
+    sizes.clear()
+    scorer.score_offers(offers, "profile", [], [], "key")
+    assert sizes == [5, 5, 5, 1]

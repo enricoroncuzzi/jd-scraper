@@ -29,6 +29,7 @@ OFFER_LABELS_DDL = """
         link        TEXT NOT NULL,
         label       TEXT NOT NULL CHECK (label IN ('golden', 'not_for_me')),
         offer_id    INTEGER REFERENCES offers(id),
+        job_id      UUID,
         note        TEXT,
         labeled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (posting_key, label)

@@ -1,0 +1,15 @@
+[Unit]
+Description=jd-scraper job store backup (pg_dump, keep 7 days)
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=enrico
+Group=enrico
+WorkingDirectory=/home/enrico/jd-scraper
+EnvironmentFile=/home/enrico/jd-scraper/.env
+ExecStart=/home/enrico/jd-scraper/deploy/backup-jobstore.sh
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
