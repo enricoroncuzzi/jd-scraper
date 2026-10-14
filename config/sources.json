@@ -1,0 +1,22 @@
+{
+  "freehire": {
+    "enabled": false,
+    "base_url": "https://freehire.me/api/v1",
+    "user_agent": "enricoroncuzzi/jd-scraper/1.0 (+https://github.com/enricoroncuzzi/jd-scraper)",
+    "min_interval_seconds": 1.0,
+    "interval_hours": 24,
+    "categories": [
+      "ai_engineering",
+      "data_science"
+    ],
+    "page_size": 50,
+    "first_pull_days": 30,
+    "known_pages_to_stop": 2,
+    "exclude_sources": [
+      "whatjobs-it"
+    ],
+    "skip_reality": [
+      "likely-evergreen"
+    ]
+  }
+}
