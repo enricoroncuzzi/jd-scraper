@@ -44,8 +44,9 @@ def collect_source_once(conn, name: str, cfg: SourceConfig, client: JsonClient, 
         conn.rollback()
         print(f"[collect-{name}] {row.role} / {row.area}: {exc}")
         walk = SourceWalk(0, 0, 0, "error", row.resume_start)
+    interval_seconds = cfg.interval_hours * 3600
     finish_source_walk(conn, row, walk, started, now_fn(),
-                       cfg.interval_hours * 3600 - DUE_SLACK_SECONDS)
+                       max(interval_seconds - DUE_SLACK_SECONDS, interval_seconds // 2))
     conn.commit()
     print(f"[collect-{name}] {row.role} / {row.area}: {walk.pages} pages, {walk.cards_seen} hits, "
           f"{walk.new_jobs} new, stop={walk.stop_reason}")

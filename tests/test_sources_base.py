@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import json
 import pytest
 import requests
 
@@ -44,6 +45,14 @@ def _client(get, sleeps=None, min_interval=1.0):
         sleeps.append(seconds)
         clock["t"] += seconds
     return JsonClient(cfg, get=get, sleep=sleep, clock=lambda: clock["t"]), sleeps
+
+
+def test_a_too_short_interval_is_rejected(tmp_path):
+    path = tmp_path / "sources.json"
+    path.write_text(json.dumps({"freehire": {"enabled": True, "base_url": "x", "user_agent": "u",
+                                             "min_interval_seconds": 1, "interval_hours": 1}}))
+    with pytest.raises(ValueError, match="interval_hours"):
+        load_source_config("freehire", str(path))
 
 
 def test_the_shipped_config_ships_the_source_disabled():

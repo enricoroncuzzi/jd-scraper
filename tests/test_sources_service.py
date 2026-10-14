@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -118,6 +119,18 @@ def test_a_oneshot_run_of_only_errors_exits_nonzero(store_conn, store_conn_facto
     monkeypatch.setattr(service, "connect", lambda url: store_conn_factory(store_conn))
     body = {**_body(_hits(0, 5)), "meta": {"ignored_params": [{"param": "category"}]}}
     assert service.main(["freehire", "--once"], get=Pages(*[body] * 8)) == 1
+
+
+def test_a_one_hour_interval_drains_each_slice_once(store_conn):
+    # A hand-built config can still reach collect_due_slices; a 1 h interval must not make a
+    # finished slice due again inside the same run (load_source_config rejects it from the file).
+    cfg = replace(_cfg(page_size=5), interval_hours=1)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    store_conn.commit()
+    pages = Pages(*[_body(_hits(index, 1)) for index in range(8)])
+    ticks = service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
+                                       now_fn=lambda: NOW)
+    assert len(ticks) == 8
 
 
 def test_a_crash_during_a_drain_leaves_an_error_beat(store_conn):

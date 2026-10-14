@@ -38,10 +38,15 @@ class SourceConfig:
 def load_source_config(name: str, path: str = "config/sources.json") -> SourceConfig:
     with open(path) as handle:
         data = json.load(handle)[name]
+    interval_hours = int(data["interval_hours"])
+    if interval_hours < 2:
+        # A walk schedules the next run a little short of a full interval; an interval of an
+        # hour or less would leave a finished slice due again in the same oneshot drain.
+        raise ValueError(f"{name}: interval_hours must be at least 2, got {interval_hours}")
     shared = {"enabled", "base_url", "user_agent", "min_interval_seconds", "interval_hours"}
     return SourceConfig(
         enabled=bool(data["enabled"]), base_url=data["base_url"], user_agent=data["user_agent"],
-        min_interval_seconds=float(data["min_interval_seconds"]), interval_hours=int(data["interval_hours"]),
+        min_interval_seconds=float(data["min_interval_seconds"]), interval_hours=interval_hours,
         options={key: value for key, value in data.items() if key not in shared})
 
 
