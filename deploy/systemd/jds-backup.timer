@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly jd-scraper job store backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
