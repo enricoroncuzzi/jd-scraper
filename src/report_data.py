@@ -138,6 +138,7 @@ class DayReport:
     p95_latency_ms: float | None
     attempt_log: list = field(default_factory=list)
     limits_unconfigured: bool = False
+    finished_through: int = 0
 
 
 @dataclass
@@ -279,7 +280,9 @@ def _connect(db_url: str):
 
 
 def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: str | None = None,
-             day: date | None = None) -> DayReport | None:
+             day: date | None = None, finished_through: int = 0) -> DayReport | None:
+    """finished_through: the highest tier whose process has already exited, so
+    any of its records still marked running died rather than being in progress."""
     conn = _connect(db_url)
     try:
         with _cursor(conn) as cur:
@@ -388,6 +391,7 @@ def load_day(db_url: str, *, settings: dict[int, TierSettings], daily_run_id: st
             llm_calls=int(totals["calls"]), llm_failed=int(totals["failed"]),
             p95_latency_ms=totals["p95"],
             attempt_log=attempt_log, limits_unconfigured=limits_unconfigured,
+            finished_through=finished_through,
         )
     finally:
         conn.close()

@@ -118,6 +118,19 @@ def test_an_in_progress_tier_is_running_in_the_morning_report_and_the_day_report
     assert "CRASHED" not in _summary(report)
 
 
+def test_a_killed_tier_is_crashed_once_its_process_has_exited():
+    # The orchestrator reports a tier only after its process exits, so a record
+    # still running then was killed (OOM, SIGKILL), even with nothing after it.
+    tiers = {n: _tier(n) for n in (1, 2, 3)}
+    tiers[4] = _tier(4, status="running", finished_at=None)
+    report = _report(tiers=tiers, finished_through=4)
+    morning = rr.render_tier_messages(report, 4, settings=SETTINGS)[0]
+    assert "Tier 4 · UK · CRASHED" in morning
+    assert "CRASHED: its record was never closed" in morning
+    assert "3 of 4 tiers ok" in _summary(report)
+    assert "T4 attempt 1 of 1 · CRASHED" in rr.render_day_detail(report, settings=SETTINGS)
+
+
 def test_an_earlier_attempt_left_running_is_crashed_once_a_later_attempt_starts():
     log = [
         rd.AttemptView(4, 1, 2, "running", T0, None, None),

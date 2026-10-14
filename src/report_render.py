@@ -154,14 +154,17 @@ def _count(value) -> str:
 
 
 def _later_work_started(report, tier_no: int, attempt: int) -> bool:
-    """True when something after this tier attempt already has a record.
+    """True when this tier attempt is known to be over.
 
-    That is the evidence an unfinished record was left behind: a later attempt
-    of the same tier, or any later tier. The newest running tier has neither,
-    so it is still in progress. The day's finished_at is not this signal. It is
-    the latest tier that has already closed, which is set while a later tier
-    is still running.
+    Either its process has already exited (the orchestrator reports a tier only
+    after that, see DayReport.finished_through), or something after it already
+    has a record: a later attempt of the same tier, or any later tier. The
+    newest running tier of a live run has none of these, so it is still in
+    progress. The day's finished_at is not this signal. It is the latest tier
+    that has already closed, which is set while a later tier is still running.
     """
+    if tier_no <= getattr(report, "finished_through", 0):
+        return True
     log = list(getattr(report, "attempt_log", None) or [])
     if any(entry.tier == tier_no and entry.attempt > attempt for entry in log):
         return True
