@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import replace
-from datetime import date, time
+from datetime import date, time, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -60,7 +60,17 @@ def test_candidates_are_confirmed_above_threshold_with_a_note_and_no_package_yet
     packaged = _delivered(store_conn, 6)
     with store_conn.cursor() as cur:
         cur.execute("INSERT INTO job_applications (job_id, channel) VALUES (%s, 'unknown')", (packaged,))
-    assert {j.id for j in candidates(store_conn, cfg)} == {good, tier2}
+    assert {j.id for j in candidates(store_conn, cfg, NOW)} == {good, tier2}
+
+
+def test_candidates_skip_a_job_whose_packaging_failed_recently(store_conn, cfg):
+    job = _delivered(store_conn, 1)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO kv_state (key, value) VALUES (%s, %s::jsonb)",
+                    (f"package_fail:{job}", json.dumps({"attempts": 1, "stopped": False,
+                                                         "next_try_at": (NOW + timedelta(hours=1)).isoformat()})))
+    store_conn.commit()
+    assert candidates(store_conn, cfg, NOW) == []
 
 
 def test_a_candidate_is_classified_tailored_recorded_and_not_notified_in_dry_run(store_conn, cfg, env, tmp_path):

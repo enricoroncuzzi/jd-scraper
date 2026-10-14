@@ -128,8 +128,21 @@ class DeliverService:
                                      now=now, tailor_run=self.tailor_run))
         except Exception as exc:  # noqa: BLE001 - a packaging failure must not stop delivery
             print(f"[deliver] packaging failed ({type(exc).__name__}: {exc})")
-            self._send(f"Auto-apply FAILED: {type(exc).__name__}: {exc}"[:500])
+            self._notify_failure_once(conn, now, exc)
             return 0
+
+    def _notify_failure_once(self, conn, now, exc) -> None:
+        """One Auto-apply FAILED message per day per error class, not one per pass."""
+        day = self.settings.local_day(now)
+        key = f"autoapply_failed:{day}:{type(exc).__name__}"
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM kv_state WHERE key = %s", (key,))
+            if cur.fetchone():
+                return
+            cur.execute("INSERT INTO kv_state (key, value, updated_at) VALUES (%s, '{}'::jsonb, %s) "
+                        "ON CONFLICT (key) DO NOTHING", (key, now))
+        conn.commit()
+        self._send(f"Auto-apply FAILED: {type(exc).__name__}: {exc}"[:500])
 
     def _archive(self, conn, now: datetime) -> bool:
         interval = timedelta(minutes=self.settings.archive_every_minutes)

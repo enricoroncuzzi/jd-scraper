@@ -153,3 +153,41 @@ def test_a_persistently_rejected_send_does_not_report_work_forever(store_conn, m
     second = service.tick(store_conn, NOW + timedelta(minutes=1))
     assert first.did_work is True  # the delivery itself progressed
     assert second.did_work is False  # every send was rejected, so the loop may idle
+
+
+def _packaging_service(tmp_path, tailor_run, cv_master):
+    from src.delivery.autopackage import PackagingConfig
+    settings = DeliverySettings(output_path=str(tmp_path), delivery_time=time(8, 0),
+                                timezone=ZoneInfo("Europe/Rome"))
+    pkg = PackagingConfig(str(cv_master), str(tmp_path / "CV_css.md"), "key")
+    return DeliverService(cfg=load_processor_config(), settings=settings, packaging=pkg, pace=FakePace(),
+                          tailor_run=tailor_run, send=Outbox(),
+                          connect_neon=lambda: (_ for _ in ()).throw(RuntimeError("no neon in tests")))
+
+
+def test_a_halted_tailoring_is_retried_with_backoff_and_stops(store_conn, tmp_path):
+    (tmp_path / "CV_css.md").write_text("css")
+    master = tmp_path / "CV_master.md"
+    master.write_text("cv")
+    scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY)
+    calls = []
+
+    def tailor(note, *a):
+        calls.append(note)
+        raise ValueError("HALTED: cover-letter bridge is not concrete")
+
+    service = _packaging_service(tmp_path, tailor, master)
+    start = datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc)
+    for minute in range(24 * 60):
+        service.tick(store_conn, start + timedelta(minutes=minute))
+    assert len(calls) == 3  # 1h, 6h then stop, not once per 15 minutes all day
+    assert [m for m in service.send.sent if m.startswith("Auto-apply FAILED")] == []
+
+
+def test_a_missing_cv_source_sends_one_failure_message_a_day(store_conn, tmp_path):
+    scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY)
+    service = _packaging_service(tmp_path, lambda *a: None, tmp_path / "nope.md")
+    start = datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc)  # 08:00 Rome
+    for minute in range(8 * 60):  # stays inside one local day
+        service.tick(store_conn, start + timedelta(minutes=minute))
+    assert len([m for m in service.send.sent if m.startswith("Auto-apply FAILED")]) == 1
