@@ -117,3 +117,28 @@ def test_markdown_rejected_by_telegram_falls_back_to_plain_text():
     assert calls == ["Markdown", None]
     assert send_with_fallback(settings, "plain", markdown=False, sender=sender) is True
     assert calls[-1] is None
+
+
+def test_a_telegram_network_failure_does_not_abort_the_tick(store_conn, tmp_path):
+    import requests
+    scored_job(store_conn, 1, 9, when=NOW)
+    settings = DeliverySettings(output_path=str(tmp_path), delivery_time=time(8, 0),
+                                timezone=ZoneInfo("Europe/Rome"))
+    archive_calls = []
+
+    def raising_sender(settings, text, *, markdown):
+        raise requests.ConnectionError("telegram unreachable")
+
+    service = DeliverService(cfg=load_processor_config(), settings=settings, packaging=None, pace=FakePace(),
+                             tailor_run=None, connect_neon=lambda: archive_calls.append(1),
+                             send=raising_sender)
+    tick = service.tick(store_conn, NOW)
+    assert tick.did_work is True  # the delivery itself happened
+    assert archive_calls == [1]  # the archive was still attempted
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT telegram_sent_at FROM delivery_runs WHERE day = %s AND tier = 1", (DAY,))
+        assert cur.fetchone()[0] is None
+    outbox = Outbox()
+    service.send = outbox
+    service.tick(store_conn, NOW + timedelta(minutes=1))
+    assert len([m for m in outbox.sent if m.startswith("Hey Enrico! Tier")]) == 4

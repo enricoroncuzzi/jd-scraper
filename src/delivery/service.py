@@ -39,14 +39,19 @@ SERVICE = "deliver"
 def send_with_fallback(settings: DeliverySettings, text: str, *, markdown: bool,
                        sender=send_message) -> bool:
     """Markdown first (the digest message uses it), plain text if Telegram rejects the
-    markup; one bad title must not block a message forever."""
+    markup. Total: a network error, timeout or rejection never propagates, so a Telegram
+    outage cannot abort the tick and stop packaging or the archive."""
     if markdown:
         try:
             if sender(text, settings.telegram_token, settings.telegram_chat_id):
                 return True
-        except Exception:  # noqa: BLE001 - fall through to the plain-text attempt
-            pass
-    return bool(sender(text, settings.telegram_token, settings.telegram_chat_id, parse_mode=None))
+        except Exception as exc:  # noqa: BLE001 - fall through to the plain-text attempt
+            print(f"[deliver] markdown send failed ({type(exc).__name__}: {exc}); trying plain text")
+    try:
+        return bool(sender(text, settings.telegram_token, settings.telegram_chat_id, parse_mode=None))
+    except Exception as exc:  # noqa: BLE001 - a Telegram outage must not abort the tick
+        print(f"[deliver] telegram send failed ({type(exc).__name__}: {exc})")
+        return False
 
 
 @dataclass
@@ -61,7 +66,11 @@ class DeliverService:
     last_archive: datetime | None = None
 
     def _send(self, text: str, markdown: bool = False) -> bool:
-        return self.send(self.settings, text, markdown=markdown)
+        try:
+            return self.send(self.settings, text, markdown=markdown)
+        except Exception as exc:  # noqa: BLE001 - a Telegram outage must not abort the tick
+            print(f"[deliver] telegram send failed ({type(exc).__name__}: {exc})")
+            return False
 
     def _day_summary_sent(self, conn, day) -> bool:
         with conn.cursor() as cur:
