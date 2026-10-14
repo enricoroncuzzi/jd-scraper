@@ -26,6 +26,8 @@ The hard problem here isn't scraping, it's making an LLM produce text a hiring m
 
 The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the digest, and every tailored offer lands in its own directory.
 
+The redesign turns this into long-running services (a LinkedIn collector, a processor, a delivery service, a watchdog and a nightly backup) around a server-side PostgreSQL job store. The operational procedure for installing, switching to, watching and rolling back those services lives in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
+
 ## CV tailoring, working today
 
 `tailor.py <job>` calls OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`) to reorder skill groups from a canonical CV for the specific job description. Every bullet is included, in canonical order. The model writes only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte. The validation gate in `src/tailor/validate.py` aborts the run if a required metric is missing, or if the cover letter fails its checks for banned phrases, length, and a concrete bridge. Hook claims are written to `CLAIMS_REVIEW.txt` for a person to confirm. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline, and the CV must stay a single page. The package is one directory per offer.
