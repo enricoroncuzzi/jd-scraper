@@ -29,3 +29,7 @@ def test_every_experimental_switch_ships_off():
 def test_autoapply_settings_come_from_the_tier_configs_and_default_to_dry_run():
     policies = load_processor_config().policies
     assert all(p.autoapply_enabled and p.autoapply_dry_run for p in policies.values())
+
+
+def test_the_description_stage_has_a_time_budget_per_tick():
+    assert load_processor_config().description_seconds_per_tick == 120

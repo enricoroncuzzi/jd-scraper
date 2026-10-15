@@ -111,11 +111,17 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
 
 
 def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
-                     get=requests.get, sleep=time.sleep) -> int:
-    """Up to cfg.descriptions_per_tick fetches. A fetch the pace had to defer
+                     get=requests.get, sleep=time.sleep, clock=time.monotonic) -> int:
+    """Up to cfg.descriptions_per_tick fetches, and no new fetch once the tick has spent
+    cfg.description_seconds_per_tick on them (the first fetch always happens). A slow LinkedIn
+    pace would otherwise keep one tick inside this stage for hours and starve the cheap checks,
+    merging, verification and scoring that come after it. A fetch the pace had to defer
     (refused) ends the round: more requests now would only be refused too."""
     done = 0
+    started = clock()
     while done < cfg.descriptions_per_tick:
+        if done and clock() - started >= cfg.description_seconds_per_tick:
+            break
         pulse({"describing": done})
         outcome = describe_next(conn, pace, cfg, now, get=get, sleep=sleep)
         if outcome is None:

@@ -3,6 +3,7 @@
   "scoring_batch_size": 5,
   "flush_after_minutes": 30,
   "descriptions_per_tick": 20,
+  "description_seconds_per_tick": 120,
   "cheap_checks_per_tick": 200,
   "refusal_expiry_days": 7,
   "posting_max_age_days": 30,
