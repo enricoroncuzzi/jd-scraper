@@ -49,8 +49,12 @@ class ScriptedGet:
 class FakePace:
     """Stands in for PaceBudget: grants every slot at once and records outcomes."""
 
-    def __init__(self):
+    def __init__(self, wait: float = 0.0):
         self.events = []
+        self.wait = wait
+
+    def seconds_until_slot(self) -> float:
+        return self.wait
 
     @contextmanager
     def slot(self, kind):

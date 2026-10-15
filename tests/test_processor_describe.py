@@ -228,3 +228,17 @@ def test_the_first_description_is_fetched_even_when_the_budget_is_zero(store_con
     get = ScriptedGet(response(200, FRAGMENT))
     assert run_descriptions(store_conn, FakePace(), replace(cfg, description_seconds_per_tick=0), NOW,
                             get=get, sleep=lambda _s: None) == 1
+
+
+def test_a_busy_tick_does_not_queue_for_a_far_away_linkedin_turn(store_conn, cfg):
+    _tiered_job(store_conn, cfg)
+    get = ScriptedGet(response(200, FRAGMENT))
+    far = FakePace(wait=300)
+    assert run_descriptions(store_conn, far, cfg, NOW, get=get, sleep=lambda _s: None,
+                            skip_if_wait_over=120) == 0 and get.calls == []
+    assert run_descriptions(store_conn, far, cfg, NOW, get=get, sleep=lambda _s: None) == 1  # an idle tick waits
+    near = FakePace(wait=10)
+    _tiered_job(store_conn, cfg, "3900000002")
+    get = ScriptedGet(response(200, FRAGMENT))
+    assert run_descriptions(store_conn, near, cfg, NOW, get=get, sleep=lambda _s: None,
+                            skip_if_wait_over=120) == 1

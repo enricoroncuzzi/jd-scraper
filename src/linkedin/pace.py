@@ -171,6 +171,13 @@ class PaceBudget:
         """Current stored state, for status displays. Takes no lock."""
         return after_calm(self._load(), self.clock())
 
+    def seconds_until_slot(self) -> float:
+        """How long a request made now would wait for its turn, ignoring the other
+        service's place in the queue. Takes no lock."""
+        state = self._load()
+        ready = max(state.next_slot_at, state.cooldown_until or state.next_slot_at)
+        return max(0.0, (ready - self.clock()).total_seconds())
+
     # -- the turn --------------------------------------------------------
     def _other_is_waiting(self, state: PaceState, kind: str) -> bool:
         now = self.clock().timestamp()
@@ -242,6 +249,9 @@ class ManagedPace:
             conn.autocommit = True
             self._budget = PaceBudget(conn, **self._options)
         return self._budget
+
+    def seconds_until_slot(self) -> float:
+        return self._current().seconds_until_slot()
 
     @contextmanager
     def slot(self, kind: str):
