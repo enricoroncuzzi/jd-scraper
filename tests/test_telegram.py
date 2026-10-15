@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 from src.models import ScoredOffer
-from src.telegram import send_summary
+from src.telegram import escape_html, send_summary
 
 
 def _offer(id, title, score):
@@ -235,3 +235,27 @@ def test_a_full_digest_with_deferrals_still_fits_telegram_limit(monkeypatch):
                  deferred_count=222)
 
     assert len(sent["text"]) <= 4096
+
+
+def test_escape_html_escapes_telegram_markup_characters():
+    assert escape_html("A < B & C > D") == "A &lt; B &amp; C &gt; D"
+    assert escape_html("already &amp; escaped") == "already &amp;amp; escaped"
+    assert escape_html("no markup here") == "no markup here"
+
+
+def test_send_summary_escapes_html_in_every_dynamic_field(monkeypatch):
+    # The 2026-10-15 morning: a title/company with markup characters made
+    # Telegram reject the whole message (400 "can't parse entities"). Every
+    # dynamic value must be escaped for the parse mode in use.
+    sent = _capture(monkeypatch)
+    offer = ScoredOffer(
+        id=1, title="Senior <AI> & ML", company="Acme & Co",
+        location="Milan, Italy", link="https://example.com/a?b=1&c=2", score=9,
+        comment="ok", summary="R&D <lead>", remote_verdict="confirmed")
+
+    send_summary([offer], 8, "Hey!", "t", "1", verification_enabled=True)
+
+    text = sent["text"]
+    assert "<b>Senior &lt;AI&gt; &amp; ML - Acme &amp; Co</b> (9/10)" in text
+    assert "R&amp;D &lt;lead&gt;" in text
+    assert "https://example.com/a?b=1&amp;c=2" in text

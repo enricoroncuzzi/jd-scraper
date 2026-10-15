@@ -38,7 +38,7 @@ def test_the_tier_digest_message_is_the_legacy_formatter_output(store_conn, cfg,
     delivery = deliver_tier(store_conn, cfg, settings, 1, DAY, NOW)
     text = tier_digest_message(delivery, cfg.policies[1])
     assert text.startswith("Hey Enrico! Tier 1 (Italy, full remote) digest is ready.\n\nJob Digest - 2026-10-14")
-    assert "*Confirmed full-remote (1):*" in text and "AI Engineer 1 - Acme 1" in text
+    assert "<b>Confirmed full-remote (1):</b>" in text and "AI Engineer 1 - Acme 1" in text
 
 
 def test_an_empty_tier_message_says_nothing_new(store_conn, cfg, settings):

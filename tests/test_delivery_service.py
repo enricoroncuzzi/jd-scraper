@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -29,7 +30,7 @@ class Outbox:
         self.sent = []
         self.fail = False
 
-    def __call__(self, settings, text, *, markdown):
+    def __call__(self, settings, text, *, formatted):
         if self.fail:
             return False
         self.sent.append(text)
@@ -104,7 +105,7 @@ def test_the_archive_runs_every_thirty_minutes_and_a_dead_neon_stops_nothing(sto
     assert service.tick(store_conn, NOW + timedelta(minutes=31)).detail["archived"] is True
 
 
-def test_markdown_rejected_by_telegram_falls_back_to_plain_text():
+def test_html_rejected_by_telegram_falls_back_to_plain_text(capsys):
     settings = DeliverySettings(output_path="o", delivery_time=time(8), timezone=ZoneInfo("UTC"),
                                 telegram_token="t", telegram_chat_id="c")
     calls = []
@@ -113,9 +114,11 @@ def test_markdown_rejected_by_telegram_falls_back_to_plain_text():
         calls.append(parse_mode)
         return parse_mode is None
 
-    assert send_with_fallback(settings, "x_y", markdown=True, sender=sender) is True
-    assert calls == ["Markdown", None]
-    assert send_with_fallback(settings, "plain", markdown=False, sender=sender) is True
+    assert send_with_fallback(settings, "<b>x</b>", formatted=True, sender=sender) is True
+    assert calls == ["HTML", None]
+    # The plain-text resend is logged so a silently degraded digest is visible.
+    assert "resending as plain text" in capsys.readouterr().out
+    assert send_with_fallback(settings, "plain", formatted=False, sender=sender) is True
     assert calls[-1] is None
 
 
@@ -126,7 +129,7 @@ def test_a_telegram_network_failure_does_not_abort_the_tick(store_conn, tmp_path
                                 timezone=ZoneInfo("Europe/Rome"))
     archive_calls = []
 
-    def raising_sender(settings, text, *, markdown):
+    def raising_sender(settings, text, *, formatted):
         raise requests.ConnectionError("telegram unreachable")
 
     service = DeliverService(cfg=load_processor_config(), settings=settings, packaging=None, pace=FakePace(),
@@ -191,3 +194,61 @@ def test_a_missing_cv_source_sends_one_failure_message_a_day(store_conn, tmp_pat
     for minute in range(8 * 60):  # stays inside one local day
         service.tick(store_conn, start + timedelta(minutes=minute))
     assert len([m for m in service.send.sent if m.startswith("Auto-apply FAILED")]) == 1
+
+
+class _Response:
+    def __init__(self, ok, status_code, text):
+        self.ok = ok
+        self.status_code = status_code
+        self.text = text
+
+
+_ALLOWED_HTML_TAGS = ("<b>", "</b>", "<i>", "</i>")
+_BARE_AMPERSAND = re.compile(r"&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)")
+
+
+def _malformed_html(text: str) -> bool:
+    """Telegram's HTML parse mode rejects an unescaped `<`, `>` or `&`, or an
+    unbalanced/unknown tag, with 400 "can't parse entities" - the class of
+    failure the 2026-10-15 morning digest hit."""
+    stripped = text
+    for tag in _ALLOWED_HTML_TAGS:
+        stripped = stripped.replace(tag, "")
+    return "<" in stripped or ">" in stripped or _BARE_AMPERSAND.search(stripped) is not None
+
+
+def _telegram_simulator():
+    calls = []
+
+    def post(url, json, timeout):
+        calls.append(json)
+        if json.get("parse_mode") == "HTML" and _malformed_html(json["text"]):
+            return _Response(False, 400, '{"ok":false,"error_code":400,"description":"Bad Request: '
+                                         "can't parse entities: Unsupported start tag")
+        return _Response(True, 200, '{"ok":true}')
+
+    post.calls = calls
+    return post
+
+
+def test_a_markup_job_title_reaches_telegram_without_a_plain_text_fallback(store_conn, tmp_path, monkeypatch):
+    # The whole day-summary path against a requests.post stand-in that rejects
+    # malformed HTML: with every dynamic value escaped, all five messages are
+    # accepted on their first (formatted) attempt, so no fallback fires.
+    scored_job(store_conn, 1, 9, when=BEFORE_EIGHT,
+               title="Senior <AI> *Engineer* & [Remote", company="Acme & Co_Inc",
+               location="Milan, Italy", summary="R&D <lead>")
+    post = _telegram_simulator()
+    monkeypatch.setattr(telegram.requests, "post", post)
+    settings = DeliverySettings(output_path=str(tmp_path), delivery_time=time(8, 0),
+                                timezone=ZoneInfo("Europe/Rome"), archive_every_minutes=30,
+                                telegram_token="t", telegram_chat_id="c")
+    service = DeliverService(cfg=load_processor_config(), settings=settings, packaging=None,
+                             pace=FakePace(), tailor_run=None,
+                             connect_neon=lambda: (_ for _ in ()).throw(RuntimeError("no neon in tests")))
+    service.tick(store_conn, BEFORE_EIGHT)  # the immediate alert goes out plain
+    post.calls.clear()
+    tick = service.tick(store_conn, NOW)
+    assert tick.detail["delivered"] is True
+    assert len(post.calls) == 5  # the four tier digests plus the day summary
+    assert sum(1 for call in post.calls if call.get("parse_mode") == "HTML") == 4
