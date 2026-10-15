@@ -140,3 +140,12 @@ def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     text = status.render(store_conn, NOW)
     assert "tier -  seen" in text and "linkedin" in text and "spacing x2.00" in text
     assert "openrouter today (UTC): 7 requests" in text and "process" in text
+
+
+def test_status_shows_the_spacing_after_calm_decay(store_conn):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, factor, calm_since) "
+                    "VALUES ('linkedin.com', %s, 8.0, %s)", (NOW, NOW - timedelta(minutes=65)))
+    store_conn.commit()
+    text = status.render(store_conn, NOW)
+    assert "spacing x2.00" in text and "no refusal since" in text

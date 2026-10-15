@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
+from src.linkedin.pace import PaceState, after_calm
 
 
 def render(conn, now: datetime) -> str:
@@ -25,14 +26,16 @@ def render(conn, now: datetime) -> str:
         for source, active, due, last in cur.fetchall():
             lines.append(f"  {source:<10} {active:>4} {due:>4}   "
                          f"{last:%Y-%m-%d %H:%M}" if last else f"  {source:<10} {active:>4} {due:>4}   never")
-        cur.execute("SELECT factor, clean_streak, cooldown_until, last_kind FROM pace_budgets "
+        cur.execute("SELECT factor, clean_streak, cooldown_until, last_kind, calm_since FROM pace_budgets "
                     "WHERE host = 'linkedin.com'")
         pace = cur.fetchone()
         if pace:
-            factor, streak, cooldown, kind = pace
+            stored, streak, cooldown, kind, calm_since = pace
+            factor = after_calm(PaceState(now, stored, calm_since=calm_since), now).factor
             cooling = f", cooling down until {cooldown:%H:%M:%S}" if cooldown and cooldown > now else ""
+            calm = f", no refusal since {calm_since:%H:%M}" if calm_since and factor > 1.0 else ""
             lines.append(f"LinkedIn pace: spacing x{factor:.2f} (1.00 = base), {streak} clean in a row, "
-                         f"last request: {kind}{cooling}")
+                         f"last request: {kind}{cooling}{calm}")
     for provider in ("openrouter", "groq"):
         usage = budget.used_today(conn, provider, now)
         lines.append(f"{provider} today (UTC): {usage.requests} requests, "

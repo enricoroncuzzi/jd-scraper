@@ -50,7 +50,7 @@ def test_retries_wait_5_15_45_then_the_request_is_deferred():
     with pytest.raises(SearchThrottled):
         _fetch(get, pace, sleeps)
     assert sleeps == list(RETRY_WAITS) == [5, 15, 45]
-    assert [outcome for _, outcome in pace.events] == ["throttled"] * 4
+    assert [outcome for _, outcome in pace.events] == ["throttled"] + ["throttled_again"] * 3
     assert len(get.calls) == 4
 
 
@@ -77,3 +77,10 @@ def test_a_network_error_that_never_recovers_fails_without_claiming_a_throttle()
     get = ScriptedGet(*[requests.ConnectionError("down") for _ in range(4)])
     with pytest.raises(SearchFailed):
         _fetch(get)
+
+
+def test_a_refused_and_retried_page_beats_before_every_attempt(pulses):
+    get = ScriptedGet(response(429), response(429), response(200, page_html(*ids(0, 1))))
+    _fetch(get)
+    assert [call["attempt"] for call in pulses] == [1, 2, 3]
+    assert pulses[0] == {"search": "AI Engineer / Italy", "start": 20, "attempt": 1}

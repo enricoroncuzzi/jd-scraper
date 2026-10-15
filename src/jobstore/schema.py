@@ -165,6 +165,7 @@ DDL: list[str] = [
         wanting      JSONB NOT NULL DEFAULT '{}'::jsonb
     )
     """,
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS calm_since TIMESTAMPTZ",
     """
     CREATE TABLE IF NOT EXISTS service_heartbeats (
         service    TEXT PRIMARY KEY,

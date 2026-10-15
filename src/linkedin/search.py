@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import requests
 
 from src.linkedin.cards import Card, parse_cards
+from src.services.pulse import pulse
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 HEADERS = {
@@ -46,6 +47,7 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
     saw_throttle = False
     last_problem = "no attempt"
     for attempt in range(len(RETRY_WAITS) + 1):
+        pulse({"search": f"{role} / {area}", "start": start, "attempt": attempt + 1})
         with pace.slot("search") as slot:
             try:
                 response = get(SEARCH_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
@@ -62,7 +64,7 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
                     slot.neutral()
                     return Page([], saw_throttle, end=True)
                 if status in THROTTLE_STATUSES:
-                    slot.throttled()
+                    slot.throttled_again() if saw_throttle else slot.throttled()
                     saw_throttle = True
                     last_problem = f"HTTP {status}"
                 elif status in TRANSIENT_STATUSES:

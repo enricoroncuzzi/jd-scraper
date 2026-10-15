@@ -228,5 +228,6 @@ def test_a_walk_beats_before_every_page_it_fetches(store_conn, pulses):
                       response(200, page_html()))
     result, _ = _walk(store_conn, get)
     assert result.pages == 3
-    assert [call["pages"] for call in pulses] == [0, 1, 2]
-    assert pulses[0]["slice"] == "AI Engineer / Italy" and pulses[2]["new_jobs"] == 20
+    walking = [call for call in pulses if "pages" in call]
+    assert [call["pages"] for call in walking] == [0, 1, 2]
+    assert walking[0]["slice"] == "AI Engineer / Italy" and walking[2]["new_jobs"] == 20

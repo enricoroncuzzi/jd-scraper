@@ -195,4 +195,15 @@ def test_a_description_round_beats_before_every_fetch(store_conn, cfg, pulses):
         _tiered_job(store_conn, cfg, f"390000000{n + 1}")
     get = ScriptedGet(*[response(200, FRAGMENT)] * 3)
     assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 3
-    assert [call["describing"] for call in pulses] == [0, 1, 2, 3]
+    assert [call["describing"] for call in pulses if "describing" in call] == [0, 1, 2, 3]
+
+
+def test_one_refused_description_counts_as_one_throttle_not_one_per_retry():
+    pace = FakePace()
+    fetch_description(pace, "1", get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
+    assert [outcome for _kind, outcome in pace.events] == ["throttled"] + ["throttled_again"] * 3
+
+
+def test_the_retries_of_one_description_beat_while_it_waits(pulses):
+    fetch_description(FakePace(), "3900000009", get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
+    assert pulses == [{"description": "3900000009", "attempt": n} for n in (1, 2, 3, 4)]

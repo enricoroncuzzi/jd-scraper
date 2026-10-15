@@ -178,7 +178,9 @@ loses nothing.
 - Health: the day summary carries each service's state; the watchdog messages Telegram if a
   service is silent for over an hour, nothing was collected for six hours, or Postgres is down.
 - Logs: `journalctl -u jds-process --since today`. LinkedIn throttling shows up as
-  `spacing x` above 1.00 in `status`; it clears by itself.
+  `spacing x` above 1.00 in `status`. A request that is refused and retried counts as one throttle
+  (one doubling, capped at x100). The spacing halves for every 30 minutes without a refusal and also
+  falls 10 percent per 50 clean responses, so it clears by itself.
 - Language-model use: the day summary shows OpenRouter requests against 1,000. It turns
   `HIGH` from 800. A budget that prioritises tier 1 is built only if usage exceeds 800 a day
   on three days in a fortnight (spec section 6.5).
