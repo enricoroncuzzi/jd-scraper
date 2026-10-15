@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.jobstore.sightings import CardInput, record_sighting
+from src.linkedin.pace import Gate
 from src.processor.config import load_processor_config
 from src.processor.llm_stages import LlmKeys
 from src.processor.runner import process_once, waiting_counts
@@ -90,6 +91,19 @@ def test_the_merged_call_replaces_the_two_stages_when_switched_on(store_conn, cf
                  sleep=lambda _s: None, verify=verify, score=score, chain=chain)
     assert _stage(store_conn, job) == ("scored", "", "confirmed", 8)
     assert verify.calls == [] and score.calls == [] and len(chain.payloads) == 1
+
+
+def test_a_closed_gate_skips_descriptions_but_keeps_the_other_stages(store_conn, cfg):
+    waiting = record_sighting(store_conn, _linkedin_card("3900000001"), NOW).job_id
+    record_sighting(store_conn, _linkedin_card("3900000009", location="Austin, Texas, United States"), NOW)
+    store_conn.commit()
+    gate = Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
+    get = ScriptedGet(response(200, FRAGMENT))
+    tick = process_once(store_conn, FakePace(gate=gate), cfg, KEYS, now=NOW, get=get, sleep=lambda _s: None,
+                        verify=FakeVerify(), score=FakeScore())
+    assert tick.detail["described"] == 0 and get.calls == []
+    assert tick.detail["cheap"] >= 1  # cheap checks, verification and scoring still ran
+    assert _stage(store_conn, waiting)[0] == "seen"
 
 
 def test_a_tick_with_other_work_skips_a_far_away_linkedin_turn_but_an_idle_tick_fetches(store_conn, cfg):

@@ -88,6 +88,7 @@ DDL: list[str] = [
        WHERE stage IN ('seen', 'described')""",
     """CREATE INDEX IF NOT EXISTS jobs_unarchived_idx ON jobs (stage)
        WHERE archived_at IS NULL AND stage IN ('scored', 'delivered', 'expired')""",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_text TEXT",
     """
     CREATE TABLE IF NOT EXISTS sightings (
         id            BIGSERIAL PRIMARY KEY,
@@ -166,6 +167,26 @@ DDL: list[str] = [
     )
     """,
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS calm_since TIMESTAMPTZ",
+    # Schedule C gate state (config/schedule.json): the shared Rome-day request counter
+    # and the circuit breaker. Additive ALTERs so an existing production row upgrades in place.
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS requests_today INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS day DATE",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS refusal_times TIMESTAMPTZ[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS rest_until TIMESTAMPTZ",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS rest_level INTEGER NOT NULL DEFAULT 0",
+    """
+    CREATE TABLE IF NOT EXISTS pace_events (
+        id             BIGSERIAL PRIMARY KEY,
+        at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+        service        TEXT,
+        kind           TEXT NOT NULL,
+        outcome        TEXT NOT NULL,
+        status         INTEGER,
+        factor         DOUBLE PRECISION,
+        requests_today INTEGER
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS pace_events_at_idx ON pace_events (at)",
     """
     CREATE TABLE IF NOT EXISTS slice_walks (
         id             BIGSERIAL PRIMARY KEY,
@@ -215,7 +236,7 @@ DDL: list[str] = [
 
 TABLES = (
     "slices", "jobs", "sightings", "job_applications", "llm_calls", "llm_call_jobs",
-    "llm_budget", "pace_budgets", "slice_walks", "service_heartbeats", "delivery_runs",
+    "llm_budget", "pace_budgets", "pace_events", "slice_walks", "service_heartbeats", "delivery_runs",
     "legacy_seen_hashes", "kv_state",
 )
 

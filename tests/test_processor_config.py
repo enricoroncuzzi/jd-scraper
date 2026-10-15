@@ -20,10 +20,19 @@ def test_tiers_one_three_and_four_share_a_scoring_batch_but_tier_two_does_not():
     assert policies[2].scoring_key != policies[1].scoring_key
 
 
-def test_every_experimental_switch_ships_off():
+def test_the_experimental_switches_ship_off_but_the_title_prefilter_is_on():
     cfg = load_processor_config()
     assert cfg.structured_remote_enabled is False and cfg.merged_call_enabled is False
-    assert not any(policy.title_prefilter for policy in cfg.policies.values())
+    assert all(policy.title_prefilter for policy in cfg.policies.values())
+
+
+def test_the_title_prefilter_uses_the_strict_keywords_and_no_broad_ones():
+    for policy in load_processor_config().policies.values():
+        keywords = [keyword.lower() for keyword in policy.exclude_keywords]
+        for strict in ("principal", "staff", "vp", "director"):
+            assert strict in keywords
+        for broad in ("senior", "lead", "head of"):
+            assert broad not in keywords
 
 
 def test_autoapply_settings_come_from_the_tier_configs_and_default_to_dry_run():

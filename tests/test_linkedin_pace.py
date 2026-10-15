@@ -8,6 +8,7 @@ from src.linkedin.pace import (
     CLEAN_STREAK_FOR_RAISE, COOLDOWN_SECONDS, FLOOR_SPACING_SECONDS, MAX_FACTOR, PaceBudget,
     PaceState, after_calm, after_clean, after_repeat_throttle, after_throttle, spacing_seconds,
 )
+from src.linkedin.schedule import ScheduleConfig
 
 T0 = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
 
@@ -70,7 +71,9 @@ def make_budget(store_conn, store_conn_factory):
     def make(fake: FakeTime) -> PaceBudget:
         conn = store_conn_factory(store_conn)
         conn.autocommit = True
-        return PaceBudget(conn, clock=fake.clock, sleep=fake.sleep, uniform=lambda a, b: a)
+        # These tests exercise the AIMD rate only; the circuit breaker has its own tests.
+        return PaceBudget(conn, clock=fake.clock, sleep=fake.sleep, uniform=lambda a, b: a,
+                          schedule=ScheduleConfig(breaker_refusals=1000))
     return make
 
 

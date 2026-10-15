@@ -192,6 +192,74 @@ loses nothing.
   by `init_store` when a service starts.
 - Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process`.
 
+### The LinkedIn schedule gate (schedule C)
+
+The collector, the processor and the packaging stage of `jds-deliver` (which classifies a
+LinkedIn offer link) share one request budget on `linkedin.com`, enforced in
+`src/linkedin/pace.py` (the `PaceBudget.slot` choke point every request passes through), and
+configured in `config/schedule.json`:
+
+| Setting | Shipped value | Meaning |
+|---|---|---|
+| `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
+| `closed_hours` | `[0, 6]` | no LinkedIn request 00:00-06:00 Rome |
+| `daily_caps.weekday` / `.weekend` | `1400` / `800` | shared cap on search + description requests per Rome day |
+| `breaker.refusals` / `.window_minutes` | `3` / `30` | refusals that trip the breaker |
+| `breaker.rest_ladder_hours` | `[2, 6, 24]` | rest after the first trip, then after each refused probe |
+| `weekend_taper_min_interval_hours` | `24` | on Sat/Sun, slices whose base cadence is this long or longer are skipped |
+
+When the gate is closed the collector returns an idle tick, the processor skips only its
+LinkedIn description stage, and `jds-deliver` leaves each LinkedIn packaging candidate for the
+next pass; cheap checks, remote verification and scoring keep running, and every service keeps
+heartbeating. Every request is appended to the `pace_events` table (timestamp, service, kind
+`search`/`description`, outcome, HTTP status), and the description fetch stores the "posted N ago"
+text in `jobs.posted_text`.
+
+`config/schedule.json` is read once when a service starts, so a change to a cap, the window, the
+breaker or the taper needs the three LinkedIn users restarted:
+
+```bash
+sudo systemctl restart jds-collect-linkedin jds-process jds-deliver
+```
+
+Do that restart back to back, not one service per hour: the shared counter starts at its first
+restart on the new code, so a service still on the old code issues requests that are neither
+gated nor counted.
+
+Read the gate with `python -m src.services.status`. The line is one of:
+
+```
+LinkedIn gate: 342/1400 requests today (weekday), window open
+LinkedIn gate: 342/1400 requests today (weekday), window open, probe pending
+LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome
+LinkedIn gate: 1400/1400 requests today (weekday), daily cap reached
+LinkedIn gate: 17/1400 requests today (weekday), breaker rest until 2026-10-16 12:00 UTC
+```
+
+The `probe pending` suffix means a breaker rest has ended but LinkedIn has not yet answered the
+single probe request that would reset the ladder: the next request decides whether the ladder
+resets or the next rest begins. After a breaker rest ends the next request is the probe: if
+LinkedIn answers it cleanly the ladder resets, if it refuses the rest grows (2 h, 6 h, 24 h, then
+24 h on repeat). A timeout or a 503 proves nothing and leaves the ladder where it is, so the next
+request is another probe. The daily counter resets by itself at Rome midnight.
+
+The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
+its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,
+VP, Director) plus `10+ years`, `8+ years`, `7+ years`, `C++`, `Rust`, `Java` and `on-site only`;
+Senior, Lead and Head of are deliberately not in it. Java, Rust and C++ titles are therefore
+filtered too.
+
+To reset the breaker by hand (for example after confirming the IP is healthy, or to undo a
+mistake):
+
+```bash
+psql jds -c "UPDATE pace_budgets SET rest_until = NULL, rest_level = 0, refusal_times = '{}' \
+  WHERE host = 'linkedin.com';"
+```
+
+To reset today's request counter as well, add `, requests_today = 0, day = NULL` to the same
+`SET` list. Both take effect on the next tick; no restart is needed.
+
 ## 7. Backups (captain decision)
 
 The job store is backed up nightly by `jds-backup.timer` (03:30, `Persistent=true`), which

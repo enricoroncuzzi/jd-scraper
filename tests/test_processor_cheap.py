@@ -82,14 +82,17 @@ def test_an_unresolvable_location_falls_back_to_the_slice_tier(store_conn, cfg):
     assert _job(store_conn, job_id)[2] == 3
 
 
-def test_the_title_prefilter_is_off_by_default_and_filters_when_switched_on(store_conn, cfg):
-    from dataclasses import replace
+def test_the_title_prefilter_is_on_for_the_shipped_config_and_filters_strict_titles(store_conn, cfg):
     job_id = record_sighting(store_conn, _card(title="Principal ML Engineer"), NOW).job_id
-    assert check_one(store_conn, job_id, cfg, NOW) == "tiered"
-    on = replace(cfg, policies={**cfg.policies, 1: replace(cfg.policies[1], title_prefilter=True)})
-    second = record_sighting(store_conn, _card("222222", title="Principal ML Engineer"), NOW).job_id
-    assert check_one(store_conn, second, on, NOW) == "filtered"
-    assert _job(store_conn, second)[:2] == ("filtered_out", "title_prefilter:Principal")
+    assert check_one(store_conn, job_id, cfg, NOW) == "filtered"
+    assert _job(store_conn, job_id)[:2] == ("filtered_out", "title_prefilter:Principal")
+
+
+def test_the_prefilter_does_not_drop_senior_lead_or_head_of_titles(store_conn, cfg):
+    for source_job_id, title in (("444444", "Senior AI Engineer"), ("444445", "Lead AI Engineer"),
+                                 ("444446", "Head of AI")):
+        job_id = record_sighting(store_conn, _card(source_job_id, title=title), NOW).job_id
+        assert check_one(store_conn, job_id, cfg, NOW) == "tiered", title
 
 
 def test_a_link_the_old_system_handled_is_skipped(store_conn, cfg):

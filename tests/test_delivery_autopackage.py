@@ -1,5 +1,6 @@
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import date, time, timedelta
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from src.delivery.autopackage import (
     PackagingConfig, candidates, classify_through_pace, run_packaging,
 )
 from src.delivery.settings import DeliverySettings
+from src.linkedin.pace import Gate, PaceGateClosed
 from src.processor.config import load_processor_config
 from tests.delivery_helpers import NOW, scored_job
 from tests.linkedin_fakes import FakePace
@@ -149,3 +151,54 @@ def test_a_linkedin_classify_request_goes_through_the_shared_pace_but_other_host
     assert classify_through_pace(pace, "https://boards.greenhouse.io/acme/1", lambda l: "external_ats") \
         == "external_ats"
     assert len(pace.events) == 1
+
+
+class _ClosedPace:
+    """A pace whose schedule gate is closed: every slot raises, no request happens."""
+
+    def gate(self):
+        return Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
+
+    @contextmanager
+    def slot(self, kind):
+        raise PaceGateClosed(self.gate())
+        yield
+
+
+def test_a_closed_gate_defers_the_linkedin_candidate_and_packages_the_rest(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    linkedin = _delivered(store_conn, 1, score=10)
+    external = scored_job(store_conn, 2, 9, stage="delivered", note_day=DAY,
+                          canonical_url="https://boards.greenhouse.io/acme/2")
+    store_conn.commit()
+    tailor, notified = Tailor(tmp_path), []
+    results = run_packaging(store_conn, cfg, settings, pkg, _ClosedPace(), now=NOW, tailor_run=tailor,
+                            classify=lambda link: "external_ats", notify=lambda *a: notified.append(a))
+    assert [r["job_id"] for r in results] == [external]
+    assert notified == []
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM job_applications WHERE job_id = %s", (linkedin,))
+        assert cur.fetchone()[0] == 0  # still a candidate, not a failure
+        cur.execute("SELECT count(*) FROM kv_state WHERE key LIKE 'package_fail:%%'")
+        assert cur.fetchone()[0] == 0
+    assert linkedin in {job.id for job in candidates(store_conn, cfg, NOW)}
+
+
+def test_build_service_gives_the_shared_pace_the_deliver_name_and_schedule(monkeypatch, cfg):
+    import src.delivery.service as service_module
+    captured = {}
+
+    class RecordingPace:
+        def __init__(self, connect, **options):
+            captured.update(options)
+
+    monkeypatch.setattr(service_module, "ManagedPace", RecordingPace)
+    monkeypatch.setattr(service_module, "load_processor_config",
+                        lambda: replace(cfg, policies={t: replace(p, autoapply_enabled=False)
+                                                       for t, p in cfg.policies.items()}))
+    monkeypatch.setattr(service_module, "load_settings",
+                        lambda: DeliverySettings(output_path="o", delivery_time=time(8, 0),
+                                                 timezone=ZoneInfo("Europe/Rome")))
+    service_module.build_service()
+    assert captured["service"] == "deliver"
+    assert captured["schedule"].timezone == "Europe/Rome"

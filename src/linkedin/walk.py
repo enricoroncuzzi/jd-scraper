@@ -7,6 +7,7 @@ import requests
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.catalog import CollectorConfig, SOURCE
+from src.linkedin.pace import PaceGateClosed
 from src.linkedin.search import (
     RETRY_WAITS, Page, SearchFailed, SearchThrottled, fetch_page,
 )
@@ -44,15 +45,24 @@ class WalkResult:
         return self.stop_reason not in UNFINISHED
 
 
-def claim_due_slice(conn, now: datetime, source: str = SOURCE) -> SliceRow | None:
+def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
+                    taper_below_seconds: int | None = None) -> SliceRow | None:
     """The next due slice of `source`: tier 1 first, oldest due first. One collector per
-    source, so no row lock."""
+    source, so no row lock.
+
+    `taper_below_seconds` is the weekend taper: when set, a slice whose *base* cadence is
+    that long or longer is skipped (its window simply grows, nothing is lost)."""
+    query = (
+        "SELECT id, role, area, tier, base_interval_seconds, interval_seconds, last_walked_at, "
+        "consecutive_empty, resume_start FROM slices "
+        "WHERE active AND source = %s AND due_at <= %s")
+    params: list = [source, now]
+    if taper_below_seconds is not None:
+        query += " AND base_interval_seconds < %s"
+        params.append(taper_below_seconds)
+    query += " ORDER BY tier, due_at LIMIT 1"
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, role, area, tier, base_interval_seconds, interval_seconds, last_walked_at, "
-            "consecutive_empty, resume_start FROM slices "
-            "WHERE active AND source = %s AND due_at <= %s ORDER BY tier, due_at LIMIT 1",
-            (source, now))
+        cur.execute(query, params)
         row = cur.fetchone()
     return SliceRow(*row) if row else None
 
@@ -71,6 +81,8 @@ def _reask_throttled_page(pace, row: SliceRow, f_tpr_value: str, start: int, wal
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
                               start=start, get=get, sleep=sleep)
+        except PaceGateClosed:
+            return None
         except (SearchThrottled, SearchFailed):
             continue
         if not _is_exhausted(page, walk_seen) or (page.end and not page.throttled):
@@ -95,7 +107,7 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
                               start=start, get=get, sleep=sleep)
-        except SearchThrottled:
+        except (SearchThrottled, PaceGateClosed):
             stop_reason = "rate_limited"
             break
         except SearchFailed:

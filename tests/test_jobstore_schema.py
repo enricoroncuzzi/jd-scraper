@@ -36,9 +36,16 @@ def test_jobs_has_the_spec_columns(store_conn):
         "description", "description_status", "description_source", "language", "tier",
         "remote_verdict", "remote_reason", "score", "summary", "comment",
         "application_channel", "stage", "stage_reason", "attempts", "next_attempt_at",
-        "delivered_at", "alerted_at", "archived_at",
+        "delivered_at", "alerted_at", "archived_at", "posted_text",
     }
     assert expected <= _columns(store_conn, "jobs")
+
+
+def test_pace_events_has_the_columns_the_schedule_study_needs(store_conn):
+    assert {"at", "service", "kind", "outcome", "status", "requests_today"} \
+        <= _columns(store_conn, "pace_events")
+    assert {"requests_today", "day", "refusal_times", "rest_until", "rest_level"} \
+        <= _columns(store_conn, "pace_budgets")
 
 
 def test_sightings_and_slices_have_the_spec_columns(store_conn):

@@ -83,11 +83,16 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
         if result.status == "ok":
             cur.execute(
                 "UPDATE jobs SET description = %s, description_status = 'ok', "
-                "description_source = 'linkedin', first_refused_at = NULL, attempts = 0 WHERE id = %s",
-                (result.text, job.id))
+                "description_source = 'linkedin', first_refused_at = NULL, attempts = 0, "
+                "posted_text = %s WHERE id = %s",
+                (result.text, result.posted_text or None, job.id))
             job.description = result.text
             finish_with_description(cur, job, now)
             outcome = "described"
+        elif result.status == "deferred":
+            # The schedule gate closed (quiet hours, daily cap, breaker rest) between
+            # requests. Leave the job exactly as it is; the next tick retries it.
+            return "deferred"
         elif result.status == "refused":
             cur.execute(
                 "UPDATE jobs SET description_status = 'rate_limited', "
@@ -120,7 +125,13 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     (refused) ends the round: more requests now would only be refused too.
 
     `skip_if_wait_over` is for a tick that already has other work: when the pace says the
-    next LinkedIn turn is further away than that many seconds, do not queue for it."""
+    next LinkedIn turn is further away than that many seconds, do not queue for it.
+
+    The schedule gate is checked first: when LinkedIn is closed (quiet hours, the shared
+    daily cap, a breaker rest) the whole stage is skipped, so the rest of the tick's cheap
+    checks, verification and scoring still run."""
+    if not pace.gate().open:
+        return 0
     done = 0
     started = clock()
     while done < cfg.descriptions_per_tick:
@@ -133,6 +144,6 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
         if outcome is None:
             break
         done += 1
-        if outcome == "refused":
+        if outcome in ("refused", "deferred"):
             break
     return done

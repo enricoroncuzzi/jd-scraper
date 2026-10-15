@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from src import telemetry
 from src.jobstore.db import connect, store_url, utcnow
 from src.linkedin.pace import ManagedPace
+from src.linkedin.schedule import load_schedule_config
 from src.processor.cheap import run_cheap_checks
 from src.processor.combined import run_combined_batches
 from src.processor.config import ProcessorConfig, load_processor_config
@@ -70,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_processor_config()
     keys = LlmKeys.from_env()
     telemetry.set_llm_sink(StoreLlmSink(lambda: connect(store_url()), SERVICE))
-    pace = ManagedPace(lambda: connect(store_url()))
+    pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=load_schedule_config())
 
     def tick(conn) -> Tick:
         return process_once(conn, pace, cfg, keys)

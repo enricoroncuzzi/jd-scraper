@@ -2,9 +2,11 @@ from datetime import datetime, timedelta, timezone
 
 from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
 from src.linkedin.collector import collect_once, make_tick
+from src.linkedin.pace import Gate
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+SAT = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
 CFG = CollectorConfig(due_hours={1: 4, 3: 12}, legacy_lock_path=None)
 
 
@@ -63,3 +65,24 @@ def test_a_poison_slice_is_isolated_and_the_next_slice_is_walked(store_conn):
     next_tick = collect_once(store_conn, FakePace(), CFG, now=NOW + timedelta(minutes=1),
                              get=ScriptedGet(response(200, page_html())), sleep=lambda _s: None)
     assert next_tick.detail["slice"] == "ML Engineer / Germany"
+
+
+def test_a_closed_schedule_gate_makes_the_tick_idle_without_a_request(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 14400))
+    gate = Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
+    get = ScriptedGet()
+    tick = collect_once(store_conn, FakePace(gate=gate), CFG, now=NOW, get=get, sleep=lambda _s: None)
+    assert not tick.did_work and tick.detail["waiting"] == "linkedin closed_hours"
+    assert get.calls == []
+
+
+def test_the_weekend_taper_skips_slices_at_twentyfour_hours_or_longer(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 172800),
+            SliceSpec("linkedin", "AI Engineer", "Germany", 3, 14400))
+    for now, expected in ((NOW, "AI Engineer / Italy"), (SAT, "AI Engineer / Germany")):
+        with store_conn.cursor() as cur:
+            cur.execute("UPDATE slices SET due_at = %s", (NOW - timedelta(days=1),))
+        store_conn.commit()
+        tick = collect_once(store_conn, FakePace(), CFG, now=now,
+                            get=ScriptedGet(response(200, page_html())), sleep=lambda _s: None)
+        assert tick.detail["slice"] == expected, now

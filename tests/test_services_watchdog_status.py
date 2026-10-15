@@ -6,6 +6,7 @@ import pytest
 from src.delivery.settings import DeliverySettings
 from src.jobstore import budget, heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
+from src.linkedin.schedule import ScheduleConfig, local_day
 from src.services import status, watchdog
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -150,3 +151,94 @@ def test_status_shows_the_spacing_after_calm_decay(store_conn):
     store_conn.commit()
     text = status.render(store_conn, NOW)
     assert "spacing x2.00" in text and "no refusal since" in text
+
+
+def test_status_shows_the_schedule_gate_count_and_window(store_conn):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 5, %s)", (NOW, NOW.date()))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "LinkedIn gate: 5/1400 requests today (weekday), window open" in text
+
+
+def test_status_shows_a_breaker_rest(store_conn):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day, rest_until, rest_level) "
+                    "VALUES ('linkedin.com', %s, 5, %s, %s, 1)", (NOW, NOW.date(), NOW + timedelta(hours=2)))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "breaker rest until" in text
+
+
+def test_status_shows_a_closed_quiet_window(store_conn):
+    schedule = ScheduleConfig()
+    night = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 2, %s)", (night, local_day(schedule, night)))
+    store_conn.commit()
+    text = status.render(store_conn, night, schedule)
+    assert "window closed until 06:00 Rome" in text
+
+
+def test_status_hints_that_a_probe_is_pending(store_conn):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day, rest_until, rest_level) "
+                    "VALUES ('linkedin.com', %s, 5, %s, %s, 2)", (NOW, NOW.date(), NOW - timedelta(minutes=1)))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "window open, probe pending" in text
+
+
+def _silent_sighting(conn, when):
+    record_sighting(conn, CardInput(source="linkedin", source_job_id="s", source_url="https://l/s",
+                                    title="t", company="c"), when)
+    conn.commit()
+
+
+def test_the_collection_alert_stays_quiet_while_the_window_is_closed(store_conn):
+    from src.delivery import health
+    schedule = ScheduleConfig()
+    night = datetime(2026, 10, 14, 3, 0, tzinfo=timezone.utc)  # 05:00 Rome, closed
+    _silent_sighting(store_conn, night - timedelta(hours=8))
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 1, NULL)", (night,))
+    store_conn.commit()
+    assert health.collection_issue(store_conn, night, schedule) is None
+
+
+def test_the_collection_alert_stays_quiet_during_a_breaker_rest(store_conn):
+    from src.delivery import health
+    schedule = ScheduleConfig()
+    _silent_sighting(store_conn, NOW - timedelta(hours=9))
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day, rest_until, rest_level) "
+                    "VALUES ('linkedin.com', %s, 1, %s, %s, 1)", (NOW, NOW.date(), NOW + timedelta(hours=2)))
+    store_conn.commit()
+    assert health.collection_issue(store_conn, NOW, schedule) is None
+
+
+def test_the_collection_alert_fires_when_the_gate_is_open(store_conn):
+    from src.delivery import health
+    schedule = ScheduleConfig()
+    _silent_sighting(store_conn, NOW - timedelta(hours=9))
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 1, %s)", (NOW, NOW.date()))
+    store_conn.commit()
+    assert health.collection_issue(store_conn, NOW, schedule) is not None
+
+
+def test_the_collection_alert_waits_out_the_grace_after_the_window_reopens(store_conn):
+    from src.delivery import health
+    schedule = ScheduleConfig()
+    reopen = datetime(2026, 10, 14, 4, 30, tzinfo=timezone.utc)  # 06:30 Rome, just reopened
+    _silent_sighting(store_conn, reopen - timedelta(hours=8))
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 1, NULL)", (reopen,))
+    store_conn.commit()
+    assert health.collection_issue(store_conn, reopen, schedule) is None
+    assert health.collection_issue(store_conn, reopen + timedelta(hours=2), schedule) is not None

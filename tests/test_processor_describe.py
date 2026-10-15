@@ -1,9 +1,11 @@
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from src.jobstore.sightings import CardInput, record_sighting
-from src.linkedin.description import extract_description, fetch_description
+from src.linkedin.description import extract_description, extract_posted_text, fetch_description
+from src.linkedin.pace import Gate, PaceGateClosed
 from src.linkedin.search import RETRY_WAITS
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
@@ -242,3 +244,51 @@ def test_a_busy_tick_does_not_queue_for_a_far_away_linkedin_turn(store_conn, cfg
     get = ScriptedGet(response(200, FRAGMENT))
     assert run_descriptions(store_conn, near, cfg, NOW, get=get, sleep=lambda _s: None,
                             skip_if_wait_over=120) == 1
+
+
+def test_extract_posted_text_reads_the_fragment_marker():
+    assert extract_posted_text('<span class="posted-time-ago__text">3 hours ago</span>') == "3 hours ago"
+    assert extract_posted_text("<html></html>") == ""
+
+
+POSTED_FRAGMENT = (f'<span class="posted-time-ago__text">2 days ago</span>'
+                   f'<div class="show-more-less-html__markup">{ENGLISH}</div>')
+
+
+def test_the_posted_ago_text_is_stored_with_the_description(store_conn, cfg):
+    job_id = _tiered_job(store_conn, cfg)
+    assert describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(response(200, POSTED_FRAGMENT)),
+                         sleep=lambda _s: None) == "described"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT posted_text FROM jobs WHERE id = %s", (job_id,))
+        assert cur.fetchone()[0] == "2 days ago"
+
+
+class _ClosedPace:
+    """A pace whose schedule gate is closed: every slot raises, no request happens."""
+
+    def gate(self):
+        return Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
+
+    @contextmanager
+    def slot(self, kind):
+        raise PaceGateClosed(self.gate())
+        yield
+
+
+def test_a_closed_gate_skips_the_description_round_without_a_request(store_conn, cfg):
+    _tiered_job(store_conn, cfg)
+    get = ScriptedGet(response(200, FRAGMENT))
+    assert run_descriptions(store_conn, _ClosedPace(), cfg, NOW, get=get, sleep=lambda _s: None) == 0
+    assert get.calls == []
+
+
+def test_a_gate_that_closes_mid_flight_defers_the_job_untouched(store_conn, cfg):
+    job_id = _tiered_job(store_conn, cfg)
+    assert describe_next(store_conn, _ClosedPace(), cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)),
+                         sleep=lambda _s: None) == "deferred"
+    assert _state(store_conn, job_id)[:3] == ("seen", "", "pending")
+
+
+def test_fetch_description_reports_a_gate_that_closed_between_requests():
+    assert fetch_description(_ClosedPace(), "1", get=ScriptedGet(), sleep=lambda _s: None).status == "deferred"

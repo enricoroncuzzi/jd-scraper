@@ -28,6 +28,7 @@ from src.delivery.messages import render_day_summary, tier_digest_message
 from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore.db import connect, store_url, utcnow
 from src.linkedin.pace import ManagedPace
+from src.linkedin.schedule import load_schedule_config
 from src.processor.config import ProcessorConfig, load_processor_config
 from src.processor.llm_sink import StoreLlmSink
 from src.services.runner import Tick, run_service
@@ -172,7 +173,8 @@ def build_service() -> DeliverService:
     import os
     cfg = load_processor_config()
     settings = load_settings()
-    pace = ManagedPace(lambda: connect(store_url()))
+    pace = ManagedPace(lambda: connect(store_url()), service=SERVICE,
+                       schedule=load_schedule_config())
     packaging = None
     tailor_run = None
     if any(p.autoapply_enabled for p in cfg.policies.values()):
