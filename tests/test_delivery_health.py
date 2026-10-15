@@ -66,6 +66,35 @@ def test_an_empty_store_reports_that_nothing_was_ever_collected(store_conn):
     assert collection_issue(store_conn, NOW).message == "Nothing has been collected ever"
 
 
+def _beat_all(conn, at):
+    for name in ("collect-linkedin", "process", "deliver"):
+        heartbeat.beat(conn, name, "running", now=at)
+    conn.commit()
+
+
+def test_a_gate_suppressed_collection_alert_is_not_falsely_cleared(store_conn, settings):
+    # Open gate, silent collector: the alert goes out and is written to the ledger.
+    _beat_all(store_conn, NOW)
+    record_sighting(store_conn, CardInput(source="linkedin", source_job_id="1", source_url="https://l/1",
+                                          title="t", company="c"), NOW - timedelta(hours=7))
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 1, %s)", (NOW, NOW.date()))
+    store_conn.commit()
+    assert run_health_check(store_conn, settings, Outbox(), NOW) == \
+        ["ALERT: Nothing has been collected for 7h00m"]
+
+    # The quiet window closes while the collector is still silent. That is unknown, not
+    # healthy: nothing is sent and the ledger row survives, so the alert is not retracted
+    # and re-fired after reopening.
+    night = datetime(2026, 10, 14, 23, 30, tzinfo=timezone.utc)  # 01:30 Rome, closed
+    _beat_all(store_conn, night)
+    assert run_health_check(store_conn, settings, Outbox(), night) == []
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM kv_state WHERE key = 'health:collection'")
+        assert cur.fetchone()[0] == 1
+
+
 def _refresh(conn, at, skip=()):
     """Everything is alive at `at` except the services in `skip`."""
     for name in ("collect-linkedin", "process", "deliver"):

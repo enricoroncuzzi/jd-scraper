@@ -120,19 +120,41 @@ def _gate_just_reopened(schedule: ScheduleConfig, now: datetime,
     return False
 
 
-def collection_issue(conn, now: datetime, schedule: ScheduleConfig | None = None) -> HealthIssue | None:
+@dataclass(frozen=True)
+class CollectionState:
+    """The collection alert decision: a real issue, or one suppressed by the gate.
+
+    `suppressed` means the LinkedIn schedule gate makes the silence expected (quiet
+    hours, the daily cap, a breaker rest, or the grace just after reopening), so the
+    collector cannot be judged. It is not the same as healthy: a suppressed state must
+    neither alert nor clear an existing alert."""
+
+    issue: HealthIssue | None
+    suppressed: bool = False
+
+
+def collection_state(conn, now: datetime, schedule: ScheduleConfig | None = None) -> CollectionState:
     last = last_collection(conn)
     if last is not None and now - last <= COLLECTION_SILENT_AFTER:
-        return None
+        return CollectionState(None)
     schedule = schedule or load_schedule_config()
     gate, rest_until, rest_level = _stored_gate(conn, schedule, now)
     if gate is not None:
         if not gate.open:
-            return None
+            return CollectionState(None, suppressed=True)
         if _gate_just_reopened(schedule, now, rest_until, rest_level):
-            return None
+            return CollectionState(None, suppressed=True)
     since = "ever" if last is None else f"for {_age(now - last)}"
-    return HealthIssue("collection", f"Nothing has been collected {since}")
+    return CollectionState(HealthIssue("collection", f"Nothing has been collected {since}"))
+
+
+def collection_issue(conn, now: datetime, schedule: ScheduleConfig | None = None) -> HealthIssue | None:
+    return collection_state(conn, now, schedule).issue
+
+
+def suppressed_health_keys(conn, now: datetime, schedule: ScheduleConfig | None = None) -> set[str]:
+    """Health keys that cannot be judged right now, as opposed to ones that are healthy."""
+    return {"collection"} if collection_state(conn, now, schedule).suppressed else set()
 
 
 def evaluate_health(conn, settings: DeliverySettings, now: datetime,
@@ -168,8 +190,11 @@ def _ledger(conn) -> dict[str, datetime]:
 def run_health_check(conn, settings: DeliverySettings, send, now: datetime,
                      silence_allowance: dict[str, timedelta] | None = None) -> list[str]:
     """Send alerts for new or long-running issues and a note for cleared ones.
-    Returns the messages sent. A failed send is retried on the next check."""
+    Returns the messages sent. A failed send is retried on the next check. A key
+    suppressed by the LinkedIn gate is neither alerted nor cleared, so a live
+    collection alert is not falsely retracted while the gate makes silence normal."""
     issues = {issue.key: issue for issue in evaluate_health(conn, settings, now, silence_allowance)}
+    suppressed = suppressed_health_keys(conn, now)
     ledger = _ledger(conn)
     sent = []
     with conn.cursor() as cur:
@@ -185,7 +210,7 @@ def run_health_check(conn, settings: DeliverySettings, send, now: datetime,
                 (f"health:{key}", json.dumps({"sent_at": now.isoformat()}), now))
             sent.append(text)
         for key in ledger:
-            if key not in issues:
+            if key not in issues and key not in suppressed:
                 text = f"OK again: {key.replace(':', ' ')} is healthy"
                 if send(text) is False:
                     continue
