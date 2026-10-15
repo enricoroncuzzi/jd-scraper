@@ -21,6 +21,7 @@ from src.linkedin.catalog import (
     CollectorConfig, build_slices, load_collector_config, load_tier_configs, sync_slices,
 )
 from src.linkedin.pace import ManagedPace
+from src.linkedin.schedule import ScheduleConfig, is_weekend, load_schedule_config
 from src.linkedin.walk import WalkResult, claim_due_slice, finish_walk, walk_slice
 from src.services.legacy_guard import legacy_run_active
 from src.services.runner import Tick, run_service
@@ -35,8 +36,14 @@ def _current_resume_start(conn, slice_id: int) -> int:
 
 
 def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = None,
-                 get=requests.get, sleep=time.sleep) -> Tick:
+                 get=requests.get, sleep=time.sleep,
+                 schedule: ScheduleConfig | None = None) -> Tick:
     """Walk the next due slice, if any.
+
+    The schedule gate (quiet hours, shared daily cap, breaker rest) is checked before a
+    slice is claimed, so a closed gate is one idle tick, not a request. On Saturday and
+    Sunday the weekend taper skips slices whose base cadence is 24 h or longer; their
+    window grows, so nothing is lost.
 
     One slice's unexpected failure must not wedge the collector on a poison card:
     it becomes a retryable `error` (due again in 30 minutes, resuming where the
@@ -44,7 +51,14 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
     that is actually gone is re-raised for the runner to reconnect.
     """
     started = now or utcnow()
-    row = claim_due_slice(conn, started)
+    schedule = schedule or ScheduleConfig()
+    gate = pace.gate()
+    if not gate.open:
+        return Tick(False, {"waiting": f"linkedin {gate.reason}", "requests_today": gate.requests_today,
+                            "cap": gate.cap})
+    taper = (schedule.weekend_taper_min_interval_hours * 3600
+             if is_weekend(schedule, started) else None)
+    row = claim_due_slice(conn, started, taper_below_seconds=taper)
     if row is None:
         return Tick(False, {"due_slices": 0})
     try:
@@ -64,11 +78,12 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
                        "new_jobs": result.new_jobs})
 
 
-def make_tick(pace, cfg: CollectorConfig, *, get=requests.get, sleep=time.sleep):
+def make_tick(pace, cfg: CollectorConfig, *, get=requests.get, sleep=time.sleep,
+              schedule: ScheduleConfig | None = None):
     def tick(conn) -> Tick:
         if legacy_run_active(cfg.legacy_lock_path):
             return Tick(False, {"waiting": "legacy cron run holds the lock"})
-        return collect_once(conn, pace, cfg, get=get, sleep=sleep)
+        return collect_once(conn, pace, cfg, get=get, sleep=sleep, schedule=schedule)
     return tick
 
 
@@ -79,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     load_dotenv()
     cfg = load_collector_config()
+    schedule = load_schedule_config()
     specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices)
 
     if args.sync_slices or args.once:
@@ -89,8 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             conn.commit()
             print(f"[{SERVICE}] slices: {counts}, total configured {len(specs)}")
             if args.once:
-                pace = ManagedPace(lambda: connect(store_url()))
-                collect_once(conn, pace, cfg)
+                pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=schedule)
+                collect_once(conn, pace, cfg, schedule=schedule)
         finally:
             conn.close()
         return 0
@@ -102,8 +118,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{SERVICE}] slices: {counts}")
         return Tick(False)
 
-    pace = ManagedPace(lambda: connect(store_url()))
-    tick = make_tick(pace, cfg)
+    pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=schedule)
+    tick = make_tick(pace, cfg, schedule=schedule)
     first = {"done": False}
 
     def tick_with_first_sync(conn) -> Tick:

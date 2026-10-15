@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import requests
 from bs4 import BeautifulSoup
 
+from src.linkedin.pace import PaceGateClosed
 from src.linkedin.search import HEADERS, RETRY_WAITS
 from src.services.pulse import pulse
 
@@ -23,8 +24,9 @@ GONE_STATUSES = frozenset({404, 410})
 
 @dataclass(frozen=True)
 class FragmentResult:
-    status: str  # ok | refused | gone | failed
+    status: str  # ok | refused | gone | failed | deferred
     text: str = ""
+    posted_text: str = ""
 
 
 def extract_description(html: str) -> str:
@@ -34,34 +36,48 @@ def extract_description(html: str) -> str:
     return element.get_text(strip=True) if element else ""
 
 
+def extract_posted_text(html: str) -> str:
+    """The "posted N ago" text the description fragment already carries, for the
+    schedule study's hourly pattern. No extra request; empty when LinkedIn changed
+    the markup."""
+    element = BeautifulSoup(html, "html.parser").find("span", class_="posted-time-ago__text")
+    return element.get_text(strip=True) if element else ""
+
+
 def fetch_description(pace, job_id: str, *, get=requests.get, sleep=time.sleep) -> FragmentResult:
     url = DESCRIPTION_URL.format(job_id=job_id)
     saw_throttle = False
     for attempt in range(len(RETRY_WAITS) + 1):
         pulse({"description": job_id, "attempt": attempt + 1})
-        with pace.slot("description") as slot:
-            try:
-                response = get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            except requests.RequestException:
-                slot.neutral()
-                response = None
-            if response is not None:
-                status = response.status_code
-                if status == 200:
-                    slot.clean()
-                    text = extract_description(response.text)
-                    return FragmentResult("ok", text) if text else FragmentResult("failed")
-                if status in GONE_STATUSES:
+        try:
+            with pace.slot("description") as slot:
+                try:
+                    response = get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+                except requests.RequestException:
                     slot.neutral()
-                    return FragmentResult("gone")
-                if status in THROTTLE_STATUSES:
-                    slot.throttled_again() if saw_throttle else slot.throttled()
-                    saw_throttle = True
-                elif status in REFUSED_STATUSES:
-                    slot.neutral()
-                else:
-                    slot.neutral()
-                    return FragmentResult("failed")
+                    response = None
+                if response is not None:
+                    status = response.status_code
+                    if status == 200:
+                        slot.clean(status)
+                        text = extract_description(response.text)
+                        posted = extract_posted_text(response.text)
+                        return FragmentResult("ok", text, posted) if text else FragmentResult("failed")
+                    if status in GONE_STATUSES:
+                        slot.neutral(status)
+                        return FragmentResult("gone")
+                    if status in THROTTLE_STATUSES:
+                        slot.throttled_again(status) if saw_throttle else slot.throttled(status)
+                        saw_throttle = True
+                    elif status in REFUSED_STATUSES:
+                        slot.neutral(status)
+                    else:
+                        slot.neutral(status)
+                        return FragmentResult("failed")
+        except PaceGateClosed:
+            # The schedule gate (quiet hours, daily cap, breaker rest) closed between
+            # requests: hand the job back untouched, the caller retries next tick.
+            return FragmentResult("deferred")
         if attempt < len(RETRY_WAITS):
             sleep(RETRY_WAITS[attempt])
     return FragmentResult("refused")

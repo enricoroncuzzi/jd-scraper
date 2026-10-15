@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
-from src.linkedin.pace import Slot
+from src.linkedin.pace import Gate, Slot
 
 
 def card_html(job_id: str, location: str = "Milan, Italy") -> str:
@@ -49,9 +49,13 @@ class ScriptedGet:
 class FakePace:
     """Stands in for PaceBudget: grants every slot at once and records outcomes."""
 
-    def __init__(self, wait: float = 0.0):
+    def __init__(self, wait: float = 0.0, gate: Gate | None = None):
         self.events = []
         self.wait = wait
+        self._gate = gate or Gate(open=True, reason="open", requests_today=0, cap=1400, window="weekday")
+
+    def gate(self) -> Gate:
+        return self._gate
 
     def seconds_until_slot(self) -> float:
         return self.wait

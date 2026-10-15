@@ -192,6 +192,51 @@ loses nothing.
   by `init_store` when a service starts.
 - Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process`.
 
+### The LinkedIn schedule gate (schedule C)
+
+The collector and the processor share one request budget on `linkedin.com`, enforced in
+`src/linkedin/pace.py` (the `PaceBudget.slot` choke point every request passes through), and
+configured in `config/schedule.json`:
+
+| Setting | Shipped value | Meaning |
+|---|---|---|
+| `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
+| `closed_hours` | `[0, 6]` | no LinkedIn request 00:00-06:00 Rome |
+| `daily_caps.weekday` / `.weekend` | `1400` / `800` | shared cap on search + description requests per Rome day |
+| `breaker.refusals` / `.window_minutes` | `3` / `30` | refusals that trip the breaker |
+| `breaker.rest_ladder_hours` | `[2, 6, 24]` | rest after the first trip, then after each refused probe |
+| `weekend_taper_min_interval_hours` | `24` | on Sat/Sun, slices whose base cadence is this long or longer are skipped |
+
+When the gate is closed the collector returns an idle tick and the processor skips only its
+LinkedIn description stage; cheap checks, remote verification and scoring keep running, and both
+services keep heartbeating. Every request is appended to the `pace_events` table (timestamp,
+service, kind `search`/`description`, outcome, HTTP status), and the description fetch stores the
+"posted N ago" text in `jobs.posted_text`.
+
+Read the gate with `python -m src.services.status`. The line is one of:
+
+```
+LinkedIn gate: 342/1400 requests today (weekday), window open
+LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome
+LinkedIn gate: 1400/1400 requests today (weekday), daily cap reached
+LinkedIn gate: 17/1400 requests today (weekday), breaker rest until 2026-10-16 12:00 UTC
+```
+
+After a breaker rest ends the next request is the probe: if LinkedIn does not refuse it the
+ladder resets, if it does the rest grows (2 h, 6 h, 24 h, then 24 h on repeat). The daily counter
+resets by itself at Rome midnight.
+
+To reset the breaker by hand (for example after confirming the IP is healthy, or to undo a
+mistake):
+
+```bash
+psql jds -c "UPDATE pace_budgets SET rest_until = NULL, rest_level = 0, refusal_times = '{}' \
+  WHERE host = 'linkedin.com';"
+```
+
+To reset today's request counter as well, add `, requests_today = 0, day = NULL` to the same
+`SET` list. Both take effect on the next tick; no restart is needed.
+
 ## 7. Backups (captain decision)
 
 The job store is backed up nightly by `jds-backup.timer` (03:30, `Persistent=true`), which

@@ -58,20 +58,20 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
             if response is not None:
                 status = response.status_code
                 if status == 200:
-                    slot.clean()
+                    slot.clean(status)
                     return Page(parse_cards(response.text), saw_throttle)
                 if status == 400:
-                    slot.neutral()
+                    slot.neutral(status)
                     return Page([], saw_throttle, end=True)
                 if status in THROTTLE_STATUSES:
-                    slot.throttled_again() if saw_throttle else slot.throttled()
+                    slot.throttled_again(status) if saw_throttle else slot.throttled(status)
                     saw_throttle = True
                     last_problem = f"HTTP {status}"
                 elif status in TRANSIENT_STATUSES:
-                    slot.neutral()
+                    slot.neutral(status)
                     last_problem = f"HTTP {status}"
                 else:
-                    slot.neutral()
+                    slot.neutral(status)
                     raise SearchFailed(f"LinkedIn search returned HTTP {status}")
         if attempt < len(RETRY_WAITS):
             sleep(RETRY_WAITS[attempt])

@@ -1,0 +1,14 @@
+{
+  "timezone": "Europe/Rome",
+  "closed_hours": [0, 6],
+  "daily_caps": {
+    "weekday": 1400,
+    "weekend": 800
+  },
+  "breaker": {
+    "refusals": 3,
+    "window_minutes": 30,
+    "rest_ladder_hours": [2, 6, 24]
+  },
+  "weekend_taper_min_interval_hours": 24
+}
