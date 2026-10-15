@@ -31,7 +31,7 @@ class Outbox:
     def __init__(self):
         self.sent = []
 
-    def __call__(self, settings, text, *, markdown):
+    def __call__(self, settings, text, *, formatted):
         self.sent.append(text)
         return True
 

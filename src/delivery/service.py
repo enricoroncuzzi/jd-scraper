@@ -31,22 +31,24 @@ from src.linkedin.pace import ManagedPace
 from src.processor.config import ProcessorConfig, load_processor_config
 from src.processor.llm_sink import StoreLlmSink
 from src.services.runner import Tick, run_service
-from src.telegram import send_message
+from src.telegram import HTML_PARSE_MODE, send_message
 
 SERVICE = "deliver"
 
 
-def send_with_fallback(settings: DeliverySettings, text: str, *, markdown: bool,
+def send_with_fallback(settings: DeliverySettings, text: str, *, formatted: bool,
                        sender=send_message) -> bool:
-    """Markdown first (the digest message uses it), plain text if Telegram rejects the
-    markup. Total: a network error, timeout or rejection never propagates, so a Telegram
-    outage cannot abort the tick and stop packaging or the archive."""
-    if markdown:
+    """HTML first (the digest message is built with <b>/<i>), plain text if Telegram
+    rejects the markup. Total: a network error, timeout or rejection never propagates, so a
+    Telegram outage cannot abort the tick and stop packaging or the archive."""
+    if formatted:
         try:
-            if sender(text, settings.telegram_token, settings.telegram_chat_id):
+            if sender(text, settings.telegram_token, settings.telegram_chat_id,
+                      parse_mode=HTML_PARSE_MODE):
                 return True
+            print("[deliver] formatted send rejected; resending as plain text")
         except Exception as exc:  # noqa: BLE001 - fall through to the plain-text attempt
-            print(f"[deliver] markdown send failed ({type(exc).__name__}: {exc}); trying plain text")
+            print(f"[deliver] formatted send failed ({type(exc).__name__}: {exc}); trying plain text")
     try:
         return bool(sender(text, settings.telegram_token, settings.telegram_chat_id, parse_mode=None))
     except Exception as exc:  # noqa: BLE001 - a Telegram outage must not abort the tick
@@ -65,9 +67,9 @@ class DeliverService:
     send: object = send_with_fallback
     last_archive: datetime | None = None
 
-    def _send(self, text: str, markdown: bool = False) -> bool:
+    def _send(self, text: str, formatted: bool = False) -> bool:
         try:
-            return self.send(self.settings, text, markdown=markdown)
+            return self.send(self.settings, text, formatted=formatted)
         except Exception as exc:  # noqa: BLE001 - a Telegram outage must not abort the tick
             print(f"[deliver] telegram send failed ({type(exc).__name__}: {exc})")
             return False
@@ -85,7 +87,7 @@ class DeliverService:
 
     def _send_tier_digest(self, conn, tier: int, delivery: TierDelivery, day, now) -> bool:
         policy = self.cfg.policies[tier]
-        ok = self._send(tier_digest_message(delivery, policy), markdown=True)
+        ok = self._send(tier_digest_message(delivery, policy), formatted=True)
         if ok:
             mark_telegram_sent(conn, day, tier, now)
         return ok
