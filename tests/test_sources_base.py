@@ -56,7 +56,7 @@ def test_a_too_short_interval_is_rejected(tmp_path):
 
 
 def test_the_shipped_config_enables_sources_one_at_a_time_and_identifies_the_project():
-    enabled = {"freehire": True, "himalayas": False}  # the captain approves each source in turn
+    enabled = {"freehire": True, "himalayas": True}  # the captain approves each source in turn
     for name, expected in enabled.items():
         cfg = load_source_config(name)
         assert cfg.enabled is expected and "jd-scraper" in cfg.user_agent

@@ -13,7 +13,7 @@
     "skip_reality": ["likely-evergreen"]
   },
   "himalayas": {
-    "enabled": false,
+    "enabled": true,
     "base_url": "https://himalayas.app/jobs/api",
     "user_agent": "enricoroncuzzi/jd-scraper/1.0 (+https://github.com/enricoroncuzzi/jd-scraper)",
     "min_interval_seconds": 1.5,
