@@ -4,6 +4,10 @@ watchdog alerts on.
 An alert fires when a service has not beaten its heart for over an hour, or when
 nothing was collected for six hours. A fired alert repeats every six hours while
 the problem lasts and says so once when it clears; the ledger lives in kv_state.
+
+The collection alert is schedule-gate aware: nothing is wrong while LinkedIn is
+closed (quiet hours, the shared daily cap, a breaker rest) or for a grace period
+after it reopens, because the new schedule makes hours of silence normal by design.
 """
 import json
 from dataclasses import dataclass
@@ -11,10 +15,14 @@ from datetime import datetime, timedelta
 
 from src.jobstore import heartbeat
 from src.delivery.settings import DeliverySettings
+from src.linkedin.pace import evaluate_gate
+from src.linkedin.schedule import ScheduleConfig, load_schedule_config, local_now, requests_today_for
 
 SERVICE_DOWN_AFTER = timedelta(hours=1)
 COLLECTION_SILENT_AFTER = timedelta(hours=6)
 REPEAT_ALERT_AFTER = timedelta(hours=6)
+# After the gate reopens, let the first walk or two land before calling the silence a failure.
+COLLECTION_REOPEN_GRACE = timedelta(hours=1)
 
 # Where the operator lists extra sources, and how the watchdog and the day summary learn about
 # them: one source of truth for both, so the summary cannot disagree with the watchdog.
@@ -83,12 +91,48 @@ def last_collection(conn) -> datetime | None:
         return cur.fetchone()[0]
 
 
-def collection_issue(conn, now: datetime) -> HealthIssue | None:
+def _stored_gate(conn, schedule: ScheduleConfig, now: datetime):
+    """The shared LinkedIn gate from the stored row, or None when the services never ran."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT requests_today, day, rest_until, rest_level FROM pace_budgets "
+                    "WHERE host = 'linkedin.com'")
+        row = cur.fetchone()
+    if row is None:
+        return None, None, 0
+    requests_today, day, rest_until, rest_level = row
+    gate = evaluate_gate(schedule, now,
+                         requests_today=requests_today_for(day, requests_today, schedule, now),
+                         rest_until=rest_until, rest_level=rest_level)
+    return gate, rest_until, rest_level
+
+
+def _gate_just_reopened(schedule: ScheduleConfig, now: datetime,
+                        rest_until: datetime | None, rest_level: int) -> bool:
+    """True while the schedule gate has been open for less than the grace period."""
+    if rest_level > 0 and rest_until is not None and rest_until <= now:
+        return now - rest_until < COLLECTION_REOPEN_GRACE
+    end_hour = schedule.closed_hours[1]
+    if end_hour < 24:
+        local = local_now(schedule, now)
+        reopened = local.replace(hour=end_hour, minute=0, second=0, microsecond=0)
+        if local >= reopened and now - reopened < COLLECTION_REOPEN_GRACE:
+            return True
+    return False
+
+
+def collection_issue(conn, now: datetime, schedule: ScheduleConfig | None = None) -> HealthIssue | None:
     last = last_collection(conn)
-    if last is None or now - last > COLLECTION_SILENT_AFTER:
-        since = "ever" if last is None else f"for {_age(now - last)}"
-        return HealthIssue("collection", f"Nothing has been collected {since}")
-    return None
+    if last is not None and now - last <= COLLECTION_SILENT_AFTER:
+        return None
+    schedule = schedule or load_schedule_config()
+    gate, rest_until, rest_level = _stored_gate(conn, schedule, now)
+    if gate is not None:
+        if not gate.open:
+            return None
+        if _gate_just_reopened(schedule, now, rest_until, rest_level):
+            return None
+    since = "ever" if last is None else f"for {_age(now - last)}"
+    return HealthIssue("collection", f"Nothing has been collected {since}")
 
 
 def evaluate_health(conn, settings: DeliverySettings, now: datetime,

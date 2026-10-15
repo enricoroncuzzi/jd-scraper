@@ -43,6 +43,28 @@ def test_the_quiet_window_is_rome_0000_to_0600():
     assert not in_closed_window(cfg, WED)
 
 
+@pytest.mark.parametrize("utc, closed", [
+    # Fall back on 2026-10-25: 22:00 UTC is 00:00 CET, 05:00 UTC is 06:00 CET.
+    (datetime(2026, 10, 24, 21, 59, tzinfo=timezone.utc), False),
+    (datetime(2026, 10, 24, 22, 0, tzinfo=timezone.utc), True),
+    (datetime(2026, 10, 25, 4, 59, tzinfo=timezone.utc), True),
+    (datetime(2026, 10, 25, 5, 0, tzinfo=timezone.utc), False),
+    # Spring forward on 2026-03-29: 23:00 UTC is 00:00 CEST, 04:00 UTC is 06:00 CEST.
+    (datetime(2026, 3, 28, 22, 59, tzinfo=timezone.utc), False),
+    (datetime(2026, 3, 28, 23, 0, tzinfo=timezone.utc), True),
+    (datetime(2026, 3, 29, 3, 59, tzinfo=timezone.utc), True),
+    (datetime(2026, 3, 29, 4, 0, tzinfo=timezone.utc), False),
+])
+def test_the_quiet_window_is_dst_correct(utc, closed):
+    assert in_closed_window(ScheduleConfig(), utc) is closed
+
+
+def test_the_budget_day_is_dst_correct():
+    cfg = ScheduleConfig()
+    assert local_day(cfg, datetime(2026, 10, 24, 22, 0, tzinfo=timezone.utc)).isoformat() == "2026-10-25"
+    assert local_day(cfg, datetime(2026, 3, 28, 23, 0, tzinfo=timezone.utc)).isoformat() == "2026-03-29"
+
+
 def test_the_budget_belongs_to_the_rome_calendar_day():
     cfg = ScheduleConfig()
     assert local_day(cfg, WED).isoformat() == "2026-10-14"
@@ -78,6 +100,7 @@ DEFAULTS = {
     {"closed_hours": [6, 0]},
     {"closed_hours": [0]},
     {"closed_hours": [0, 25]},
+    {"closed_hours": [0, 24]},
     {"daily_caps": {"weekday": 0, "weekend": 800}},
     {"daily_caps": {"weekday": 1400}},
     {"breaker": {"refusals": 0, "window_minutes": 30, "rest_ladder_hours": [2]}},

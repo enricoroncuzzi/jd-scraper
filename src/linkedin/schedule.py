@@ -55,8 +55,9 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
     closed = data.get("closed_hours")
     if (not isinstance(closed, list) or len(closed) != 2
             or not all(isinstance(h, int) and not isinstance(h, bool) for h in closed)
-            or not 0 <= closed[0] < closed[1] <= 24):
-        raise ValueError("schedule.closed_hours must be [start, end] with 0 <= start < end <= 24")
+            or not 0 <= closed[0] < closed[1] <= 24 or closed[1] - closed[0] >= 24):
+        raise ValueError("schedule.closed_hours must be [start, end] with 0 <= start < end <= 24 "
+                         "and a window shorter than 24 hours")
 
     caps = data.get("daily_caps")
     if not isinstance(caps, dict):

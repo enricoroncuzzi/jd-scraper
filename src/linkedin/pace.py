@@ -168,9 +168,11 @@ def update_breaker(state: PaceState, outcome: str, now: datetime,
     `rest_level == 0` means normal running: the first refusal of a logical request
     is counted, and `breaker_refusals` of them inside `breaker_window_minutes`
     start a rest at the bottom of the ladder. `rest_level > 0` means a rest has
-    ended and the request was the probe: a refusal escalates one rung, anything
-    not refused resets the ladder. Repeat refusals of the same logical request do
-    not count, matching the AIMD rule.
+    ended and the request was the probe: a refusal escalates one rung, and a clean
+    response resets the ladder. A neutral probe (a network error, a 503, a gone
+    posting) proves nothing, so it leaves the rest level as it is and the next
+    request is simply another probe. Repeat refusals of the same logical request
+    do not count, matching the AIMD rule.
     """
     ladder = schedule.rest_ladder_hours
     if outcome == "throttled":
@@ -187,9 +189,9 @@ def update_breaker(state: PaceState, outcome: str, now: datetime,
                 state.rest_until = now + timedelta(hours=ladder[0])
                 state.rest_level = 1
                 state.refusal_times = []
-    elif outcome in ("clean", "neutral") and state.rest_level > 0 and (
+    elif outcome == "clean" and state.rest_level > 0 and (
             state.rest_until is None or state.rest_until <= now):
-        # A probe that LinkedIn did not refuse: the rest worked, start clean.
+        # A clean probe: the rest worked, start clean.
         state.rest_level = 0
         state.rest_until = None
         state.refusal_times = []
@@ -344,33 +346,58 @@ class PaceBudget:
         if delay > 0:
             self.sleep(delay)
 
-    def _record(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> None:
-        """Count the request against the Rome day, feed the breaker, and log it."""
+    def _record(self, state: PaceState, slot: Slot, now: datetime) -> None:
+        """Count the request against the Rome day and feed the breaker. The caller saves
+        the row first; the pace_events row is written afterwards, so a logging failure
+        can never lose the count or the breaker state."""
         roll_day(state, self.schedule, now)
         state.requests_today += 1
         update_breaker(state, slot.outcome, now, self.schedule)
-        with self.conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO pace_events (at, service, kind, outcome, status, factor, requests_today) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (now, self.service, kind, EVENT_OUTCOMES.get(slot.outcome, slot.outcome),
-                 slot.status, state.factor, state.requests_today))
+
+    def _log_event(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> None:
+        """Append one request to pace_events. Telemetry must never break a run, so a
+        failed insert is logged and swallowed; the state is already saved."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO pace_events (at, service, kind, outcome, status, factor, requests_today) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (now, self.service, kind, EVENT_OUTCOMES.get(slot.outcome, slot.outcome),
+                     slot.status, state.factor, state.requests_today))
+        except Exception as exc:  # noqa: BLE001 - telemetry must not raise into the pipeline
+            print(f"[pace] could not record the {kind} request in pace_events: "
+                  f"{type(exc).__name__}: {exc}")
+
+    def _gate(self, state: PaceState) -> Gate:
+        return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today,
+                             rest_until=state.rest_until, rest_level=state.rest_level)
+
+    def _abandon(self, state: PaceState, kind: str) -> None:
+        """Release a turn that will make no request: keep the loaded state, drop our
+        wanting marker, and let the other service take the lock."""
+        state.last_kind = kind
+        state.wanting.pop(kind, None)
+        self._save(state)
+        self._unlock()
 
     @contextmanager
     def slot(self, kind: str):
         state = self._acquire(kind)
-        now = self.clock()
-        gate = evaluate_gate(self.schedule, now, requests_today=state.requests_today,
-                             rest_until=state.rest_until, rest_level=state.rest_level)
+        gate = self._gate(state)
+        if gate.open:
+            try:
+                self._wait_for_slot(state)
+            except BaseException:
+                self._abandon(state, kind)
+                raise
+            # The wait can last up to the floor spacing (300 s); a request granted just
+            # before midnight must not fire inside the quiet window.
+            gate = self._gate(state)
         if not gate.open:
-            state.last_kind = kind
-            state.wanting.pop(kind, None)
-            self._save(state)
-            self._unlock()
+            self._abandon(state, kind)
             raise PaceGateClosed(gate)
         slot = Slot()
         try:
-            self._wait_for_slot(state)
             yield slot
         finally:
             try:
@@ -383,12 +410,13 @@ class PaceBudget:
                           f"x{state.factor:g}, cooling down {COOLDOWN_SECONDS:g}s")
                 elif slot.outcome == "throttled_again":
                     after_repeat_throttle(state, now)
-                self._record(state, kind, slot, now)
+                self._record(state, slot, now)
                 state.last_kind = kind
                 state.wanting.pop(kind, None)
                 state.next_slot_at = now + timedelta(
                     seconds=spacing_seconds(state.factor, self.uniform))
                 self._save(state)
+                self._log_event(state, kind, slot, now)
             finally:
                 self._unlock()
 

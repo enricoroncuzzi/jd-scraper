@@ -26,11 +26,11 @@ class FakeTime:
 
 @pytest.fixture
 def make_budget(store_conn, store_conn_factory):
-    def make(fake, schedule=None) -> PaceBudget:
+    def make(fake, schedule=None, service="collect-linkedin") -> PaceBudget:
         conn = store_conn_factory(store_conn)
         conn.autocommit = True
         return PaceBudget(conn, clock=fake.clock, sleep=fake.sleep, uniform=lambda a, b: a,
-                          service="collect-linkedin", schedule=schedule or ScheduleConfig())
+                          service=service, schedule=schedule or ScheduleConfig())
     return make
 
 
@@ -181,3 +181,91 @@ def test_every_request_is_logged_with_service_kind_outcome_and_status(make_budge
 def test_evaluate_gate_reports_open_when_everything_is_fine():
     gate = evaluate_gate(ScheduleConfig(), WED, requests_today=5)
     assert gate.open and gate.reason == "open" and gate.requests_today == 5 and gate.cap == 1400
+
+
+# -- end to end through slot: restart, probes, the wait, logging failures ------------------
+
+def test_the_breaker_survives_a_restart_and_escalates_on_a_refused_probe(make_budget):
+    fake = FakeTime(WED)
+    first = make_budget(fake)
+    for _ in range(3):
+        with first.slot("search") as slot:
+            slot.throttled(429)
+        fake.now += timedelta(minutes=1)
+    rest_until = _row(first)[2]
+    assert _row(first)[3] == 1  # first rest, two hours
+    assert rest_until == fake.now - timedelta(minutes=1) + timedelta(hours=2)
+    assert not first.gate().open and first.gate().reason == "breaker"
+
+    second = make_budget(fake)  # a restart is a new object on the same persisted row
+    assert second.gate().reason == "breaker"
+    fake.now = rest_until + timedelta(seconds=1)
+    assert second.gate().open  # the rest ended; the next request is the probe
+    with second.slot("description") as slot:
+        slot.throttled(429)
+    assert _row(second)[3] == 2
+    assert _row(second)[2] == fake.now + timedelta(hours=6)
+
+
+def test_a_neutral_probe_leaves_the_ladder_where_it_is(make_budget):
+    fake = FakeTime(WED)
+    budget = make_budget(fake)
+    budget.snapshot()  # create the row
+    ended = WED - timedelta(minutes=1)
+    with budget.conn.cursor() as cur:
+        cur.execute("UPDATE pace_budgets SET rest_level = 2, rest_until = %s WHERE host = 'linkedin.com'",
+                    (ended,))
+    with budget.slot("search") as slot:
+        slot.neutral(503)  # a timeout or 503 proves nothing about the block
+    assert _row(budget)[3] == 2 and _row(budget)[2] == ended
+    with budget.slot("search") as slot:
+        slot.clean(200)  # a clean probe is what resets it
+    assert _row(budget)[3] == 0 and _row(budget)[2] is None
+
+
+def test_a_request_granted_before_the_window_cannot_fire_inside_it(make_budget):
+    # 21:58 UTC = 23:58 Rome and the pacer says the next slot is five minutes away.
+    fake = FakeTime(datetime(2026, 10, 14, 21, 58, tzinfo=timezone.utc))
+    budget = make_budget(fake)
+    budget.snapshot()
+    with budget.conn.cursor() as cur:
+        cur.execute("UPDATE pace_budgets SET next_slot_at = %s WHERE host = 'linkedin.com'",
+                    (fake.now + timedelta(minutes=5),))
+    ran = []
+    with pytest.raises(PaceGateClosed):
+        with budget.slot("search") as slot:
+            ran.append(fake.now)
+            slot.clean(200)
+    assert ran == [] and _row(budget)[0] == 0
+
+
+def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_breaker(make_budget, capsys):
+    fake = FakeTime(WED)
+    budget = make_budget(fake)
+    budget.snapshot()
+    with budget.conn.cursor() as cur:
+        cur.execute("DROP TABLE pace_events")
+    with budget.slot("search") as slot:
+        slot.throttled(429)  # the request works; only the telemetry row fails
+    with budget.conn.cursor() as cur:
+        cur.execute("SELECT requests_today, factor FROM pace_budgets WHERE host = 'linkedin.com'")
+        assert cur.fetchone() == (1, 2.0)
+    assert "could not record the search request" in capsys.readouterr().out
+
+
+def test_two_services_share_one_cap_row(make_budget, store_conn):
+    fake = FakeTime(WED)
+    schedule = ScheduleConfig(weekday_cap=2, breaker_refusals=1000)
+    collector = make_budget(fake, schedule, service="collect-linkedin")
+    processor = make_budget(fake, schedule, service="process")
+    with collector.slot("search") as slot:
+        slot.clean(200)
+    with processor.slot("description") as slot:
+        slot.clean(200)
+    assert collector.gate().requests_today == 2 and not collector.gate().open
+    with pytest.raises(PaceGateClosed):
+        with processor.slot("description") as slot:
+            slot.clean(200)
+    with collector.conn.cursor() as cur:
+        cur.execute("SELECT service, count(*) FROM pace_events GROUP BY service ORDER BY service")
+        assert cur.fetchall() == [("collect-linkedin", 1), ("process", 1)]

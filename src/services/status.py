@@ -21,7 +21,8 @@ def _gate_line(gate: Gate, schedule: ScheduleConfig) -> str:
         return f"LinkedIn gate: {left}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
     if gate.reason == "daily_cap":
         return f"LinkedIn gate: {left}, daily cap reached"
-    return f"LinkedIn gate: {left}, window open"
+    probe = ", probe pending" if gate.rest_level > 0 else ""
+    return f"LinkedIn gate: {left}, window open{probe}"
 
 
 def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
