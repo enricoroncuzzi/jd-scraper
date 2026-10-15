@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     load_dotenv()
     cfg = load_collector_config()
-    specs = build_slices(load_tier_configs(), cfg.due_hours)
+    specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices)
 
     if args.sync_slices or args.once:
         conn = connect(store_url())

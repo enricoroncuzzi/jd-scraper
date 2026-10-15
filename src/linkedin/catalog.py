@@ -5,7 +5,7 @@ Tier 3 has one slice per EU/EEA country except Italy, instead of one "Europe"
 search, so no single query comes near LinkedIn's ~900-result ceiling.
 """
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from src.jobstore.db import utcnow
@@ -22,6 +22,8 @@ class CollectorConfig:
     known_pages_to_stop: int = 3
     window_margin_hours: int = 2
     legacy_lock_path: str | None = None
+    area_due_hours: dict[str, int] = field(default_factory=dict)
+    skip_slices: frozenset = frozenset()  # (role, area) pairs that are not walked
 
 
 @dataclass(frozen=True)
@@ -36,12 +38,19 @@ class SliceSpec:
 def load_collector_config(path: str = COLLECTOR_CONFIG_PATH) -> CollectorConfig:
     with open(path) as handle:
         data = json.load(handle)
+    area_due_hours = {str(area): int(hours) for area, hours in data.get("area_due_hours", {}).items()}
+    if any(hours < 1 for hours in area_due_hours.values()):
+        raise ValueError("area_due_hours must be at least 1 hour")
+    skip_slices = frozenset(
+        (str(entry["role"]), str(area)) for entry in data.get("skip_slices", []) for area in entry["areas"])
     return CollectorConfig(
         due_hours={int(tier): int(hours) for tier, hours in data["due_hours"].items()},
         max_pages_per_slice=int(data.get("max_pages_per_slice", 90)),
         known_pages_to_stop=int(data.get("known_pages_to_stop", 3)),
         window_margin_hours=int(data.get("window_margin_hours", 2)),
         legacy_lock_path=data.get("legacy_lock_path"),
+        area_due_hours=area_due_hours,
+        skip_slices=skip_slices,
     )
 
 
@@ -60,17 +69,31 @@ def _areas(search: dict) -> list[str]:
     return list(search.get("countries") or search.get("allowed_countries") or [search["location"]])
 
 
-def build_slices(tier_configs: dict[int, dict], due_hours: dict[int, int]) -> list[SliceSpec]:
+def build_slices(tier_configs: dict[int, dict], due_hours: dict[int, int],
+                 area_due_hours: dict[str, int] | None = None,
+                 skip_slices: frozenset | set | None = None) -> list[SliceSpec]:
+    """One slice per (role, area). `area_due_hours` overrides the tier's cadence for an area;
+    `skip_slices` drops (role, area) pairs. Naming an area or pair that no tier config produces
+    is an error, so a typo cannot silently leave a slice at full cost."""
+    area_due_hours = area_due_hours or {}
+    skip_slices = set(skip_slices or ())
     specs: list[SliceSpec] = []
     seen: set[tuple[str, str]] = set()
     for tier in sorted(tier_configs):
         search = tier_configs[tier]["search"]
         for area in _areas(search):
+            hours = area_due_hours.get(area, due_hours[tier])
             for role in search["roles"]:
                 if (role, area) in seen:
                     continue
                 seen.add((role, area))
-                specs.append(SliceSpec(SOURCE, role, area, tier, due_hours[tier] * 3600))
+                if (role, area) in skip_slices:
+                    continue
+                specs.append(SliceSpec(SOURCE, role, area, tier, hours * 3600))
+    known_areas = {area for _role, area in seen}
+    unknown = sorted((set(area_due_hours) - known_areas) | {f"{role} / {area}" for role, area in skip_slices - seen})
+    if unknown:
+        raise ValueError(f"collector config names slices no tier config produces: {unknown}")
     return specs
 
 
@@ -98,10 +121,14 @@ def sync_slices(conn, specs: list[SliceSpec], now: datetime | None = None,
                 continue
             sid, tier, base, active = existing[key]
             if (tier, base, active) != (spec.tier, spec.base_interval_seconds, True):
+                # A slice that was walking at its old base follows the new one in either direction;
+                # one the adaptive cadence had already shortened only ever follows it down.
                 cur.execute(
                     "UPDATE slices SET tier = %s, base_interval_seconds = %s, active = TRUE, "
-                    "interval_seconds = LEAST(interval_seconds, %s) WHERE id = %s",
-                    (spec.tier, spec.base_interval_seconds, spec.base_interval_seconds, sid))
+                    "interval_seconds = CASE WHEN interval_seconds = %s THEN %s "
+                    "ELSE LEAST(interval_seconds, %s) END WHERE id = %s",
+                    (spec.tier, spec.base_interval_seconds, base, spec.base_interval_seconds,
+                     spec.base_interval_seconds, sid))
                 counts["updated"] += 1
         for key, (sid, _tier, _base, active) in existing.items():
             if key not in wanted and active:

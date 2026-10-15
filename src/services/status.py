@@ -26,6 +26,13 @@ def render(conn, now: datetime) -> str:
         for source, active, due, last in cur.fetchall():
             lines.append(f"  {source:<10} {active:>4} {due:>4}   "
                          f"{last:%Y-%m-%d %H:%M}" if last else f"  {source:<10} {active:>4} {due:>4}   never")
+        cur.execute("SELECT source, base_interval_seconds, count(*) FROM slices WHERE active "
+                    "GROUP BY 1, 2 ORDER BY 1, 2")
+        cadence: dict[str, list[str]] = {}
+        for source, seconds, count in cur.fetchall():
+            cadence.setdefault(source, []).append(f"{seconds / 3600:g}h x{count}")
+        for source, parts in cadence.items():
+            lines.append(f"  {source:<10} cadence: " + ", ".join(parts))
         cur.execute("SELECT factor, clean_streak, cooldown_until, last_kind, calm_since FROM pace_budgets "
                     "WHERE host = 'linkedin.com'")
         pace = cur.fetchone()
