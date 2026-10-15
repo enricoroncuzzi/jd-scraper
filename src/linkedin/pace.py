@@ -5,9 +5,11 @@ Postgres session advisory lock, so the collector and the processor cannot
 exceed it together and never have two LinkedIn requests in flight.
 
 The rate adapts AIMD-style: a throttle (429, 999, throttled empty page) doubles
-the spacing and starts a 60 s cooldown; every 50 clean responses the rate rises
-10 percent, back up to the base rate. Search pages and description fetches take
-turns so neither starves the other.
+the spacing and starts a 60 s cooldown. One logical request that is refused and
+retried is one throttle: its repeat refusals keep the cooldown but do not double
+again. The rate recovers two ways: every 50 clean responses it rises 10 percent,
+and every 30 minutes without a refusal the spacing halves, back down to the base
+rate. Search pages and description fetches take turns so neither starves the other.
 """
 import json
 import random
@@ -22,6 +24,7 @@ BASE_SPACING_RANGE = (2.0, 4.0)
 FLOOR_SPACING_SECONDS = 300.0
 MAX_FACTOR = FLOOR_SPACING_SECONDS / 3.0
 COOLDOWN_SECONDS = 60.0
+CALM_HALVING_SECONDS = 1800.0
 CLEAN_STREAK_FOR_RAISE = 50
 RATE_RAISE = 1.10
 WANTING_FRESH_SECONDS = 30.0
@@ -37,6 +40,7 @@ class PaceState:
     cooldown_until: datetime | None = None
     last_kind: str | None = None
     wanting: dict[str, float] = field(default_factory=dict)
+    calm_since: datetime | None = None
 
 
 def after_clean(state: PaceState) -> PaceState:
@@ -53,6 +57,29 @@ def after_throttle(state: PaceState, now: datetime) -> PaceState:
     state.factor = min(state.factor * 2.0, MAX_FACTOR)
     state.clean_streak = 0
     state.cooldown_until = now + timedelta(seconds=COOLDOWN_SECONDS)
+    state.calm_since = now
+    return state
+
+
+def after_repeat_throttle(state: PaceState, now: datetime) -> PaceState:
+    """A retry of an already-throttled logical request was refused again: keep the
+    cooldown and restart the calm clock, but do not double the spacing a second time."""
+    state.clean_streak = 0
+    state.cooldown_until = now + timedelta(seconds=COOLDOWN_SECONDS)
+    state.calm_since = now
+    return state
+
+
+def after_calm(state: PaceState, now: datetime) -> PaceState:
+    """Halve the spacing for every full CALM_HALVING_SECONDS since the last refusal."""
+    if state.calm_since is None or state.factor <= 1.0:
+        state.factor = max(state.factor, 1.0)
+        state.calm_since = now
+        return state
+    periods = int((now - state.calm_since).total_seconds() // CALM_HALVING_SECONDS)
+    if periods > 0:
+        state.factor = max(1.0, state.factor / 2.0 ** periods)
+        state.calm_since += timedelta(seconds=periods * CALM_HALVING_SECONDS)
     return state
 
 
@@ -76,6 +103,10 @@ class Slot:
 
     def throttled(self) -> None:
         self.outcome = "throttled"
+
+    def throttled_again(self) -> None:
+        """The retry of a request that was already throttled was refused too."""
+        self.outcome = "throttled_again"
 
     def neutral(self) -> None:
         self.outcome = "neutral"
@@ -105,18 +136,19 @@ class PaceBudget:
                 "INSERT INTO pace_budgets (host, next_slot_at) VALUES (%s, %s) "
                 "ON CONFLICT (host) DO NOTHING", (self.host, self.clock()))
             cur.execute(
-                "SELECT next_slot_at, factor, clean_streak, cooldown_until, last_kind, wanting "
+                "SELECT next_slot_at, factor, clean_streak, cooldown_until, last_kind, wanting, calm_since "
                 "FROM pace_budgets WHERE host = %s", (self.host,))
-            next_slot, factor, streak, cooldown, last_kind, wanting = cur.fetchone()
-        return PaceState(next_slot, factor, streak, cooldown, last_kind, dict(wanting or {}))
+            next_slot, factor, streak, cooldown, last_kind, wanting, calm_since = cur.fetchone()
+        return PaceState(next_slot, factor, streak, cooldown, last_kind, dict(wanting or {}), calm_since)
 
     def _save(self, state: PaceState) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
                 "UPDATE pace_budgets SET next_slot_at = %s, factor = %s, clean_streak = %s, "
-                "cooldown_until = %s, last_kind = %s, wanting = wanting - %s WHERE host = %s",
+                "cooldown_until = %s, last_kind = %s, calm_since = %s, wanting = wanting - %s "
+                "WHERE host = %s",
                 (state.next_slot_at, state.factor, state.clean_streak, state.cooldown_until,
-                 state.last_kind, state.last_kind, self.host))
+                 state.last_kind, state.calm_since, state.last_kind, self.host))
 
     def _declare_wanting(self, kind: str) -> None:
         with self.conn.cursor() as cur:
@@ -137,7 +169,14 @@ class PaceBudget:
 
     def snapshot(self) -> PaceState:
         """Current stored state, for status displays. Takes no lock."""
-        return self._load()
+        return after_calm(self._load(), self.clock())
+
+    def seconds_until_slot(self) -> float:
+        """How long a request made now would wait for its turn, ignoring the other
+        service's place in the queue. Takes no lock."""
+        state = self._load()
+        ready = max(state.next_slot_at, state.cooldown_until or state.next_slot_at)
+        return max(0.0, (ready - self.clock()).total_seconds())
 
     # -- the turn --------------------------------------------------------
     def _other_is_waiting(self, state: PaceState, kind: str) -> bool:
@@ -153,7 +192,7 @@ class PaceBudget:
             if not self._try_lock():
                 self.sleep(LOCK_POLL_SECONDS)
                 continue
-            state = self._load()
+            state = after_calm(self._load(), self.clock())
             if state.last_kind == kind and self._other_is_waiting(state, kind):
                 self._unlock()
                 self.sleep(YIELD_SECONDS)
@@ -182,6 +221,10 @@ class PaceBudget:
                     after_clean(state)
                 elif slot.outcome == "throttled":
                     after_throttle(state, now)
+                    print(f"[pace] LinkedIn throttled a {kind} request: spacing now "
+                          f"x{state.factor:g}, cooling down {COOLDOWN_SECONDS:g}s")
+                elif slot.outcome == "throttled_again":
+                    after_repeat_throttle(state, now)
                 state.last_kind = kind
                 state.wanting.pop(kind, None)
                 state.next_slot_at = now + timedelta(
@@ -206,6 +249,9 @@ class ManagedPace:
             conn.autocommit = True
             self._budget = PaceBudget(conn, **self._options)
         return self._budget
+
+    def seconds_until_slot(self) -> float:
+        return self._current().seconds_until_slot()
 
     @contextmanager
     def slot(self, kind: str):

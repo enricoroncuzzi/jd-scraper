@@ -11,6 +11,7 @@ from src.linkedin.search import (
     RETRY_WAITS, Page, SearchFailed, SearchThrottled, fetch_page,
 )
 from src.linkedin.windows import f_tpr, next_due, next_interval, window_seconds
+from src.services.pulse import pulse
 
 # Stop reasons that leave the slice unfinished: it resumes from `next_start`.
 UNFINISHED = frozenset({"throttled_empty", "rate_limited", "error"})
@@ -90,6 +91,7 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
     last_page_full = False
 
     for _ in range(cfg.max_pages_per_slice):
+        pulse({"slice": f"{row.role} / {row.area}", "pages": pages, "new_jobs": new_jobs})
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
                               start=start, get=get, sleep=sleep)
@@ -161,6 +163,11 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
         base=row.base_interval_seconds, current=row.interval_seconds,
         stop_reason=result.stop_reason, consecutive_empty=consecutive_empty)
     with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO slice_walks (slice_id, walked_at, pages, cards_seen, new_jobs, stop_reason, "
+            "window_seconds) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (row.id, started_at, result.pages, result.cards_seen, result.new_jobs, result.stop_reason,
+             result.window))
         cur.execute(
             "UPDATE slices SET last_walked_at = %s, last_window = %s, pages_walked = %s, "
             "cards_seen = %s, stop_reason = %s, consecutive_empty = %s, interval_seconds = %s, "

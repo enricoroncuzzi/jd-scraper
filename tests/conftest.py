@@ -47,3 +47,14 @@ def _isolate_usage_log(tmp_path, monkeypatch):
 
 
 from tests.store_db import store_conn, store_conn_factory, store_url_fixture  # noqa: E402,F401
+
+
+@pytest.fixture
+def pulses():
+    """Record the mid-tick heartbeats a piece of code asks for."""
+    from src.services import pulse as pulse_module
+
+    calls = []
+    pulse_module.install(calls.append)
+    yield calls
+    pulse_module.install(None)

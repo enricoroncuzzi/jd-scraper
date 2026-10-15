@@ -6,7 +6,7 @@ import pytest
 from src.linkedin import pace as pace_module
 from src.linkedin.pace import (
     CLEAN_STREAK_FOR_RAISE, COOLDOWN_SECONDS, FLOOR_SPACING_SECONDS, MAX_FACTOR, PaceBudget,
-    PaceState, after_clean, after_throttle, spacing_seconds,
+    PaceState, after_calm, after_clean, after_repeat_throttle, after_throttle, spacing_seconds,
 )
 
 T0 = datetime(2026, 10, 14, 9, 0, tzinfo=timezone.utc)
@@ -197,3 +197,112 @@ def test_managed_pace_reopens_a_dropped_connection(store_conn, store_conn_factor
         slot.clean()
     assert len(opened) == 2 and opened[0].closed and not opened[1].closed
     opened[1].close()
+
+
+def test_a_throttle_is_logged_with_the_new_spacing(make_budget, capsys):
+    budget = make_budget(FakeTime())
+    with budget.slot("description") as slot:
+        slot.throttled()
+    assert "LinkedIn throttled a description request: spacing now x2, cooling down 60s" in capsys.readouterr().out
+    with budget.slot("search") as slot:
+        slot.clean()
+    assert "throttled" not in capsys.readouterr().out
+
+
+# -- one throttle per logical request, and recovery by time ----------------------------------
+
+def test_a_repeat_refusal_keeps_the_cooldown_but_does_not_double_again():
+    state = after_throttle(_state(clean_streak=9), T0)
+    later = T0 + timedelta(seconds=30)
+    after_repeat_throttle(state, later)
+    assert state.factor == 2.0 and state.clean_streak == 0
+    assert state.cooldown_until == later + timedelta(seconds=COOLDOWN_SECONDS)
+    assert state.calm_since == later
+
+
+def test_every_full_half_hour_without_a_refusal_halves_the_spacing():
+    state = _state(factor=32.0, calm_since=T0)
+    after_calm(state, T0 + timedelta(minutes=29, seconds=59))
+    assert state.factor == 32.0
+    after_calm(state, T0 + timedelta(minutes=30))
+    assert state.factor == 16.0 and state.calm_since == T0 + timedelta(minutes=30)
+    after_calm(state, T0 + timedelta(minutes=95))  # two more full periods
+    assert state.factor == 4.0 and state.calm_since == T0 + timedelta(minutes=90)
+
+
+def test_calm_never_takes_the_spacing_below_the_base():
+    state = _state(factor=3.0, calm_since=T0)
+    after_calm(state, T0 + timedelta(hours=10))
+    assert state.factor == 1.0
+
+
+def test_the_calm_clock_starts_when_it_is_first_seen():
+    state = _state(factor=64.0)
+    after_calm(state, T0)
+    assert state.factor == 64.0 and state.calm_since == T0
+
+
+def test_a_throttle_restarts_the_calm_clock():
+    state = _state(factor=4.0, calm_since=T0)
+    after_throttle(state, T0 + timedelta(minutes=29))
+    assert state.factor == 8.0 and state.calm_since == T0 + timedelta(minutes=29)
+    after_calm(state, T0 + timedelta(minutes=58))
+    assert state.factor == 8.0
+
+
+def _factor_and_calm(budget):
+    with budget.conn.cursor() as cur:
+        cur.execute("SELECT factor, calm_since FROM pace_budgets WHERE host = 'linkedin.com'")
+        return cur.fetchone()
+
+
+def test_a_refused_retry_through_the_budget_doubles_only_once(make_budget):
+    budget = make_budget(FakeTime())
+    with budget.slot("description") as slot:
+        slot.throttled()
+    for _ in range(3):
+        with budget.slot("description") as slot:
+            slot.throttled_again()
+    assert _factor_and_calm(budget)[0] == 2.0
+
+
+def test_the_stored_spacing_halves_after_half_an_hour_of_calm_and_persists(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake)
+    for _ in range(3):  # three separate requests refused: x8
+        with budget.slot("search") as slot:
+            slot.throttled()
+    factor, last_refusal = _factor_and_calm(budget)
+    assert factor == 8.0
+    fake.now = last_refusal + timedelta(minutes=31)
+    with budget.slot("search") as slot:
+        slot.clean()
+    factor, calm_since = _factor_and_calm(budget)
+    assert factor == 4.0 and calm_since == last_refusal + timedelta(minutes=30)
+    assert budget.snapshot().factor == 4.0
+
+
+def test_a_new_refusal_restarts_the_half_hour_clock(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake)
+    for _ in range(2):
+        with budget.slot("search") as slot:
+            slot.throttled()
+    fake.now += timedelta(minutes=29)
+    with budget.slot("search") as slot:
+        slot.throttled()
+    assert _factor_and_calm(budget)[0] == 8.0
+    fake.now += timedelta(minutes=29)
+    with budget.slot("search") as slot:
+        slot.clean()
+    assert _factor_and_calm(budget)[0] == 8.0
+
+
+def test_the_snapshot_shows_the_decayed_spacing_without_writing_it(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake)
+    with budget.slot("search") as slot:
+        slot.throttled()
+    fake.now += timedelta(minutes=61)
+    assert budget.snapshot().factor == 1.0
+    assert _factor_and_calm(budget)[0] == 2.0

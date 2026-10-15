@@ -1,7 +1,56 @@
 {
-  "due_hours": {"1": 4, "2": 6, "3": 12, "4": 12},
+  "due_hours": {
+    "1": 4,
+    "2": 6,
+    "3": 12,
+    "4": 12
+  },
   "max_pages_per_slice": 90,
   "known_pages_to_stop": 3,
   "window_margin_hours": 2,
-  "legacy_lock_path": "/home/enrico/.jd-scraper.lock"
+  "legacy_lock_path": "/home/enrico/.jd-scraper.lock",
+  "area_due_hours": {
+    "San Marino, San Marino": 48,
+    "Slovakia": 72,
+    "Norway": 72,
+    "Luxembourg": 72,
+    "Austria": 72,
+    "Estonia": 72,
+    "Lithuania": 72,
+    "Croatia": 72,
+    "Malta": 72,
+    "Latvia": 72,
+    "Slovenia": 72,
+    "Cyprus": 72,
+    "Iceland": 72,
+    "Liechtenstein": 72,
+    "Greece": 24,
+    "Bulgaria": 24,
+    "Denmark": 24,
+    "Hungary": 24,
+    "Czechia": 24,
+    "Finland": 24
+  },
+  "skip_slices": [
+    {
+      "role": "ML Engineer",
+      "areas": [
+        "Italy",
+        "Switzerland",
+        "San Marino, San Marino"
+      ]
+    },
+    {
+      "role": "Data Scientist",
+      "areas": [
+        "San Marino, San Marino"
+      ]
+    },
+    {
+      "role": "Software Engineer AI",
+      "areas": [
+        "San Marino, San Marino"
+      ]
+    }
+  ]
 }

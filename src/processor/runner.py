@@ -1,8 +1,8 @@
 """The process service: move jobs through their stages, continuously.
 
 Each tick runs the stages in order: expire stale jobs, cheap checks, no-model
-verdict rules, description fetches (shared LinkedIn pace), the remote check (or
-the merged call when switched on), scoring. Every stage commits per job or per
+verdict rules, the remote check (or the merged call when switched on), scoring,
+and last the description fetches (shared LinkedIn pace). Every stage commits per job or per
 batch, so a restart resumes exactly where it stopped.
 
     python -m src.processor.runner --once    # one tick, then exit
@@ -48,12 +48,15 @@ def process_once(conn, pace, cfg: ProcessorConfig, keys: LlmKeys, *, now: dateti
     conn.commit()
     cheap = run_cheap_checks(conn, cfg, now)
     settled = apply_deterministic_rules(conn, cfg, now)
-    fetched = run_descriptions(conn, pace, cfg, now, get=get, sleep=sleep)
     if cfg.merged_call_enabled:
         checked = run_combined_batches(conn, cfg, now, keys, chain=chain, sleep=sleep)
     else:
         checked = run_remote_batches(conn, cfg, now, keys, verify=verify)
     scored = run_scoring_batches(conn, cfg, now, keys, score=score)
+    # LinkedIn last: when the pace is slow, a tick with other work must not sit in its queue.
+    busy = any((cheap, settled, checked, scored))
+    fetched = run_descriptions(conn, pace, cfg, now, get=get, sleep=sleep,
+                               skip_if_wait_over=cfg.description_seconds_per_tick if busy else None)
     detail = {"expired": expired, "cheap": cheap, "settled": settled, "described": fetched,
               "checked": checked, "scored": scored, "waiting": waiting_counts(conn)}
     return Tick(any((cheap, settled, fetched, checked, scored)), detail)

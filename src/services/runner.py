@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from src.jobstore import heartbeat
 from src.jobstore.db import connect
 from src.jobstore.schema import init_store
+from src.services import pulse as pulse_module
 
 MAX_BACKOFF_SECONDS = 300
 
@@ -45,9 +46,19 @@ def run_service(name: str, tick, *, connect_fn=connect, idle_seconds: float = 60
     wait = wait or stop.wait
     if install_signals:
         _install_signal_handlers(stop)
+    beat_during_tick = pulse_module.Pulse(name, connect_fn)
+    pulse_module.install(beat_during_tick)
+    print(f"[{name}] starting")
+    try:
+        return _loop(name, tick, connect_fn, idle_seconds, stop, wait)
+    finally:
+        pulse_module.install(None)
+        beat_during_tick.close()
+
+
+def _loop(name, tick, connect_fn, idle_seconds, stop, wait) -> int:
     conn = None
     failures = 0
-    print(f"[{name}] starting")
     while not stop.is_set():
         try:
             if conn is None or conn.closed:

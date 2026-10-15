@@ -90,3 +90,20 @@ def test_the_merged_call_replaces_the_two_stages_when_switched_on(store_conn, cf
                  sleep=lambda _s: None, verify=verify, score=score, chain=chain)
     assert _stage(store_conn, job) == ("scored", "", "confirmed", 8)
     assert verify.calls == [] and score.calls == [] and len(chain.payloads) == 1
+
+
+def test_a_tick_with_other_work_skips_a_far_away_linkedin_turn_but_an_idle_tick_fetches(store_conn, cfg):
+    foreign = CardInput(source="linkedin", source_job_id="3900000009",
+                        source_url="https://www.linkedin.com/jobs/view/job-3900000009",
+                        title="AI Engineer", company="Austin Co", location="Austin, Texas, United States",
+                        tier_hint=1)
+    record_sighting(store_conn, foreign, NOW)  # settled by the cheap checks, no model call
+    waiting = record_sighting(store_conn, _linkedin_card("3900000001"), NOW).job_id
+    store_conn.commit()
+    get = ScriptedGet(response(200, FRAGMENT))
+    kwargs = dict(sleep=lambda _s: None, verify=FakeVerify(), score=FakeScore())
+    busy = process_once(store_conn, FakePace(wait=600), cfg, KEYS, now=NOW, get=get, **kwargs)
+    assert busy.did_work and busy.detail["cheap"] >= 1 and busy.detail["described"] == 0 and get.calls == []
+    idle = process_once(store_conn, FakePace(wait=600), cfg, KEYS, now=NOW, get=get, **kwargs)
+    assert idle.detail["described"] == 1 and len(get.calls) == 1
+    assert _stage(store_conn, waiting)[0] == "described"

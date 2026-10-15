@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.linkedin.search import HEADERS, RETRY_WAITS
+from src.services.pulse import pulse
 
 DESCRIPTION_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 REQUEST_TIMEOUT = 15
@@ -35,7 +36,9 @@ def extract_description(html: str) -> str:
 
 def fetch_description(pace, job_id: str, *, get=requests.get, sleep=time.sleep) -> FragmentResult:
     url = DESCRIPTION_URL.format(job_id=job_id)
+    saw_throttle = False
     for attempt in range(len(RETRY_WAITS) + 1):
+        pulse({"description": job_id, "attempt": attempt + 1})
         with pace.slot("description") as slot:
             try:
                 response = get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
@@ -52,7 +55,8 @@ def fetch_description(pace, job_id: str, *, get=requests.get, sleep=time.sleep) 
                     slot.neutral()
                     return FragmentResult("gone")
                 if status in THROTTLE_STATUSES:
-                    slot.throttled()
+                    slot.throttled_again() if saw_throttle else slot.throttled()
+                    saw_throttle = True
                 elif status in REFUSED_STATUSES:
                     slot.neutral()
                 else:

@@ -24,6 +24,7 @@ from src.delivery.jobs import DeliveryJob, load_jobs, to_scored_offer
 from src.delivery.settings import DeliverySettings
 from src.processor.config import ProcessorConfig
 from src.scorer import _openrouter_quota_exhausted
+from src.services.pulse import pulse
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
     check_cv_sources(pkg)
     results = []
     for job in due:
+        pulse({"packaging": len(results)})
         policy = cfg.policies[job.tier]
         channel = classify_through_pace(pace, job.canonical_url, classify)
         path = note_path(settings, job, job.note_day)

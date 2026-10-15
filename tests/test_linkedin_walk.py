@@ -221,3 +221,25 @@ def test_claim_due_slice_only_returns_slices_of_the_asked_source(store_conn):
     assert claim_due_slice(store_conn, NOW).area == "Italy"
     assert claim_due_slice(store_conn, NOW, "freehire").area == "countries=it"
     assert claim_due_slice(store_conn, NOW, "himalayas") is None
+
+
+def test_a_walk_beats_before_every_page_it_fetches(store_conn, pulses):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(200, page_html(*ids(10, 10))),
+                      response(200, page_html()))
+    result, _ = _walk(store_conn, get)
+    assert result.pages == 3
+    walking = [call for call in pulses if "pages" in call]
+    assert [call["pages"] for call in walking] == [0, 1, 2]
+    assert walking[0]["slice"] == "AI Engineer / Italy" and walking[2]["new_jobs"] == 20
+
+
+def test_every_walk_is_logged_with_its_requests_hits_and_new_jobs(store_conn):
+    row = _seed_slice(store_conn)
+    finish_walk(store_conn, row, WalkResult(3, 23, 20, "end_of_results", 86400, 23), NOW, NOW)
+    finish_walk(store_conn, row, WalkResult(2, 12, 0, "rate_limited", 86400, 12), NOW + timedelta(hours=4),
+                NOW + timedelta(hours=4))
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT walked_at, pages, cards_seen, new_jobs, stop_reason, window_seconds "
+                    "FROM slice_walks WHERE slice_id = %s ORDER BY walked_at", (row.id,))
+        assert cur.fetchall() == [(NOW, 3, 23, 20, "end_of_results", 86400),
+                                  (NOW + timedelta(hours=4), 2, 12, 0, "rate_limited", 86400)]

@@ -188,3 +188,57 @@ def test_stale_jobs_expire(store_conn, cfg):
     assert _state(store_conn, refused)[:2] == ("expired", "description_refused")
     assert _state(store_conn, old)[:2] == ("expired", "posting_too_old")
     assert _state(store_conn, fresh)[0] == "seen"
+
+
+def test_a_description_round_beats_before_every_fetch(store_conn, cfg, pulses):
+    for n in range(3):
+        _tiered_job(store_conn, cfg, f"390000000{n + 1}")
+    get = ScriptedGet(*[response(200, FRAGMENT)] * 3)
+    assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 3
+    assert [call["describing"] for call in pulses if "describing" in call] == [0, 1, 2, 3]
+
+
+def test_one_refused_description_counts_as_one_throttle_not_one_per_retry():
+    pace = FakePace()
+    fetch_description(pace, "1", get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
+    assert [outcome for _kind, outcome in pace.events] == ["throttled"] + ["throttled_again"] * 3
+
+
+def test_the_retries_of_one_description_beat_while_it_waits(pulses):
+    fetch_description(FakePace(), "3900000009", get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
+    assert pulses == [{"description": "3900000009", "attempt": n} for n in (1, 2, 3, 4)]
+
+
+def test_a_slow_pace_cannot_keep_a_tick_in_the_description_stage(store_conn, cfg):
+    from dataclasses import replace
+
+    for n in range(5):
+        _tiered_job(store_conn, cfg, f"390000000{n + 1}")
+    times = iter([0.0, 60.0, 130.0, 999.0])  # start, before the 2nd fetch, before the 3rd
+    get = ScriptedGet(*[response(200, FRAGMENT)] * 5)
+    done = run_descriptions(store_conn, FakePace(), replace(cfg, description_seconds_per_tick=120), NOW,
+                            get=get, sleep=lambda _s: None, clock=lambda: next(times))
+    assert done == 2 and len(get.calls) == 2
+
+
+def test_the_first_description_is_fetched_even_when_the_budget_is_zero(store_conn, cfg):
+    from dataclasses import replace
+
+    _tiered_job(store_conn, cfg)
+    get = ScriptedGet(response(200, FRAGMENT))
+    assert run_descriptions(store_conn, FakePace(), replace(cfg, description_seconds_per_tick=0), NOW,
+                            get=get, sleep=lambda _s: None) == 1
+
+
+def test_a_busy_tick_does_not_queue_for_a_far_away_linkedin_turn(store_conn, cfg):
+    _tiered_job(store_conn, cfg)
+    get = ScriptedGet(response(200, FRAGMENT))
+    far = FakePace(wait=300)
+    assert run_descriptions(store_conn, far, cfg, NOW, get=get, sleep=lambda _s: None,
+                            skip_if_wait_over=120) == 0 and get.calls == []
+    assert run_descriptions(store_conn, far, cfg, NOW, get=get, sleep=lambda _s: None) == 1  # an idle tick waits
+    near = FakePace(wait=10)
+    _tiered_job(store_conn, cfg, "3900000002")
+    get = ScriptedGet(response(200, FRAGMENT))
+    assert run_descriptions(store_conn, near, cfg, NOW, get=get, sleep=lambda _s: None,
+                            skip_if_wait_over=120) == 1
