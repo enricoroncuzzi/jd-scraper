@@ -1,6 +1,6 @@
 {
   "freehire": {
-    "enabled": false,
+    "enabled": true,
     "base_url": "https://freehire.me/api/v1",
     "user_agent": "enricoroncuzzi/jd-scraper/1.0 (+https://github.com/enricoroncuzzi/jd-scraper)",
     "min_interval_seconds": 1.0,
@@ -9,7 +9,7 @@
     "page_size": 50,
     "first_pull_days": 30,
     "known_pages_to_stop": 2,
-    "exclude_sources": ["whatjobs-it"],
+    "exclude_sources": ["whatjobs-it", "whatjobs-es", "whatjobs-uk", "whatjobs-nl", "whatjobs-pl", "whatjobs-fr", "whatjobs-pt", "whatjobs-de", "whatjobs-ch", "whatjobs-be", "whatjobs-dk", "whatjobs-ie", "whatjobs-se", "whatjobs-no", "whatjobs-at", "whatjobs-fi", "whatjobs-lu", "adzuna", "reed", "jobleads"],
     "skip_reality": ["likely-evergreen"]
   },
   "himalayas": {

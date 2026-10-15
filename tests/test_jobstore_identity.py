@@ -58,6 +58,7 @@ def test_linkedin_job_id(url, expected):
     ("https://himalayas.app/companies/acme/jobs/x", False),
     ("https://it.whatjobs.com/pub_api__cpl__1", False),
     ("https://freehire.me/jobs/abc", False),
+    ("https://www.jobleads.com/it/job/data-scientist--roma--e9942a", False),
     ("", False),
 ])
 def test_is_company_page(url, expected):

@@ -164,6 +164,11 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
         stop_reason=result.stop_reason, consecutive_empty=consecutive_empty)
     with conn.cursor() as cur:
         cur.execute(
+            "INSERT INTO slice_walks (slice_id, walked_at, pages, cards_seen, new_jobs, stop_reason, "
+            "window_seconds) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (row.id, started_at, result.pages, result.cards_seen, result.new_jobs, result.stop_reason,
+             result.window))
+        cur.execute(
             "UPDATE slices SET last_walked_at = %s, last_window = %s, pages_walked = %s, "
             "cards_seen = %s, stop_reason = %s, consecutive_empty = %s, interval_seconds = %s, "
             "resume_start = %s, due_at = %s WHERE id = %s",

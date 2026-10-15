@@ -29,7 +29,7 @@ _BOARD_HOST_SUFFIXES = (
     "remoteok.com", "weworkremotely.com", "workingnomads.com", "jobicy.com",
     "remotive.com", "arbeitnow.com", "themuse.com", "ziprecruiter.com", "talent.com",
     "jooble.org", "careerjet.com", "jobrapido.com", "trovolavoro.it", "infojobs.net",
-    "monster.com", "wellfound.com", "workable.com/jobs", "jobs.workable.com",
+    "monster.com", "wellfound.com", "workable.com/jobs", "jobs.workable.com", "jobleads.com",
 )
 
 

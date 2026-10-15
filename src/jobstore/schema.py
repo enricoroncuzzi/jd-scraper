@@ -167,6 +167,19 @@ DDL: list[str] = [
     """,
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS calm_since TIMESTAMPTZ",
     """
+    CREATE TABLE IF NOT EXISTS slice_walks (
+        id             BIGSERIAL PRIMARY KEY,
+        slice_id       BIGINT NOT NULL REFERENCES slices(id) ON DELETE CASCADE,
+        walked_at      TIMESTAMPTZ NOT NULL,
+        pages          INTEGER NOT NULL,
+        cards_seen     INTEGER NOT NULL,
+        new_jobs       INTEGER NOT NULL,
+        stop_reason    TEXT NOT NULL,
+        window_seconds INTEGER
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS slice_walks_slice_idx ON slice_walks (slice_id, walked_at)",
+    """
     CREATE TABLE IF NOT EXISTS service_heartbeats (
         service    TEXT PRIMARY KEY,
         started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -202,7 +215,7 @@ DDL: list[str] = [
 
 TABLES = (
     "slices", "jobs", "sightings", "job_applications", "llm_calls", "llm_call_jobs",
-    "llm_budget", "pace_budgets", "service_heartbeats", "delivery_runs",
+    "llm_budget", "pace_budgets", "slice_walks", "service_heartbeats", "delivery_runs",
     "legacy_seen_hashes", "kv_state",
 )
 
