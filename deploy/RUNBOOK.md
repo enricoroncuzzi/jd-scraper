@@ -347,7 +347,7 @@ night gap is not counted):
 ```sql
 SELECT max(gap) FROM (
   SELECT at - lag(at) OVER (PARTITION BY (at AT TIME ZONE 'Europe/Rome')::date ORDER BY at) AS gap
-  FROM pace_events) g;
+  FROM pace_events WHERE spacing_seconds IS NOT NULL) g;
 ```
 
 Pages per walk by area, with the caps hit next to each other:
@@ -359,6 +359,7 @@ SELECT s.area, count(*) AS walks,
        avg(w.pages)::numeric(6,1) AS avg_pages
 FROM slice_walks w JOIN slices s ON s.id = w.slice_id
 WHERE s.source = 'linkedin' AND s.active AND w.walked_at > now() - interval '7 days'
+  AND w.walked_at >= (SELECT min(at) FROM pace_events WHERE spacing_seconds IS NOT NULL)
 GROUP BY 1 ORDER BY 2 DESC;
 ```
 
@@ -382,7 +383,8 @@ Share of delivered LinkedIn jobs that reached the digest within 4 days of postin
 ```sql
 SELECT avg((delivered_at - coalesce(posted_at, first_seen_at) <= interval '4 days')::int)::numeric(4,3)
 FROM jobs j JOIN sightings s ON s.job_id = j.id
-WHERE s.source = 'linkedin' AND j.delivered_at IS NOT NULL;
+WHERE s.source = 'linkedin' AND j.delivered_at IS NOT NULL
+  AND j.first_seen_at >= (SELECT min(at) FROM pace_events WHERE spacing_seconds IS NOT NULL);
 ```
 
 The captain then decides on option B (narrowing LinkedIn in Europe). It is not built.
