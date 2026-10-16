@@ -87,6 +87,20 @@ def test_an_hour_without_refusals_returns_the_nudge_to_base():
     assert state.nudge == 1.0 and state.refusal_times == []
 
 
+def test_a_fresh_burst_after_the_reset_nudges_without_waiting_out_the_old_hour():
+    first = WED_NOON - timedelta(minutes=70)  # one refusal, then the nudge 55 min later
+    state = PaceState(first, request_times=[first + timedelta(minutes=m) for m in range(0, 55, 10)],
+                      refusal_times=[first])
+    update_nudge(state, first + timedelta(minutes=55), RefusalPolicy())
+    assert state.nudge == 1.5
+    update_nudge(state, first + timedelta(minutes=61), RefusalPolicy())
+    assert state.nudge == 1.0
+    state.request_times = [WED_NOON - timedelta(minutes=m) for m in range(4)]
+    state.refusal_times = [WED_NOON - timedelta(minutes=m) for m in (0, 1, 2)]
+    update_nudge(state, WED_NOON, RefusalPolicy())
+    assert state.nudge == 1.5 and state.nudged_at == WED_NOON
+
+
 def _day(state, day, requests, refused, calm_days=None):
     state.day, state.requests_today, state.refusals_today = day, requests, refused
     if calm_days is not None:

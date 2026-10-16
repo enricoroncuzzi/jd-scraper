@@ -91,10 +91,21 @@ def test_requests_are_spaced_by_a_jittered_gap():
 
 
 def test_a_nearly_empty_rate_limit_budget_pauses_until_it_resets():
-    get = Scripted(_response(body={}, headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset": "7"}))
+    get = Scripted(_response(body={"a": 1}, headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset": "7"}),
+                   _response(body={}))
     client, sleeps, _clock = _client(get)
+    assert client.get_json("/jobs", {}) == {"a": 1} and sleeps == []
     client.get_json("/jobs", {})
     assert sleeps == [8]
+
+
+def test_a_reset_past_the_wait_bound_keeps_the_fetched_page():
+    get = Scripted(_response(body={"a": 1}, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "400"}))
+    client, sleeps, _clock = _client(get)
+    assert client.get_json("/jobs", {}) == {"a": 1}
+    with pytest.raises(SourceThrottled):
+        client.get_json("/jobs", {})
+    assert len(get.calls) == 1 and sleeps == []
 
 
 def test_a_429_waits_exactly_retry_after_then_continues():
@@ -231,7 +242,9 @@ def test_a_non_ascii_rate_limit_header_is_ignored():
 
 
 def test_a_non_ascii_reset_header_is_ignored():
-    get = Scripted(_response(body={}, headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset": "\u00b2"}))
+    get = Scripted(_response(body={}, headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset": "\u00b2"}),
+                   _response(body={}))
     client, sleeps, _clock = _client(get)
     assert client.get_json("/jobs", {}) == {}
+    client.get_json("/jobs", {})
     assert sleeps == [5]

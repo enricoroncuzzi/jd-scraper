@@ -161,6 +161,7 @@ def update_nudge(state: PaceState, now: datetime, policy: RefusalPolicy) -> None
     state.refusal_times = [t for t in state.refusal_times if t > cutoff]
     if not state.refusal_times:
         state.nudge = 1.0
+        state.nudged_at = None
         return
     rate = len(state.refusal_times) / max(len(state.request_times), 1)
     due = state.nudged_at is None or now - state.nudged_at >= timedelta(hours=1)

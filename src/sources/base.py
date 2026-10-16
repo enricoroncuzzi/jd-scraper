@@ -94,9 +94,13 @@ class JsonClient:
         self._last: float | None = None
         self._started = clock()
         self._throttles = 0
+        self._hold = 0.0
 
     def _pace(self) -> None:
         if self._last is not None:
+            hold, self._hold = self._hold, 0.0
+            if hold - (self._clock() - self._last) > 0:
+                self._bounded_wait(hold - (self._clock() - self._last))
             wait = self._uniform(*self.cfg.spacing_seconds) - (self._clock() - self._last)
             if wait > 0:
                 self._sleep(wait)
@@ -129,7 +133,7 @@ class JsonClient:
                     if remaining is not None and remaining.isascii() and remaining.isdigit() \
                             and int(remaining) <= 2:
                         reset = response.headers.get("X-RateLimit-Reset", "5")
-                        self._bounded_wait(int(reset) + 1 if reset.isascii() and reset.isdigit() else 5)
+                        self._hold = int(reset) + 1 if reset.isascii() and reset.isdigit() else 5
                     try:
                         return response.json()
                     except ValueError:
@@ -156,7 +160,7 @@ class JsonClient:
                 break
             self._sleep(RETRY_WAITS[attempts])
             attempts += 1
-        raise (SourceThrottled if problem == "HTTP 429" else SourceError)(f"{url}: {problem}")
+        raise SourceError(f"{url}: {problem}")
 
 
 @dataclass(frozen=True)
