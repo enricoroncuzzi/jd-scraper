@@ -10,7 +10,7 @@ from src.linkedin.catalog import CollectorConfig, SOURCE
 from src.linkedin.pace import PaceGateClosed
 from src.linkedin.search import Page, SearchFailed, SearchThrottled, fetch_page
 from src.linkedin.windows import (
-    DEFAULT_MAX_INTERVAL_SECONDS, DEFAULT_MIN_INTERVAL_SECONDS, f_tpr, next_due, next_interval,
+    DEFAULT_MAX_INTERVAL, DEFAULT_MIN_INTERVAL, f_tpr, next_due, next_interval,
     window_seconds,
 )
 from src.services.pulse import pulse
@@ -169,8 +169,8 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
     interval = next_interval(
         base=row.base_interval_seconds, current=row.interval_seconds,
         stop_reason=result.stop_reason, consecutive_empty=consecutive_empty,
-        min_interval=(cfg.min_interval_hours * 3600 if cfg else DEFAULT_MIN_INTERVAL_SECONDS),
-        max_interval=(cfg.max_interval_hours * 3600 if cfg else DEFAULT_MAX_INTERVAL_SECONDS))
+        min_interval=(cfg.min_interval_hours * 3600 if cfg else DEFAULT_MIN_INTERVAL),
+        max_interval=(cfg.max_interval_hours * 3600 if cfg else DEFAULT_MAX_INTERVAL))
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO slice_walks (slice_id, walked_at, pages, cards_seen, new_jobs, stop_reason, "

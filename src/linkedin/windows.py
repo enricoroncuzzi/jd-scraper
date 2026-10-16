@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 MARGIN_SECONDS = 2 * 3600
 FIRST_WALK_WINDOW_SECONDS = 24 * 3600
 MAX_WINDOW_SECONDS = 7 * 24 * 3600
-DEFAULT_MIN_INTERVAL_SECONDS = 12 * 3600
-DEFAULT_MAX_INTERVAL_SECONDS = 48 * 3600
+DEFAULT_MIN_INTERVAL = 12 * 3600
+DEFAULT_MAX_INTERVAL = 48 * 3600
 EMPTY_SLICE_INTERVAL_SECONDS = 24 * 3600
 EMPTY_STREAK_FOR_DAILY = 3
 RETRY_SOON_SECONDS = 30 * 60
@@ -40,8 +40,8 @@ def f_tpr(seconds: int) -> str:
 
 
 def next_interval(*, base: int, current: int, stop_reason: str, consecutive_empty: int,
-                  min_interval: int = DEFAULT_MIN_INTERVAL_SECONDS,
-                  max_interval: int = DEFAULT_MAX_INTERVAL_SECONDS) -> int:
+                  min_interval: int = DEFAULT_MIN_INTERVAL,
+                  max_interval: int = DEFAULT_MAX_INTERVAL) -> int:
     """How long to wait before the next walk.
 
     A walk that hit the full page cap halves the interval so the next window is
