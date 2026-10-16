@@ -108,6 +108,19 @@ def test_a_reset_past_the_wait_bound_keeps_the_fetched_page():
     assert len(get.calls) == 1 and sleeps == []
 
 
+def test_a_deferred_reset_also_holds_the_next_walk_without_a_request():
+    get = Scripted(_response(body={"a": 1}, headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "400"}),
+                   _response(body={"b": 2}))
+    client, sleeps, clock = _client(get)
+    client.get_json("/jobs", {})
+    for _ in range(2):
+        with pytest.raises(SourceThrottled):
+            client.get_json("/jobs", {})
+    assert len(get.calls) == 1
+    clock["t"] += 200.0
+    assert client.get_json("/jobs", {}) == {"b": 2} and sleeps == [201.0]
+
+
 def test_a_429_waits_exactly_retry_after_then_continues():
     get = Scripted(_response(429, headers={"Retry-After": "7"}), _response(body={"ok": 1}))
     client, sleeps, _clock = _client(get)

@@ -98,9 +98,9 @@ class JsonClient:
 
     def _pace(self) -> None:
         if self._last is not None:
-            hold, self._hold = self._hold, 0.0
-            if hold - (self._clock() - self._last) > 0:
-                self._bounded_wait(hold - (self._clock() - self._last))
+            if self._hold - (self._clock() - self._last) > 0:
+                self._bounded_wait(self._hold - (self._clock() - self._last))
+            self._hold = 0.0
             wait = self._uniform(*self.cfg.spacing_seconds) - (self._clock() - self._last)
             if wait > 0:
                 self._sleep(wait)
