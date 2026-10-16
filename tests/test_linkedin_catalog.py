@@ -7,6 +7,7 @@ import pytest
 from src.linkedin.catalog import (
     SliceSpec, build_slices, clamp_cadence, load_collector_config, load_tier_configs, sync_slices,
 )
+from src.linkedin.walk import RESUMABLE_STOPS
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 H = 3600
@@ -81,7 +82,7 @@ def test_the_clamp_pulls_shortened_and_overlong_slices_into_range(store_conn):
                     "due_at = %s + interval '72 hours' WHERE area = 'Germany'", (NOW, NOW))
         cur.execute("UPDATE slices SET interval_seconds = 24 * 3600 WHERE area = 'France'")
     store_conn.commit()
-    assert clamp_cadence(store_conn, "linkedin", 12 * H, 48 * H) == 2
+    assert clamp_cadence(store_conn, "linkedin", 12 * H, 48 * H, list(RESUMABLE_STOPS)) == 2
     with store_conn.cursor() as cur:
         cur.execute("SELECT area, interval_seconds, due_at FROM slices ORDER BY area")
         rows = {area: (interval, due) for area, interval, due in cur.fetchall()}
@@ -196,14 +197,24 @@ def test_the_shipped_collector_config_defers_after_three_refusals():
 def test_the_shipped_collector_config_has_a_six_hour_cadence_tolerance():
     assert load_collector_config().cadence_tolerance_hours == 6
 
-def test_the_clamp_does_not_pull_in_a_deferred_slice(store_conn):
+
+def test_a_zero_cadence_tolerance_is_accepted(tmp_path):
+    data = json.load(open("config/collector.json"))
+    data["cadence_tolerance_hours"] = 0
+    path = tmp_path / "collector.json"
+    path.write_text(json.dumps(data))
+    assert load_collector_config(str(path)).cadence_tolerance_hours == 0
+
+
+@pytest.mark.parametrize("stop_reason", ["rate_limited", "error", "throttled_empty"])
+def test_the_clamp_does_not_pull_in_a_deferred_slice(store_conn, stop_reason):
     sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Greece", 3, 24 * H)], NOW)
     with store_conn.cursor() as cur:
-        cur.execute("UPDATE slices SET stop_reason = 'rate_limited', last_walked_at = %s, "
+        cur.execute("UPDATE slices SET stop_reason = %s, last_walked_at = %s, "
                     "due_at = %s WHERE area = 'Greece'",
-                    (NOW - timedelta(hours=30), NOW + timedelta(minutes=30)))
+                    (stop_reason, NOW - timedelta(hours=30), NOW + timedelta(minutes=30)))
     store_conn.commit()
-    assert clamp_cadence(store_conn, "linkedin", 12 * H, 48 * H) == 0
+    assert clamp_cadence(store_conn, "linkedin", 12 * H, 48 * H, list(RESUMABLE_STOPS)) == 0
     with store_conn.cursor() as cur:
         cur.execute("SELECT due_at > %s FROM slices WHERE area = 'Greece'", (NOW,))
         assert cur.fetchone() == (True,)

@@ -180,10 +180,12 @@ def sync_slices(conn, specs: list[SliceSpec], now: datetime | None = None,
     return counts
 
 
-def clamp_cadence(conn, source: str, min_seconds: int, max_seconds: int) -> int:
+def clamp_cadence(conn, source: str, min_seconds: int, max_seconds: int,
+                  unfinished_stops: list[str]) -> int:
     """Pull every active slice's interval into [min, max] and move its due time in
     with it. The deploy clamp for the adaptive cadence; only rows that change are
-    touched, and the caller commits."""
+    touched, and the caller commits. `unfinished_stops` are the stop reasons of a walk
+    that is still unfinished, whose `due_at` must not be pulled in."""
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE slices SET interval_seconds = LEAST(GREATEST(interval_seconds, %s), %s), "
@@ -192,8 +194,7 @@ def clamp_cadence(conn, source: str, min_seconds: int, max_seconds: int) -> int:
             "WHERE source = %s AND active AND (interval_seconds < %s OR interval_seconds > %s "
             "OR (due_at > COALESCE(last_walked_at, due_at) "
             "+ LEAST(GREATEST(interval_seconds, %s), %s) * interval '1 second' "
-            "AND (stop_reason IS NULL "
-            "OR stop_reason <> ALL(ARRAY['rate_limited','error','throttled_empty']))))",
+            "AND (stop_reason IS NULL OR stop_reason <> ALL(%s))))",
             (min_seconds, max_seconds, min_seconds, max_seconds, source, min_seconds, max_seconds,
-             min_seconds, max_seconds))
+             min_seconds, max_seconds, unfinished_stops))
         return cur.rowcount

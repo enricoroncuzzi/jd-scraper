@@ -150,3 +150,14 @@ def test_the_collector_moves_to_the_next_due_slice_after_a_long_deferred_walk(st
     tick = collect_once(store_conn, FakePace(), CFG, get=get, sleep=lambda _s: None)
     assert tick.detail["stop_reason"] == "rate_limited"
     assert claim_due_slice(store_conn, NOW + timedelta(minutes=40)).area == "Germany"
+
+
+def test_sync_and_clamp_keeps_every_unfinished_stop_reason_deferred(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Greece", 3, 24 * H))
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'error', last_walked_at = %s, due_at = %s",
+                    (NOW - timedelta(hours=30), NOW + timedelta(minutes=30)))
+    store_conn.commit()
+    cfg = CollectorConfig(due_hours={3: 24}, legacy_lock_path=None)
+    specs = [SliceSpec("linkedin", "AI Engineer", "Greece", 3, 24 * H)]
+    assert sync_and_clamp(store_conn, specs, cfg)["clamped"] == 0

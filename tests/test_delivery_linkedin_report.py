@@ -55,7 +55,7 @@ def test_the_block_names_slices_past_48_hours(store_conn):
         cur.execute("UPDATE slices SET last_walked_at = %s WHERE area = 'Germany'", (NOW - timedelta(hours=60),))
     store_conn.commit()
     lines = _lines(store_conn)
-    assert lines[4] == "Slices behind cadence: 2 of 3; past 48h: AI Engineer / Germany"
+    assert lines[4] == "Slices behind cadence: 2 of 3; past 48h+6h: AI Engineer / Germany"
 
 
 def test_the_block_tolerates_six_hours_past_the_cadence(store_conn):
@@ -64,7 +64,7 @@ def test_the_block_tolerates_six_hours_past_the_cadence(store_conn):
         cur.execute("UPDATE slices SET last_walked_at = %s", (NOW - timedelta(hours=50),))
     store_conn.commit()
     lines = _lines(store_conn)
-    assert lines[4] == "Slices behind cadence: 0 of 1; past 48h: none"
+    assert lines[4] == "Slices behind cadence: 0 of 1; past 48h+6h: none"
 
 
 def test_the_block_shows_the_oldest_job_waiting_for_a_description(store_conn):
@@ -99,6 +99,6 @@ def test_an_empty_store_gives_a_calm_block(store_conn):
     assert lines[1] == "Requests: 0 (search 0, description 0); refused 0 (0.0%)"
     assert lines[2] == "Longest refusal wait: none"
     assert lines[3] == "Base spacing: 75s weekday, 110s weekend (floor 46s/81s); hour nudge x1.0"
-    assert lines[4] == "Slices behind cadence: 0 of 0; past 48h: none"
+    assert lines[4] == "Slices behind cadence: 0 of 0; past 48h+6h: none"
     assert lines[5] == "Oldest job waiting for a description: none"
     assert lines[6] == "Page caps hit: area cap 0, full cap 0 (of 0 walks)"

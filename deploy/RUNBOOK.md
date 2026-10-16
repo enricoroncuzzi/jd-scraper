@@ -383,10 +383,11 @@ FROM jobs WHERE stage = 'described';
 Share of delivered LinkedIn jobs that reached the digest within 4 days of posting:
 
 ```sql
-SELECT avg((delivered_at - coalesce(posted_at, first_seen_at) <= interval '4 days')::int)::numeric(4,3)
-FROM jobs j JOIN sightings s ON s.job_id = j.id
-WHERE s.source = 'linkedin' AND j.delivered_at IS NOT NULL
-  AND j.first_seen_at >= (SELECT min(at) FROM pace_events WHERE spacing_seconds IS NOT NULL);
+SELECT avg((j.delivered_at - coalesce(j.posted_at, j.first_seen_at) <= interval '4 days')::int)::numeric(4,3)
+FROM jobs j
+WHERE j.delivered_at IS NOT NULL
+  AND j.first_seen_at >= (SELECT min(at) FROM pace_events WHERE spacing_seconds IS NOT NULL)
+  AND EXISTS (SELECT 1 FROM sightings s WHERE s.job_id = j.id AND s.source = 'linkedin');
 ```
 
 The captain then decides on option B (narrowing LinkedIn in Europe). It is not built.

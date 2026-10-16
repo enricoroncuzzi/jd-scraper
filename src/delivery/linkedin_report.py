@@ -95,8 +95,8 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         refusal_wait,
         f"Base spacing: {wd:.0f}s weekday, {we:.0f}s weekend "
         f"(floor {fwd:.0f}s/{fwe:.0f}s); hour nudge x{state.nudge:.1f}",
-        f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h: "
-        f"{_names(past)}",
+        f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h"
+        f"+{collector.cadence_tolerance_hours}h: {_names(past)}",
         oldest_line,
         f"Page caps hit: area cap {area_cap}, full cap {full_cap} (of {walks} walks)",
     ]

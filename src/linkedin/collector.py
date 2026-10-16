@@ -24,7 +24,9 @@ from src.linkedin.catalog import (
 )
 from src.linkedin.pace import ManagedPace
 from src.linkedin.schedule import ScheduleConfig, load_schedule_config
-from src.linkedin.walk import WalkResult, claim_due_slice, finish_walk, walk_slice
+from src.linkedin.walk import (
+    RESUMABLE_STOPS, WalkResult, claim_due_slice, finish_walk, walk_slice,
+)
 from src.services.legacy_guard import legacy_run_active
 from src.services.runner import Tick, run_service
 
@@ -42,7 +44,7 @@ def sync_and_clamp(conn, specs, cfg: CollectorConfig) -> dict[str, int]:
     configured 12-48 h range (the deploy clamp). The caller commits."""
     counts = sync_slices(conn, specs)
     counts["clamped"] = clamp_cadence(conn, SOURCE, cfg.min_interval_hours * 3600,
-                                      cfg.max_interval_hours * 3600)
+                                      cfg.max_interval_hours * 3600, list(RESUMABLE_STOPS))
     return counts
 
 

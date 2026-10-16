@@ -329,3 +329,20 @@ def test_a_resume_run_that_leaves_a_slice_unfinished_changes_nothing_in_the_hear
                                now_fn=lambda: NOW, unfinished_only=True)
     after = {b.service: b for b in heartbeat.read_all(store_conn)}["collect-freehire"]
     assert (after.state, after.beat_at, after.detail) == (before.state, before.beat_at, before.detail)
+
+
+def test_a_resume_run_does_not_clear_a_crashed_daily_beat(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+        cur.execute("UPDATE slices SET stop_reason = 'error', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)", (NOW,))
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"crashed": "RuntimeError"}, now=NOW)
+    store_conn.commit()
+    pages = Pages(_body(_hits(0, 1)))
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
+                               now_fn=lambda: NOW, unfinished_only=True)
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "error"
