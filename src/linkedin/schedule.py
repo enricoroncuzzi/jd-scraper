@@ -1,6 +1,5 @@
-"""The LinkedIn schedule: quiet hours, the shared daily request budget, the
-circuit-breaker ladder and the steady-pace policy, loaded from
-config/schedule.json (spec section 4).
+"""The LinkedIn schedule: quiet hours, the shared daily request budget and the
+steady-pace policy, loaded from config/schedule.json (spec section 4).
 
 The collector and the processor share one PaceBudget on host `linkedin.com`, so
 this module holds only the policy: what the Rome clock and the per-day counters
@@ -52,9 +51,6 @@ class ScheduleConfig:
     closed_hours: tuple[int, int] = (0, 6)
     weekday_cap: int = 1400
     weekend_cap: int = 800
-    breaker_refusals: int = 3
-    breaker_window_minutes: int = 30
-    rest_ladder_hours: tuple[int, ...] = (2, 6, 24)
     pace: PacePolicy = PacePolicy()
     refusals: RefusalPolicy = RefusalPolicy()
 
@@ -163,16 +159,8 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
     weekday_cap = _require_int(caps, "weekday", "schedule.daily_caps", minimum=1)
     weekend_cap = _require_int(caps, "weekend", "schedule.daily_caps", minimum=1)
 
-    breaker = data.get("breaker")
-    if not isinstance(breaker, dict):
-        raise ValueError("schedule.breaker must be an object")
-    refusals = _require_int(breaker, "refusals", "schedule.breaker", minimum=1)
-    window_minutes = _require_int(breaker, "window_minutes", "schedule.breaker", minimum=1)
-    ladder = breaker.get("rest_ladder_hours")
-    if (not isinstance(ladder, list) or not ladder
-            or not all(isinstance(h, int) and not isinstance(h, bool) and h >= 1 for h in ladder)):
-        raise ValueError("schedule.breaker.rest_ladder_hours must be a non-empty list of positive integers")
-
+    if "breaker" in data:
+        raise ValueError("schedule.breaker was removed (design 2026-10-16); delete it")
     taper = data.get("weekend_taper_min_interval_hours")
     if taper is not None:
         raise ValueError("schedule.weekend_taper_min_interval_hours was removed "
@@ -182,9 +170,6 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
         closed_hours=(closed[0], closed[1]),
         weekday_cap=weekday_cap,
         weekend_cap=weekend_cap,
-        breaker_refusals=refusals,
-        breaker_window_minutes=window_minutes,
-        rest_ladder_hours=tuple(ladder),
         pace=_load_pace(data),
         refusals=_load_refusals(data),
     )

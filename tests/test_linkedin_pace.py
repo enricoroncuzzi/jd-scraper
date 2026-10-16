@@ -71,9 +71,8 @@ def make_budget(store_conn, store_conn_factory):
     def make(fake: FakeTime) -> PaceBudget:
         conn = store_conn_factory(store_conn)
         conn.autocommit = True
-        # These tests exercise the AIMD rate only; the circuit breaker has its own tests.
         return PaceBudget(conn, clock=fake.clock, sleep=fake.sleep, uniform=lambda a, b: a,
-                          schedule=ScheduleConfig(breaker_refusals=1000))
+                          schedule=ScheduleConfig())
     return make
 
 

@@ -1,10 +1,10 @@
-"""The schedule gate: quiet hours, the shared daily cap and the circuit breaker."""
+"""The schedule gate: quiet hours and the shared daily cap."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from src.linkedin.pace import (
-    PaceBudget, PaceGateClosed, PaceState, evaluate_gate, update_breaker,
+    PaceBudget, PaceGateClosed, evaluate_gate,
 )
 from src.linkedin.schedule import ScheduleConfig
 
@@ -65,7 +65,7 @@ def test_the_quiet_window_closes_the_gate_and_the_slot_makes_no_request(make_bud
 
 def test_search_and_descriptions_share_one_cap_and_it_blocks_at_the_limit(make_budget):
     fake = FakeTime(WED)
-    budget = make_budget(fake, ScheduleConfig(weekday_cap=3, breaker_refusals=1000))
+    budget = make_budget(fake, ScheduleConfig(weekday_cap=3))
     for kind in ("search", "description", "search"):
         with budget.slot(kind) as slot:
             slot.clean(200)
@@ -80,7 +80,7 @@ def test_search_and_descriptions_share_one_cap_and_it_blocks_at_the_limit(make_b
 
 def test_the_weekend_uses_the_smaller_cap(make_budget):
     fake = FakeTime(SAT)
-    budget = make_budget(fake, ScheduleConfig(weekend_cap=2, breaker_refusals=1000))
+    budget = make_budget(fake, ScheduleConfig(weekend_cap=2))
     for _ in range(2):
         with budget.slot("search") as slot:
             slot.clean(200)
@@ -91,77 +91,13 @@ def test_the_weekend_uses_the_smaller_cap(make_budget):
 
 def test_the_counter_resets_on_the_next_rome_day(make_budget):
     fake = FakeTime(WED)
-    budget = make_budget(fake, ScheduleConfig(weekday_cap=1, breaker_refusals=1000))
+    budget = make_budget(fake, ScheduleConfig(weekday_cap=1))
     with budget.slot("search") as slot:
         slot.clean(200)
     assert budget.gate().reason == "daily_cap"
     fake.now += timedelta(days=1)  # Thursday, Rome
     gate = budget.gate()
     assert gate.open and gate.requests_today == 0
-
-
-# -- the circuit breaker -----------------------------------------------------------------
-
-def test_the_breaker_ladder_escalates_two_six_twentyfour_and_repeats():
-    schedule = ScheduleConfig()
-    state = PaceState(next_slot_at=WED)
-    for _ in range(3):
-        update_breaker(state, "throttled", WED, schedule)
-    assert state.rest_level == 1 and state.rest_until == WED + timedelta(hours=2)
-    first_rest_end = state.rest_until
-    update_breaker(state, "throttled", first_rest_end, schedule)
-    assert state.rest_level == 2 and state.rest_until == first_rest_end + timedelta(hours=6)
-    second_rest_end = state.rest_until
-    update_breaker(state, "throttled", second_rest_end, schedule)
-    assert state.rest_level == 3 and state.rest_until == second_rest_end + timedelta(hours=24)
-    third_rest_end = state.rest_until
-    update_breaker(state, "throttled", third_rest_end, schedule)
-    assert state.rest_level == 4 and state.rest_until == third_rest_end + timedelta(hours=24)
-
-
-def test_a_clean_probe_resets_the_ladder():
-    schedule = ScheduleConfig()
-    state = PaceState(next_slot_at=WED)
-    for _ in range(3):
-        update_breaker(state, "throttled", WED, schedule)
-    update_breaker(state, "clean", state.rest_until + timedelta(seconds=1), schedule)
-    assert state.rest_level == 0 and state.rest_until is None and state.refusal_times == []
-
-
-def test_a_repeat_refusal_of_the_same_logical_request_does_not_count():
-    schedule = ScheduleConfig()
-    state = PaceState(next_slot_at=WED)
-    for _ in range(2):
-        update_breaker(state, "throttled", WED, schedule)
-    for _ in range(5):
-        update_breaker(state, "throttled_again", WED, schedule)
-    assert state.rest_level == 0 and state.rest_until is None
-    update_breaker(state, "throttled", WED, schedule)
-    assert state.rest_level == 1
-
-
-def test_refusals_outside_the_thirty_minute_window_are_forgotten():
-    schedule = ScheduleConfig()
-    state = PaceState(next_slot_at=WED)
-    update_breaker(state, "throttled", WED, schedule)
-    update_breaker(state, "throttled", WED + timedelta(minutes=31), schedule)
-    assert state.refusal_times == [WED + timedelta(minutes=31)]
-    assert state.rest_level == 0
-
-
-def test_a_breaker_rest_closes_the_gate(make_budget):
-    fake = FakeTime(WED)
-    budget = make_budget(fake)
-    budget.snapshot()  # creates the row
-    with budget.conn.cursor() as cur:
-        cur.execute("UPDATE pace_budgets SET rest_until = %s, rest_level = 1 WHERE host = 'linkedin.com'",
-                    (WED + timedelta(hours=2),))
-    gate = budget.gate()
-    assert not gate.open and gate.reason == "breaker"
-    assert gate.rest_until == WED + timedelta(hours=2)
-    with pytest.raises(PaceGateClosed):
-        with budget.slot("search"):
-            pass
 
 
 def test_every_request_is_logged_with_service_kind_outcome_and_status(make_budget):
@@ -184,44 +120,6 @@ def test_evaluate_gate_reports_open_when_everything_is_fine():
 
 
 # -- end to end through slot: restart, probes, the wait, logging failures ------------------
-
-def test_the_breaker_survives_a_restart_and_escalates_on_a_refused_probe(make_budget):
-    fake = FakeTime(WED)
-    first = make_budget(fake)
-    for _ in range(3):
-        with first.slot("search") as slot:
-            slot.throttled(429)
-        fake.now += timedelta(minutes=1)
-    rest_until = _row(first)[2]
-    assert _row(first)[3] == 1  # first rest, two hours
-    assert rest_until == fake.now - timedelta(minutes=1) + timedelta(hours=2)
-    assert not first.gate().open and first.gate().reason == "breaker"
-
-    second = make_budget(fake)  # a restart is a new object on the same persisted row
-    assert second.gate().reason == "breaker"
-    fake.now = rest_until + timedelta(seconds=1)
-    assert second.gate().open  # the rest ended; the next request is the probe
-    with second.slot("description") as slot:
-        slot.throttled(429)
-    assert _row(second)[3] == 2
-    assert _row(second)[2] == fake.now + timedelta(hours=6)
-
-
-def test_a_neutral_probe_leaves_the_ladder_where_it_is(make_budget):
-    fake = FakeTime(WED)
-    budget = make_budget(fake)
-    budget.snapshot()  # create the row
-    ended = WED - timedelta(minutes=1)
-    with budget.conn.cursor() as cur:
-        cur.execute("UPDATE pace_budgets SET rest_level = 2, rest_until = %s WHERE host = 'linkedin.com'",
-                    (ended,))
-    with budget.slot("search") as slot:
-        slot.neutral(503)  # a timeout or 503 proves nothing about the block
-    assert _row(budget)[3] == 2 and _row(budget)[2] == ended
-    with budget.slot("search") as slot:
-        slot.clean(200)  # a clean probe is what resets it
-    assert _row(budget)[3] == 0 and _row(budget)[2] is None
-
 
 def test_a_request_granted_before_the_window_cannot_fire_inside_it(make_budget):
     # 21:58 UTC = 23:58 Rome and the pacer says the next slot is five minutes away.
@@ -255,7 +153,7 @@ def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_breaker(make
 
 def test_two_services_share_one_cap_row(make_budget, store_conn):
     fake = FakeTime(WED)
-    schedule = ScheduleConfig(weekday_cap=2, breaker_refusals=1000)
+    schedule = ScheduleConfig(weekday_cap=2)
     collector = make_budget(fake, schedule, service="collect-linkedin")
     processor = make_budget(fake, schedule, service="process")
     with collector.slot("search") as slot:

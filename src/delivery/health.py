@@ -6,8 +6,8 @@ nothing was collected for six hours. A fired alert repeats every six hours while
 the problem lasts and says so once when it clears; the ledger lives in kv_state.
 
 The collection alert is schedule-gate aware: nothing is wrong while LinkedIn is
-closed (quiet hours, the shared daily cap, a breaker rest) or for a grace period
-after it reopens, because the new schedule makes hours of silence normal by design.
+closed (quiet hours or the shared daily cap) or for a grace period after it
+reopens, because the new schedule makes hours of silence normal by design.
 """
 import json
 from dataclasses import dataclass
@@ -94,23 +94,17 @@ def last_collection(conn) -> datetime | None:
 def _stored_gate(conn, schedule: ScheduleConfig, now: datetime):
     """The shared LinkedIn gate from the stored row, or None when the services never ran."""
     with conn.cursor() as cur:
-        cur.execute("SELECT requests_today, day, rest_until, rest_level FROM pace_budgets "
-                    "WHERE host = 'linkedin.com'")
+        cur.execute("SELECT requests_today, day FROM pace_budgets WHERE host = 'linkedin.com'")
         row = cur.fetchone()
     if row is None:
-        return None, None, 0
-    requests_today, day, rest_until, rest_level = row
-    gate = evaluate_gate(schedule, now,
-                         requests_today=requests_today_for(day, requests_today, schedule, now),
-                         rest_until=rest_until, rest_level=rest_level)
-    return gate, rest_until, rest_level
+        return None
+    requests_today, day = row
+    return evaluate_gate(schedule, now,
+                         requests_today=requests_today_for(day, requests_today, schedule, now))
 
 
-def _gate_just_reopened(schedule: ScheduleConfig, now: datetime,
-                        rest_until: datetime | None, rest_level: int) -> bool:
+def _gate_just_reopened(schedule: ScheduleConfig, now: datetime) -> bool:
     """True while the schedule gate has been open for less than the grace period."""
-    if rest_level > 0 and rest_until is not None and rest_until <= now:
-        return now - rest_until < COLLECTION_REOPEN_GRACE
     end_hour = schedule.closed_hours[1]
     if end_hour < 24:
         local = local_now(schedule, now)
@@ -125,7 +119,7 @@ class CollectionState:
     """The collection alert decision: a real issue, or one suppressed by the gate.
 
     `suppressed` means the LinkedIn schedule gate makes the silence expected (quiet
-    hours, the daily cap, a breaker rest, or the grace just after reopening), so the
+    hours, the daily cap, or the grace just after reopening), so the
     collector cannot be judged. It is not the same as healthy: a suppressed state must
     neither alert nor clear an existing alert."""
 
@@ -138,11 +132,11 @@ def collection_state(conn, now: datetime, schedule: ScheduleConfig | None = None
     if last is not None and now - last <= COLLECTION_SILENT_AFTER:
         return CollectionState(None)
     schedule = schedule or load_schedule_config()
-    gate, rest_until, rest_level = _stored_gate(conn, schedule, now)
+    gate = _stored_gate(conn, schedule, now)
     if gate is not None:
         if not gate.open:
             return CollectionState(None, suppressed=True)
-        if _gate_just_reopened(schedule, now, rest_until, rest_level):
+        if _gate_just_reopened(schedule, now):
             return CollectionState(None, suppressed=True)
     since = "ever" if last is None else f"for {_age(now - last)}"
     return CollectionState(HealthIssue("collection", f"Nothing has been collected {since}"))

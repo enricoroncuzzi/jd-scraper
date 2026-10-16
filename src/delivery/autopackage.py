@@ -131,7 +131,7 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
         try:
             channel = classify_through_pace(pace, job.canonical_url, classify)
         except PaceGateClosed:
-            # LinkedIn is closed (quiet hours, shared daily cap, a breaker rest). Leave the
+            # LinkedIn is closed (quiet hours or the shared daily cap). Leave the
             # job a candidate for the next pass: no failure row, no channel, no notice.
             print(f"[deliver] LinkedIn is closed, deferring packaging of {job.company}")
             continue

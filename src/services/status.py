@@ -15,14 +15,11 @@ from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests
 
 def _gate_line(gate: Gate, schedule: ScheduleConfig) -> str:
     left = f"{gate.requests_today}/{gate.cap} requests today ({gate.window})"
-    if gate.reason == "breaker":
-        return f"LinkedIn gate: {left}, breaker rest until {gate.rest_until:%Y-%m-%d %H:%M} UTC"
     if gate.reason == "closed_hours":
         return f"LinkedIn gate: {left}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
     if gate.reason == "daily_cap":
         return f"LinkedIn gate: {left}, daily cap reached"
-    probe = ", probe pending" if gate.rest_level > 0 else ""
-    return f"LinkedIn gate: {left}, window open{probe}"
+    return f"LinkedIn gate: {left}, window open"
 
 
 def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
@@ -48,19 +45,18 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         for source, parts in cadence.items():
             lines.append(f"  {source:<10} cadence: " + ", ".join(parts))
         cur.execute("SELECT factor, clean_streak, cooldown_until, last_kind, calm_since, "
-                    "requests_today, day, rest_until, rest_level FROM pace_budgets "
+                    "requests_today, day FROM pace_budgets "
                     "WHERE host = 'linkedin.com'")
         pace = cur.fetchone()
         if pace:
-            stored, streak, cooldown, kind, calm_since, today, day, rest_until, rest_level = pace
+            stored, streak, cooldown, kind, calm_since, today, day = pace
             factor = after_calm(PaceState(now, stored, calm_since=calm_since), now).factor
             cooling = f", cooling down until {cooldown:%H:%M:%S}" if cooldown and cooldown > now else ""
             calm = f", no refusal since {calm_since:%H:%M}" if calm_since and factor > 1.0 else ""
             lines.append(f"LinkedIn pace: spacing x{factor:.2f} (1.00 = base), {streak} clean in a row, "
                          f"last request: {kind}{cooling}{calm}")
             gate = evaluate_gate(schedule, now,
-                                 requests_today=requests_today_for(day, today, schedule, now),
-                                 rest_until=rest_until, rest_level=rest_level)
+                                 requests_today=requests_today_for(day, today, schedule, now))
             lines.append(_gate_line(gate, schedule))
     for provider in ("openrouter", "groq"):
         usage = budget.used_today(conn, provider, now)

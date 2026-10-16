@@ -5,11 +5,6 @@
     "weekday": 1400,
     "weekend": 800
   },
-  "breaker": {
-    "refusals": 3,
-    "window_minutes": 30,
-    "rest_ladder_hours": [2, 6, 24]
-  },
   "pace": {
     "start_spacing_seconds": {"weekday": 75, "weekend": 110},
     "jitter": 0.2,
