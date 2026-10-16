@@ -2,16 +2,25 @@
 a polite JSON client, the slice bookkeeping, and the result type.
 
 These sources are documented public APIs, so there is no pace budget shared with
-LinkedIn; each client keeps its own minimum gap between requests, honours the
-rate-limit headers the API sends, and identifies itself with a User-Agent.
+LinkedIn; each client keeps its own jittered minimum gap between requests,
+honours the rate-limit headers the API sends, and identifies itself with a
+User-Agent. One cookie-free session is reused for the client's whole life.
+
+A 429 waits exactly `Retry-After` (or the configured fallback) and the same walk
+carries on, bounded by a maximum single wait and a maximum total wait per run so
+the unit's `TimeoutStartSec` is never exceeded; past either bound, or after
+`retries_per_page` re-asks, the walk is left unfinished and resumes in 30 minutes.
 """
 import json
+import random
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import requests
 
+from src.http_session import new_session, retry_after_seconds
+from src.jobstore.db import utcnow
 from src.jobstore.sightings import CardInput, record_sighting
 
 RETRY_WAITS = (5, 15, 45)
@@ -22,7 +31,15 @@ class SourceError(RuntimeError):
 
 
 class SourceThrottled(SourceError):
-    """The API kept answering 429."""
+    """The API kept answering 429 past the configured bounds."""
+
+
+@dataclass(frozen=True)
+class ThrottlePolicy:
+    retries_per_page: int | None
+    default_retry_after_seconds: float
+    max_wait_seconds: float
+    run_budget_seconds: float
 
 
 @dataclass(frozen=True)
@@ -30,8 +47,9 @@ class SourceConfig:
     enabled: bool
     base_url: str
     user_agent: str
-    min_interval_seconds: float
+    spacing_seconds: tuple[float, float]
     interval_hours: int
+    throttle: ThrottlePolicy
     options: dict
 
 
@@ -43,29 +61,59 @@ def load_source_config(name: str, path: str = "config/sources.json") -> SourceCo
         # A walk schedules the next run a little short of a full interval; an interval of an
         # hour or less would leave a finished slice due again in the same oneshot drain.
         raise ValueError(f"{name}: interval_hours must be at least 2, got {interval_hours}")
-    shared = {"enabled", "base_url", "user_agent", "min_interval_seconds", "interval_hours"}
+    spacing = data.get("spacing_seconds")
+    if (not isinstance(spacing, list) or len(spacing) != 2
+            or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                       for value in spacing)
+            or not 0 < spacing[0] <= spacing[1]):
+        raise ValueError(f"{name}.spacing_seconds must be [low, high] with 0 < low <= high")
+    throttle = data.get("throttle")
+    if not isinstance(throttle, dict):
+        raise ValueError(f"{name}.throttle must be an object")
+    retries = throttle.get("retries_per_page")
+    if retries is not None and (not isinstance(retries, int) or isinstance(retries, bool) or retries < 0):
+        raise ValueError(f"{name}.throttle.retries_per_page must be a non-negative integer or null")
+    policy = ThrottlePolicy(
+        retries_per_page=retries,
+        default_retry_after_seconds=float(throttle["default_retry_after_seconds"]),
+        max_wait_seconds=float(throttle["max_wait_seconds"]),
+        run_budget_seconds=float(throttle["run_budget_seconds"]),
+    )
+    shared = {"enabled", "base_url", "user_agent", "spacing_seconds", "interval_hours", "throttle"}
     return SourceConfig(
         enabled=bool(data["enabled"]), base_url=data["base_url"], user_agent=data["user_agent"],
-        min_interval_seconds=float(data["min_interval_seconds"]), interval_hours=interval_hours,
-        options={key: value for key, value in data.items() if key not in shared})
+        spacing_seconds=(float(spacing[0]), float(spacing[1])), interval_hours=interval_hours,
+        throttle=policy, options={key: value for key, value in data.items() if key not in shared})
 
 
 class JsonClient:
-    def __init__(self, cfg: SourceConfig, *, get=requests.get, sleep=time.sleep, clock=time.monotonic):
-        self.cfg, self._get, self._sleep, self._clock = cfg, get, sleep, clock
+    def __init__(self, cfg: SourceConfig, *, get=None, sleep=time.sleep, clock=time.monotonic,
+                 uniform=random.uniform):
+        self.cfg, self._get, self._sleep, self._clock, self._uniform = \
+            cfg, get or new_session().get, sleep, clock, uniform
         self._last: float | None = None
+        self._started = clock()
+        self._throttles = 0
 
     def _pace(self) -> None:
         if self._last is not None:
-            wait = self.cfg.min_interval_seconds - (self._clock() - self._last)
+            wait = self._uniform(*self.cfg.spacing_seconds) - (self._clock() - self._last)
             if wait > 0:
                 self._sleep(wait)
+
+    def _bounded_wait(self, wait: float) -> None:
+        policy = self.cfg.throttle
+        if wait > policy.max_wait_seconds \
+                or self._clock() - self._started + wait > policy.run_budget_seconds:
+            raise SourceThrottled(f"{self.cfg.base_url}: 429 wait {wait:g}s exceeds the run bound")
+        self._sleep(wait)
 
     def get_json(self, path: str, params) -> dict:
         url = self.cfg.base_url.rstrip("/") + path
         headers = {"User-Agent": self.cfg.user_agent, "Accept": "application/json"}
         problem = "no attempt"
-        for attempt in range(len(RETRY_WAITS) + 1):
+        attempts = 0
+        while True:
             self._pace()
             try:
                 response = self._get(url, params=params, headers=headers, timeout=30)
@@ -79,27 +127,33 @@ class JsonClient:
                     remaining = response.headers.get("X-RateLimit-Remaining")
                     if remaining is not None and remaining.isdigit() and int(remaining) <= 2:
                         reset = response.headers.get("X-RateLimit-Reset", "5")
-                        self._sleep(int(reset) + 1 if reset.isdigit() else 5)
+                        self._bounded_wait(int(reset) + 1 if reset.isdigit() else 5)
                     try:
                         return response.json()
                     except ValueError:
                         # A 200 with an HTML error page (proxy, maintenance) is not JSON;
                         # retry it like a 5xx instead of letting it abort the whole drain.
                         problem = "invalid JSON"
-                        if attempt < len(RETRY_WAITS):
-                            self._sleep(RETRY_WAITS[attempt])
-                        continue
-                if status == 429:
-                    retry_after = response.headers.get("Retry-After", "")
-                    self._sleep(int(retry_after) if retry_after.isdigit() else RETRY_WAITS[min(attempt, 2)])
-                    problem = "HTTP 429"
+                    # fall through to the neutral retry
+                elif status == 429:
+                    self._throttles += 1
+                    if self.cfg.throttle.retries_per_page is not None \
+                            and self._throttles > self.cfg.throttle.retries_per_page:
+                        raise SourceThrottled(f"{url}: too many 429s")
+                    parsed = retry_after_seconds(response.headers.get("Retry-After"), utcnow())
+                    wait = (self.cfg.throttle.default_retry_after_seconds
+                            if parsed is None else parsed)
+                    self._bounded_wait(wait)
+                    self._last = self._clock()
                     continue
-                if status >= 500:
+                elif status >= 500:
                     problem = f"HTTP {status}"
                 else:
                     raise SourceError(f"{url} returned HTTP {status}")
-            if attempt < len(RETRY_WAITS):
-                self._sleep(RETRY_WAITS[attempt])
+            if attempts >= len(RETRY_WAITS):
+                break
+            self._sleep(RETRY_WAITS[attempts])
+            attempts += 1
         raise (SourceThrottled if problem == "HTTP 429" else SourceError)(f"{url}: {problem}")
 
 

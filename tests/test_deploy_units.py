@@ -200,3 +200,10 @@ def test_the_backup_script_named_by_the_unit_is_executable():
     script_path = target.replace("/home/enrico/jd-scraper/", "")
     assert os.path.exists(script_path), f"{target} does not exist in the checkout"
     assert os.access(script_path, os.X_OK), f"{target} is not executable (systemd reports 203/EXEC)"
+
+
+@pytest.mark.parametrize("source", ["freehire", "himalayas"])
+def test_the_run_budget_ends_before_the_unit_timeout(source):
+    budget = json.load(open("config/sources.json"))[source]["throttle"]["run_budget_seconds"]
+    timeout = int(_read(f"deploy/systemd/jds-collect-{source}.service")["Service"]["TimeoutStartSec"])
+    assert budget < timeout

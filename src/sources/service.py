@@ -10,7 +10,6 @@ captain switches it on, one source at a time with days of comparison between.
 import argparse
 import sys
 
-import requests
 from dotenv import load_dotenv
 
 from src.jobstore import heartbeat
@@ -88,7 +87,7 @@ def collect_due_slices(conn, name: str, cfg: SourceConfig, client: JsonClient, *
     return ticks
 
 
-def main(argv: list[str] | None = None, *, get=requests.get) -> int:
+def main(argv: list[str] | None = None, *, get=None) -> int:
     parser = argparse.ArgumentParser(description="Source collector service")
     parser.add_argument("source", choices=sorted(MODULES))
     parser.add_argument("--sync-slices", action="store_true")

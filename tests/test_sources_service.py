@@ -154,7 +154,11 @@ def test_a_crash_during_a_drain_leaves_an_error_beat(store_conn, monkeypatch):
 def test_a_disabled_source_refuses_to_run(tmp_path, monkeypatch, capsys):
     path = tmp_path / "sources.json"
     path.write_text(json.dumps({"freehire": {"enabled": False, "base_url": "x", "user_agent": "u",
-                                             "min_interval_seconds": 1, "interval_hours": 24}}))
+                                             "spacing_seconds": [1, 2], "interval_hours": 24,
+                                             "throttle": {"retries_per_page": None,
+                                                          "default_retry_after_seconds": 60,
+                                                          "max_wait_seconds": 300,
+                                                          "run_budget_seconds": 1700}}}))
     monkeypatch.setattr(service, "load_source_config",
                         lambda name: __import__("src.sources.base", fromlist=["x"]).load_source_config(name, str(path)))
     assert service.main(["freehire", "--once"]) == 0
