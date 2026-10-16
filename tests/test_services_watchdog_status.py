@@ -134,23 +134,16 @@ def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     with store_conn.cursor() as cur:
         cur.execute("INSERT INTO slices (source, role, area, tier, base_interval_seconds, interval_seconds, "
                     "due_at) VALUES ('linkedin', 'AI Engineer', 'Italy', 1, 14400, 14400, %s)", (NOW,))
-        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, factor) VALUES ('linkedin.com', %s, 2.0)", (NOW,))
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, weekday_spacing_seconds) "
+                    "VALUES ('linkedin.com', %s, 67.5)", (NOW,))
     budget.add_usage(store_conn, "openrouter", requests=7, now=NOW)
     heartbeat.start(store_conn, "process", now=NOW)
     store_conn.commit()
     text = status.render(store_conn, NOW)
-    assert "tier -  seen" in text and "linkedin" in text and "spacing x2.00" in text
+    assert "tier -  seen" in text and "linkedin" in text
+    assert "LinkedIn pace: base 68s weekday / 110s weekend, hour nudge x1.0, 0 refusals in a row" in text
     assert "linkedin   cadence: 4h x1" in text
     assert "openrouter today (UTC): 7 requests" in text and "process" in text
-
-
-def test_status_shows_the_spacing_after_calm_decay(store_conn):
-    with store_conn.cursor() as cur:
-        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, factor, calm_since) "
-                    "VALUES ('linkedin.com', %s, 8.0, %s)", (NOW, NOW - timedelta(minutes=65)))
-    store_conn.commit()
-    text = status.render(store_conn, NOW)
-    assert "spacing x2.00" in text and "no refusal since" in text
 
 
 def test_status_shows_the_schedule_gate_count_and_window(store_conn):

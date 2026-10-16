@@ -1,24 +1,21 @@
-"""Shared LinkedIn pace budget (spec sections 4.2 and 4.4).
+"""Shared LinkedIn pace budget (spec sections 4.1-4.4).
 
 One budget per host, stored in the `pace_budgets` table and guarded by a
 Postgres session advisory lock, so the collector and the processor cannot
 exceed it together and never have two LinkedIn requests in flight.
 
 Two things gate every request, all enforced here so no caller can bypass them:
+the quiet window (config/schedule.json `closed_hours`, Rome time) and the shared
+daily request budget (weekday/weekend cap, Rome calendar day). When the gate is
+closed `slot` raises PaceGateClosed instead of blocking a tick for hours; the
+services catch that and go idle. Every request is recorded in `pace_events`.
 
-* the quiet window (config/schedule.json `closed_hours`, Rome time);
-* the shared daily request budget (weekday/weekend cap, Rome calendar day,
-  persisted as `requests_today`/`day`).
-
-There is no circuit breaker: a refusal is friction the steady pace waits out,
-not a reason to shut LinkedIn down for hours. When the gate is closed `slot`
-raises PaceGateClosed instead of blocking a tick for hours; the services catch
-that and go idle. Every request is recorded in `pace_events`.
-
-This module also holds the pure steady-pace policy: the base spacing per window
-(75 s weekday / 110 s weekend, never below the cap-derived floor), the jitter,
-the day verdict that tightens after three calm days and loosens after a bad one,
-the refusal wait (60 s doubling, capped at 30 min) and the hour-level nudge.
+The pace is steady, not AIMD: a base spacing per window (75 s weekday / 110 s
+weekend, never below the cap-derived floor) jittered +/-20 %, tightened after
+three calm days and loosened after a bad one. A refusal is waited out (60 s
+doubling to a 30 min cap, or `Retry-After`), never turned into a shutdown, and
+refusals crowding an hour nudge the spacing up (at most 3x). Searches go first;
+a description takes the turn when no search is waiting (see `must_yield`).
 """
 import json
 import random
@@ -40,13 +37,6 @@ from src.linkedin.schedule import (
 )
 
 HOST = "linkedin.com"
-BASE_SPACING_RANGE = (2.0, 4.0)
-FLOOR_SPACING_SECONDS = 300.0
-MAX_FACTOR = FLOOR_SPACING_SECONDS / 3.0
-COOLDOWN_SECONDS = 60.0
-CALM_HALVING_SECONDS = 1800.0
-CLEAN_STREAK_FOR_RAISE = 50
-RATE_RAISE = 1.10
 WANTING_FRESH_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.25
 YIELD_SECONDS = 0.5
@@ -54,7 +44,6 @@ YIELD_SECONDS = 0.5
 EVENT_OUTCOMES = {
     "clean": "ok",
     "throttled": "refused",
-    "throttled_again": "refused",
     "neutral": "neutral",
 }
 
@@ -92,18 +81,15 @@ def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: in
 @dataclass
 class PaceState:
     next_slot_at: datetime
-    factor: float = 1.0
-    clean_streak: int = 0
-    cooldown_until: datetime | None = None
     last_kind: str | None = None
-    wanting: dict[str, float] = field(default_factory=dict)
-    calm_since: datetime | None = None
+    wanting: dict = field(default_factory=dict)
     requests_today: int = 0
-    day: date | None = None
-    refusal_times: list[datetime] = field(default_factory=list)
     refusals_today: int = 0
+    day: date | None = None
+    wait_until: datetime | None = None
     refusal_streak: int = 0
-    request_times: list[datetime] = field(default_factory=list)
+    request_times: list = field(default_factory=list)
+    refusal_times: list = field(default_factory=list)
     nudge: float = 1.0
     nudged_at: datetime | None = None
     weekday_spacing: float | None = None
@@ -124,7 +110,7 @@ def stored_spacing(state: PaceState, schedule: ScheduleConfig, window: str) -> f
     start, clamped to [floor, start * max_spacing_factor]."""
     raw = state.weekend_spacing if window == "weekend" else state.weekday_spacing
     if raw is None:
-        return start_spacing_seconds(schedule, window)
+        raw = start_spacing_seconds(schedule, window)
     floor = floor_spacing_seconds(schedule, window)
     ceiling = start_spacing_seconds(schedule, window) * schedule.pace.max_spacing_factor
     return max(floor, min(raw, ceiling))
@@ -232,51 +218,6 @@ def must_yield(state: PaceState, kind: str, overdue: bool, now_ts: float) -> boo
     return False
 
 
-def after_clean(state: PaceState) -> PaceState:
-    """A clean response. Every CLEAN_STREAK_FOR_RAISE of them raises the rate 10 percent."""
-    state.clean_streak += 1
-    if state.clean_streak >= CLEAN_STREAK_FOR_RAISE:
-        state.factor = max(1.0, state.factor / RATE_RAISE)
-        state.clean_streak = 0
-    return state
-
-
-def after_throttle(state: PaceState, now: datetime) -> PaceState:
-    """429, 999 or a throttled empty page: halve the rate and cool down."""
-    state.factor = min(state.factor * 2.0, MAX_FACTOR)
-    state.clean_streak = 0
-    state.cooldown_until = now + timedelta(seconds=COOLDOWN_SECONDS)
-    state.calm_since = now
-    return state
-
-
-def after_repeat_throttle(state: PaceState, now: datetime) -> PaceState:
-    """A retry of an already-throttled logical request was refused again: keep the
-    cooldown and restart the calm clock, but do not double the spacing a second time."""
-    state.clean_streak = 0
-    state.cooldown_until = now + timedelta(seconds=COOLDOWN_SECONDS)
-    state.calm_since = now
-    return state
-
-
-def after_calm(state: PaceState, now: datetime) -> PaceState:
-    """Halve the spacing for every full CALM_HALVING_SECONDS since the last refusal."""
-    if state.calm_since is None or state.factor <= 1.0:
-        state.factor = max(state.factor, 1.0)
-        state.calm_since = now
-        return state
-    periods = int((now - state.calm_since).total_seconds() // CALM_HALVING_SECONDS)
-    if periods > 0:
-        state.factor = max(1.0, state.factor / 2.0 ** periods)
-        state.calm_since += timedelta(seconds=periods * CALM_HALVING_SECONDS)
-    return state
-
-
-def spacing_seconds(factor: float, uniform=random.uniform) -> float:
-    low, high = BASE_SPACING_RANGE
-    return min(uniform(low, high) * factor, FLOOR_SPACING_SECONDS)
-
-
 def _lock_key(host: str) -> int:
     return zlib.crc32(f"jds-pace:{host}".encode())
 
@@ -288,6 +229,7 @@ class Slot:
         self.outcome = "neutral"
         self.status: int | None = None
         self.retry_after: float | None = None
+        self.wait_seconds: float | None = None
 
     def clean(self, status: int | None = None) -> None:
         self.outcome = "clean"
@@ -295,12 +237,6 @@ class Slot:
 
     def throttled(self, status: int | None = None, retry_after: float | None = None) -> None:
         self.outcome = "throttled"
-        self.status = status
-        self.retry_after = retry_after
-
-    def throttled_again(self, status: int | None = None, retry_after: float | None = None) -> None:
-        """The retry of a request that was already throttled was refused too."""
-        self.outcome = "throttled_again"
         self.status = status
         self.retry_after = retry_after
 
@@ -339,25 +275,32 @@ class PaceBudget:
                 "INSERT INTO pace_budgets (host, next_slot_at) VALUES (%s, %s) "
                 "ON CONFLICT (host) DO NOTHING", (self.host, self.clock()))
             cur.execute(
-                "SELECT next_slot_at, factor, clean_streak, cooldown_until, last_kind, wanting, "
-                "calm_since, requests_today, day, refusal_times "
-                "FROM pace_budgets WHERE host = %s", (self.host,))
-            (next_slot, factor, streak, cooldown, last_kind, wanting, calm_since,
-             requests_today, day, refusal_times) = cur.fetchone()
-        state = PaceState(next_slot, factor, streak, cooldown, last_kind, dict(wanting or {}),
-                          calm_since, requests_today, day, list(refusal_times or []))
+                "SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, "
+                "refusals_today, day, refusal_streak, request_times, refusal_times, nudge, "
+                "nudged_at, weekday_spacing_seconds, weekend_spacing_seconds, calm_days, "
+                "last_clean_at FROM pace_budgets WHERE host = %s", (self.host,))
+            (next_slot, wait_until, last_kind, wanting, requests_today, refusals_today, day,
+             refusal_streak, request_times, refusal_times, nudge, nudged_at, weekday_spacing,
+             weekend_spacing, calm_days, last_clean_at) = cur.fetchone()
+        state = PaceState(next_slot, last_kind, dict(wanting or {}), requests_today, refusals_today,
+                          day, wait_until, refusal_streak, list(request_times or []),
+                          list(refusal_times or []), nudge, nudged_at, weekday_spacing,
+                          weekend_spacing, calm_days, last_clean_at)
         return roll_day(state, self.schedule, self.clock())
 
     def _save(self, state: PaceState) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
-                "UPDATE pace_budgets SET next_slot_at = %s, factor = %s, clean_streak = %s, "
-                "cooldown_until = %s, last_kind = %s, calm_since = %s, wanting = wanting - %s, "
-                "requests_today = %s, day = %s, refusal_times = %s "
-                "WHERE host = %s",
-                (state.next_slot_at, state.factor, state.clean_streak, state.cooldown_until,
-                 state.last_kind, state.calm_since, state.last_kind, state.requests_today,
-                 state.day, state.refusal_times, self.host))
+                "UPDATE pace_budgets SET next_slot_at = %s, cooldown_until = %s, last_kind = %s, "
+                "wanting = wanting - %s, requests_today = %s, refusals_today = %s, day = %s, "
+                "refusal_streak = %s, request_times = %s, refusal_times = %s, nudge = %s, "
+                "nudged_at = %s, weekday_spacing_seconds = %s, weekend_spacing_seconds = %s, "
+                "calm_days = %s, last_clean_at = %s WHERE host = %s",
+                (state.next_slot_at, state.wait_until, state.last_kind, state.last_kind,
+                 state.requests_today, state.refusals_today, state.day, state.refusal_streak,
+                 state.request_times, state.refusal_times, state.nudge, state.nudged_at,
+                 state.weekday_spacing, state.weekend_spacing, state.calm_days,
+                 state.last_clean_at, self.host))
 
     def _declare_wanting(self, kind: str) -> None:
         with self.conn.cursor() as cur:
@@ -378,7 +321,7 @@ class PaceBudget:
 
     def snapshot(self) -> PaceState:
         """Current stored state, for status displays. Takes no lock."""
-        return after_calm(self._load(), self.clock())
+        return self._load()
 
     def gate(self) -> Gate:
         """Why LinkedIn is open or closed right now. Takes no lock and no request."""
@@ -389,7 +332,7 @@ class PaceBudget:
         """How long a request made now would wait for its turn, ignoring the other
         service's place in the queue. Takes no lock."""
         state = self._load()
-        ready = max(state.next_slot_at, state.cooldown_until or state.next_slot_at)
+        ready = max(state.next_slot_at, state.wait_until or state.next_slot_at)
         return max(0.0, (ready - self.clock()).total_seconds())
 
     # -- the turn --------------------------------------------------------
@@ -406,7 +349,7 @@ class PaceBudget:
             if not self._try_lock():
                 self.sleep(LOCK_POLL_SECONDS)
                 continue
-            state = after_calm(self._load(), self.clock())
+            state = self._load()
             if state.last_kind == kind and self._other_is_waiting(state, kind):
                 self._unlock()
                 self.sleep(YIELD_SECONDS)
@@ -415,29 +358,51 @@ class PaceBudget:
 
     def _wait_for_slot(self, state: PaceState) -> None:
         ready = state.next_slot_at
-        if state.cooldown_until and state.cooldown_until > ready:
-            ready = state.cooldown_until
+        if state.wait_until and state.wait_until > ready:
+            ready = state.wait_until
         delay = (ready - self.clock()).total_seconds()
         if delay > 0:
             self.sleep(delay)
 
-    def _record(self, state: PaceState, slot: Slot, now: datetime) -> None:
-        """Count the request against the Rome day. The caller saves the row first; the
-        pace_events row is written afterwards, so a logging failure can never lose the
-        count."""
+    def _record(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> float:
+        """Count the request against the Rome day and feed the steady pace. The caller
+        saves the row first; the pace_events row is written afterwards, so a logging
+        failure can never lose the count or the refusal state."""
         roll_day(state, self.schedule, now)
         state.requests_today += 1
+        state.request_times.append(now)
+        if slot.outcome == "clean":
+            state.refusal_streak = 0
+            state.wait_until = None
+            state.last_clean_at = now
+        elif slot.outcome == "throttled":
+            state.refusal_streak += 1
+            state.refusals_today += 1
+            state.refusal_times.append(now)
+            wait = refusal_wait_seconds(state.refusal_streak, slot.retry_after,
+                                        self.schedule.refusals, self.uniform,
+                                        jitter=self.schedule.pace.jitter)
+            slot.wait_seconds = wait
+            state.wait_until = now + timedelta(seconds=wait)
+            print(f"[pace] LinkedIn refused a {kind} request ({slot.status}): waiting "
+                  f"{wait:.0f}s (refusal {state.refusal_streak} in a row)")
+        update_nudge(state, now, self.schedule.refusals)
+        state.last_kind = kind
+        spacing = next_spacing(state, self.schedule, now, self.uniform)
+        state.next_slot_at = now + timedelta(seconds=spacing)
+        return spacing
 
-    def _log_event(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> None:
+    def _log_event(self, state: PaceState, kind: str, slot: Slot, now: datetime,
+                   spacing: float) -> None:
         """Append one request to pace_events. Telemetry must never break a run, so a
         failed insert is logged and swallowed; the state is already saved."""
         try:
             with self.conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO pace_events (at, service, kind, outcome, status, factor, requests_today) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO pace_events (at, service, kind, outcome, status, factor, "
+                    "requests_today, spacing_seconds, wait_seconds) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (now, self.service, kind, EVENT_OUTCOMES.get(slot.outcome, slot.outcome),
-                     slot.status, state.factor, state.requests_today))
+                     slot.status, state.nudge, state.requests_today, spacing, slot.wait_seconds))
         except Exception as exc:  # noqa: BLE001 - telemetry must not raise into the pipeline
             print(f"[pace] could not record the {kind} request in pace_events: "
                   f"{type(exc).__name__}: {exc}")
@@ -463,7 +428,7 @@ class PaceBudget:
             except BaseException:
                 self._abandon(state, kind)
                 raise
-            # The wait can last up to the floor spacing (300 s); a request granted just
+            # The wait can last up to the cap-derived floor; a request granted just
             # before midnight must not fire inside the quiet window.
             gate = self._gate(state)
         if not gate.open:
@@ -475,21 +440,9 @@ class PaceBudget:
         finally:
             try:
                 now = self.clock()
-                if slot.outcome == "clean":
-                    after_clean(state)
-                elif slot.outcome == "throttled":
-                    after_throttle(state, now)
-                    print(f"[pace] LinkedIn throttled a {kind} request: spacing now "
-                          f"x{state.factor:g}, cooling down {COOLDOWN_SECONDS:g}s")
-                elif slot.outcome == "throttled_again":
-                    after_repeat_throttle(state, now)
-                self._record(state, slot, now)
-                state.last_kind = kind
-                state.wanting.pop(kind, None)
-                state.next_slot_at = now + timedelta(
-                    seconds=spacing_seconds(state.factor, self.uniform))
+                spacing = self._record(state, kind, slot, now)
                 self._save(state)
-                self._log_event(state, kind, slot, now)
+                self._log_event(state, kind, slot, now, spacing)
             finally:
                 self._unlock()
 

@@ -6,7 +6,7 @@ import pytest
 from src.linkedin.pace import (
     PaceBudget, PaceGateClosed, evaluate_gate,
 )
-from src.linkedin.schedule import ScheduleConfig
+from src.linkedin.schedule import ScheduleConfig, local_day
 
 WED = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)  # Rome 14:00, weekday
 NIGHT = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
@@ -65,17 +65,21 @@ def test_the_quiet_window_closes_the_gate_and_the_slot_makes_no_request(make_bud
 
 def test_search_and_descriptions_share_one_cap_and_it_blocks_at_the_limit(make_budget):
     fake = FakeTime(WED)
-    budget = make_budget(fake, ScheduleConfig(weekday_cap=3))
-    for kind in ("search", "description", "search"):
+    budget = make_budget(fake)
+    budget.snapshot()  # create the row
+    with budget.conn.cursor() as cur:
+        cur.execute("UPDATE pace_budgets SET requests_today = 1398, day = %s "
+                    "WHERE host = 'linkedin.com'", (local_day(ScheduleConfig(), WED),))
+    for kind in ("search", "description"):
         with budget.slot(kind) as slot:
             slot.clean(200)
     gate = budget.gate()
     assert not gate.open and gate.reason == "daily_cap"
-    assert gate.requests_today == 3 and gate.cap == 3 and gate.window == "weekday"
+    assert gate.requests_today == 1400 and gate.cap == 1400 and gate.window == "weekday"
     with pytest.raises(PaceGateClosed):
-        with budget.slot("description") as slot:
-            slot.clean(200)
-    assert _row(budget)[0] == 3
+        with budget.slot("search"):
+            pass
+    assert _row(budget)[0] == 1400
 
 
 def test_the_weekend_uses_the_smaller_cap(make_budget):
@@ -137,7 +141,7 @@ def test_a_request_granted_before_the_window_cannot_fire_inside_it(make_budget):
     assert ran == [] and _row(budget)[0] == 0
 
 
-def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_breaker(make_budget, capsys):
+def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_refusal_wait(make_budget, capsys):
     fake = FakeTime(WED)
     budget = make_budget(fake)
     budget.snapshot()
@@ -146,8 +150,9 @@ def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_breaker(make
     with budget.slot("search") as slot:
         slot.throttled(429)  # the request works; only the telemetry row fails
     with budget.conn.cursor() as cur:
-        cur.execute("SELECT requests_today, factor FROM pace_budgets WHERE host = 'linkedin.com'")
-        assert cur.fetchone() == (1, 2.0)
+        cur.execute("SELECT requests_today, refusal_streak, cooldown_until IS NOT NULL "
+                    "FROM pace_budgets WHERE host = 'linkedin.com'")
+        assert cur.fetchone() == (1, 1, True)
     assert "could not record the search request" in capsys.readouterr().out
 
 

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
-from src.linkedin.pace import Gate, PaceState, after_calm, evaluate_gate
+from src.linkedin.pace import Gate, PaceState, evaluate_gate, stored_spacing
 from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests_today_for
 
 
@@ -44,17 +44,24 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
             cadence.setdefault(source, []).append(f"{seconds / 3600:g}h x{count}")
         for source, parts in cadence.items():
             lines.append(f"  {source:<10} cadence: " + ", ".join(parts))
-        cur.execute("SELECT factor, clean_streak, cooldown_until, last_kind, calm_since, "
-                    "requests_today, day FROM pace_budgets "
-                    "WHERE host = 'linkedin.com'")
+        cur.execute("SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, "
+                    "refusals_today, day, refusal_streak, request_times, refusal_times, nudge, "
+                    "nudged_at, weekday_spacing_seconds, weekend_spacing_seconds, calm_days, "
+                    "last_clean_at FROM pace_budgets WHERE host = 'linkedin.com'")
         pace = cur.fetchone()
         if pace:
-            stored, streak, cooldown, kind, calm_since, today, day = pace
-            factor = after_calm(PaceState(now, stored, calm_since=calm_since), now).factor
-            cooling = f", cooling down until {cooldown:%H:%M:%S}" if cooldown and cooldown > now else ""
-            calm = f", no refusal since {calm_since:%H:%M}" if calm_since and factor > 1.0 else ""
-            lines.append(f"LinkedIn pace: spacing x{factor:.2f} (1.00 = base), {streak} clean in a row, "
-                         f"last request: {kind}{cooling}{calm}")
+            (next_slot, wait_until, kind, wanting, today, refusals, day, streak, request_times,
+             refusal_times, nudge, nudged_at, weekday_spacing, weekend_spacing, calm_days,
+             last_clean_at) = pace
+            state = PaceState(next_slot, kind, dict(wanting or {}), today, refusals, day, wait_until,
+                              streak, list(request_times or []), list(refusal_times or []), nudge,
+                              nudged_at, weekday_spacing, weekend_spacing, calm_days, last_clean_at)
+            wd = stored_spacing(state, schedule, "weekday")
+            we = stored_spacing(state, schedule, "weekend")
+            waiting = f", waiting until {wait_until:%H:%M:%S}" if wait_until and wait_until > now else ""
+            lines.append(f"LinkedIn pace: base {wd:.0f}s weekday / {we:.0f}s weekend, "
+                         f"hour nudge x{state.nudge:.1f}, {state.refusal_streak} refusals in a row"
+                         f"{waiting}, last request: {state.last_kind}")
             gate = evaluate_gate(schedule, now,
                                  requests_today=requests_today_for(day, today, schedule, now))
             lines.append(_gate_line(gate, schedule))
