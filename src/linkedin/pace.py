@@ -14,8 +14,12 @@ The pace is steady, not AIMD: a base spacing per window (75 s weekday / 110 s
 weekend, never below the cap-derived floor) jittered +/-20 %, tightened after
 three calm days and loosened after a bad one. A refusal is waited out (60 s
 doubling to a 30 min cap, or `Retry-After`), never turned into a shutdown, and
-refusals crowding an hour nudge the spacing up (at most 3x). Searches go first;
-a description takes the turn when no search is waiting (see `must_yield`).
+refusals crowding an hour nudge the spacing up (at most 3x). Searches go first: a
+description yields while a search is waiting unless it is overdue and the last
+turn was a search, when it takes every second turn. The advisory lock is held
+only for the request itself; waiters sleep unlocked in short chunks. A caller
+that passes `give_up_after` and cannot get a turn raises PaceBusy, and a caller
+that gives up writes only its own `wanting` markers.
 """
 import json
 import random
@@ -35,11 +39,13 @@ from src.linkedin.schedule import (
     start_spacing_seconds,
     window_name,
 )
+from src.services.pulse import pulse
 
 HOST = "linkedin.com"
 WANTING_FRESH_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.25
 YIELD_SECONDS = 0.5
+WAIT_CHUNK_SECONDS = 15.0
 
 EVENT_OUTCOMES = {
     "clean": "ok",
@@ -65,6 +71,10 @@ class PaceGateClosed(RuntimeError):
     def __init__(self, gate: Gate):
         super().__init__(f"LinkedIn gate closed ({gate.reason})")
         self.gate = gate
+
+
+class PaceBusy(RuntimeError):
+    """No LinkedIn turn was granted within `give_up_after`; nothing was sent."""
 
 
 def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int) -> Gate:
@@ -258,7 +268,8 @@ class PaceBudget:
 
     def __init__(self, conn, host: str = HOST, *, clock=None, sleep=time.sleep,
                  uniform=random.uniform, service: str | None = None,
-                 schedule: ScheduleConfig | None = None):
+                 schedule: ScheduleConfig | None = None,
+                 give_up_after: float | None = None):
         self.conn = conn
         self.host = host
         self.key = _lock_key(host)
@@ -267,6 +278,7 @@ class PaceBudget:
         self.uniform = uniform
         self.service = service
         self.schedule = schedule or ScheduleConfig()
+        self.give_up_after = give_up_after
 
     # -- storage ---------------------------------------------------------
     def _load(self) -> PaceState:
@@ -288,27 +300,36 @@ class PaceBudget:
                           weekend_spacing, calm_days, last_clean_at)
         return roll_day(state, self.schedule, self.clock())
 
-    def _save(self, state: PaceState) -> None:
+    def _save(self, state: PaceState, kinds: list[str]) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
                 "UPDATE pace_budgets SET next_slot_at = %s, cooldown_until = %s, last_kind = %s, "
-                "wanting = wanting - %s, requests_today = %s, refusals_today = %s, day = %s, "
+                "wanting = wanting - %s::text[], requests_today = %s, refusals_today = %s, day = %s, "
                 "refusal_streak = %s, request_times = %s, refusal_times = %s, nudge = %s, "
                 "nudged_at = %s, weekday_spacing_seconds = %s, weekend_spacing_seconds = %s, "
                 "calm_days = %s, last_clean_at = %s WHERE host = %s",
-                (state.next_slot_at, state.wait_until, state.last_kind, state.last_kind,
+                (state.next_slot_at, state.wait_until, state.last_kind, kinds,
                  state.requests_today, state.refusals_today, state.day, state.refusal_streak,
                  state.request_times, state.refusal_times, state.nudge, state.nudged_at,
                  state.weekday_spacing, state.weekend_spacing, state.calm_days,
                  state.last_clean_at, self.host))
 
-    def _declare_wanting(self, kind: str) -> None:
+    def _declare_wanting(self, kind: str, *, overdue: bool = False) -> None:
+        markers = {kind: self.clock().timestamp()}
+        if kind == "description" and overdue:
+            markers["overdue"] = self.clock().timestamp()
         with self.conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO pace_budgets (host, next_slot_at, wanting) VALUES (%s, %s, %s::jsonb) "
                 "ON CONFLICT (host) DO UPDATE SET wanting = pace_budgets.wanting || %s::jsonb",
-                (self.host, self.clock(), json.dumps({kind: self.clock().timestamp()}),
-                 json.dumps({kind: self.clock().timestamp()})))
+                (self.host, self.clock(), json.dumps(markers), json.dumps(markers)))
+
+    def _drop_markers(self, kinds: list[str]) -> None:
+        """The only write on the give-up paths, and the only lock-free write besides
+        the caller's own marker merge: it touches nothing but `wanting`."""
+        with self.conn.cursor() as cur:
+            cur.execute("UPDATE pace_budgets SET wanting = wanting - %s::text[] WHERE host = %s",
+                        (kinds, self.host))
 
     def _try_lock(self) -> bool:
         with self.conn.cursor() as cur:
@@ -336,34 +357,6 @@ class PaceBudget:
         return max(0.0, (ready - self.clock()).total_seconds())
 
     # -- the turn --------------------------------------------------------
-    def _other_is_waiting(self, state: PaceState, kind: str) -> bool:
-        now = self.clock().timestamp()
-        return any(
-            other != kind and now - stamp <= WANTING_FRESH_SECONDS
-            for other, stamp in state.wanting.items()
-        )
-
-    def _acquire(self, kind: str) -> PaceState:
-        while True:
-            self._declare_wanting(kind)
-            if not self._try_lock():
-                self.sleep(LOCK_POLL_SECONDS)
-                continue
-            state = self._load()
-            if state.last_kind == kind and self._other_is_waiting(state, kind):
-                self._unlock()
-                self.sleep(YIELD_SECONDS)
-                continue
-            return state
-
-    def _wait_for_slot(self, state: PaceState) -> None:
-        ready = state.next_slot_at
-        if state.wait_until and state.wait_until > ready:
-            ready = state.wait_until
-        delay = (ready - self.clock()).total_seconds()
-        if delay > 0:
-            self.sleep(delay)
-
     def _record(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> float:
         """Count the request against the Rome day and feed the steady pace. The caller
         saves the row first; the pace_events row is written afterwards, so a logging
@@ -410,30 +403,36 @@ class PaceBudget:
     def _gate(self, state: PaceState) -> Gate:
         return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today)
 
-    def _abandon(self, state: PaceState, kind: str) -> None:
-        """Release a turn that will make no request: keep the loaded state, drop our
-        wanting marker, and let the other service take the lock."""
-        state.last_kind = kind
-        state.wanting.pop(kind, None)
-        self._save(state)
-        self._unlock()
-
     @contextmanager
     def slot(self, kind: str, *, overdue: bool = False):
-        state = self._acquire(kind)
-        gate = self._gate(state)
-        if gate.open:
-            try:
-                self._wait_for_slot(state)
-            except BaseException:
-                self._abandon(state, kind)
-                raise
-            # The wait can last up to the cap-derived floor; a request granted just
-            # before midnight must not fire inside the quiet window.
+        started = self.clock()
+        kinds = [kind, "overdue"] if (kind == "description" and overdue) else [kind]
+        while True:
+            self._declare_wanting(kind, overdue=overdue)
+            if not self._try_lock():
+                self.sleep(LOCK_POLL_SECONDS)
+                continue
+            now = self.clock()
+            state = self._load()
             gate = self._gate(state)
-        if not gate.open:
-            self._abandon(state, kind)
-            raise PaceGateClosed(gate)
+            if not gate.open:
+                self._drop_markers(kinds)
+                self._unlock()
+                raise PaceGateClosed(gate)
+            ready = max(state.next_slot_at, state.wait_until or state.next_slot_at)
+            wait = (ready - now).total_seconds()
+            if wait <= 0 and not must_yield(state, kind, overdue, now.timestamp()):
+                break  # keep the lock: the request goes now
+            self._unlock()
+            pause = min(wait, WAIT_CHUNK_SECONDS) if wait > 0 else YIELD_SECONDS
+            next_in_line = overdue and state.last_kind == "search"
+            if self.give_up_after is not None and (
+                    wait > self.give_up_after if next_in_line
+                    else (self.clock() - started).total_seconds() + pause > self.give_up_after):
+                self._drop_markers(kinds)
+                raise PaceBusy(f"no LinkedIn {kind} turn within {self.give_up_after:g}s")
+            pulse({"linkedin_wait": round(max(wait, 0))})
+            self.sleep(pause)
         slot = Slot()
         try:
             yield slot
@@ -441,7 +440,7 @@ class PaceBudget:
             try:
                 now = self.clock()
                 spacing = self._record(state, kind, slot, now)
-                self._save(state)
+                self._save(state, kinds)
                 self._log_event(state, kind, slot, now, spacing)
             finally:
                 self._unlock()

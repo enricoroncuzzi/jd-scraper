@@ -1,10 +1,10 @@
-import json
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
+from psycopg2.extras import Json
 
 from src.linkedin import pace as pace_module
-from src.linkedin.pace import ManagedPace, PaceBudget
+from src.linkedin.pace import ManagedPace, PaceBudget, PaceBusy, PaceGateClosed
 from src.linkedin.schedule import ScheduleConfig
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
@@ -54,15 +54,14 @@ def _events(budget, *columns):
         return cur.fetchall()
 
 
-def test_consecutive_requests_are_spaced_75_seconds(make_budget):
+def test_consecutive_requests_are_spaced_75_seconds_in_chunks(make_budget):
     fake = FakeTime()
     budget = make_budget(fake)
     with budget.slot("search") as slot:
         slot.clean(200)
-    assert fake.sleeps == []
     with budget.slot("search") as slot:
         slot.clean(200)
-    assert sum(fake.sleeps) == pytest.approx(75)
+    assert fake.sleeps == [pace_module.WAIT_CHUNK_SECONDS] * 5
 
 
 def test_refusals_wait_60_120_240_seconds_and_a_clean_response_resets(make_budget):
@@ -190,53 +189,254 @@ def test_no_second_request_can_be_in_flight(make_budget):
     second._unlock()
 
 
-def test_a_kind_yields_to_the_other_kind_that_is_waiting(make_budget):
+def test_an_overdue_description_keeps_its_second_turn_within_the_processor_budget(make_budget):
+    # Revision 2 (plan review round 2, change 1): two spacings exceed the 120 s budget, so an
+    # overdue description that is next in line must not give up on elapsed time.
+    fake = FakeTime()
+    description, search = make_budget(fake, give_up_after=120), make_budget(fake)
+    description.snapshot()
+    _set(description, last_kind="description", next_slot_at=fake.now + timedelta(seconds=75))
+    search._declare_wanting("search")
+    taken = []
+
+    def the_search_walks(_seconds):
+        search._declare_wanting("search")
+        if not taken and fake.now >= WED_NOON + timedelta(seconds=75):
+            saved, fake.on_sleep = fake.on_sleep, None
+            with search.slot("search") as slot:
+                taken.append(("search", fake.now))
+                slot.clean(200)
+            fake.on_sleep = saved
+    fake.on_sleep = the_search_walks
+    with description.slot("description", overdue=True) as slot:
+        taken.append(("description", fake.now))
+        slot.clean(200)
+    assert [k for k, _ in taken] == ["search", "description"]
+    assert taken[1][1] == WED_NOON + timedelta(seconds=150)
+
+
+def test_the_lock_is_not_held_while_waiting(make_budget):
+    fake = FakeTime()
+    budget, other = make_budget(fake), make_budget(fake)
+    with budget.slot("search") as slot:
+        assert other._try_lock() is False   # held for the request itself
+        slot.clean(200)
+    free = []
+
+    def other_tries_the_lock(_seconds):
+        got = other._try_lock()
+        free.append(got)
+        if got:
+            other._unlock()
+    fake.on_sleep = other_tries_the_lock
+    with budget.slot("search") as slot:     # waits 75 s: five 15 s chunks
+        slot.clean(200)
+    assert free == [True] * 5               # the old loop slept once, locked: [False]
+
+
+def test_a_description_yields_while_a_search_is_waiting(make_budget):
+    fake = FakeTime()
+    description, search = make_budget(fake), make_budget(fake)
+    description.snapshot()                  # the row exists and the next slot is now
+    search._declare_wanting("search")        # a walk is waiting for its turn
+    order = []
+
+    def the_search_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with search.slot("search") as slot:
+                order.append("search")
+                slot.clean(200)
+    fake.on_sleep = the_search_takes_its_turn
+    with description.slot("description") as slot:
+        order.append("description")
+        slot.clean(200)
+    assert order == ["search", "description"]
+    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
+    assert sum(fake.sleeps[1:]) == pytest.approx(75)   # the description waits out the search's spacing
+    assert _events(description, "kind") == [("search",), ("description",)]
+    assert _row(description, "last_kind") == ("description",)
+
+
+def test_a_search_does_not_yield_to_a_waiting_description(make_budget):
+    fake = FakeTime()
+    search, description = make_budget(fake), make_budget(fake)
+    search.snapshot()
+    _set(search, last_kind="search")
+    description._declare_wanting("description")
+    with search.slot("search") as slot:
+        slot.clean(200)
+    assert fake.sleeps == []
+
+
+def test_an_overdue_description_takes_every_second_turn(make_budget):
+    fake = FakeTime()
+    search, description = make_budget(fake), make_budget(fake)
+    search.snapshot()
+    _set(search, last_kind="search")
+    description._declare_wanting("description", overdue=True)
+    taken = []
+
+    def the_description_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not taken:
+            fake.on_sleep = None
+            with description.slot("description", overdue=True) as slot:
+                taken.append("description")
+                slot.clean(200)
+    fake.on_sleep = the_description_takes_its_turn
+    with search.slot("search") as slot:
+        taken.append("search")
+        slot.clean(200)
+    assert taken == ["description", "search"]
+    # after a description turn the search goes first, even with an overdue description waiting
+    _set(search, last_kind="description", next_slot_at=fake.now)
+    description._declare_wanting("description", overdue=True)
+    before = len(fake.sleeps)
+    with search.slot("search") as slot:
+        slot.clean(200)
+    assert fake.sleeps[before:] == []
+
+
+def test_an_overdue_description_goes_even_while_a_search_waits(make_budget):
+    fake = FakeTime()
+    description, search = make_budget(fake), make_budget(fake)
+    description.snapshot()
+    _set(description, last_kind="search")
+    search._declare_wanting("search")
+    with description.slot("description", overdue=True) as slot:
+        slot.clean(200)
+    assert fake.sleeps == []
+
+
+def test_the_overdue_marker_is_dropped_after_the_description_turn(make_budget):
     fake = FakeTime()
     budget = make_budget(fake)
-    other = make_budget(fake)
-    with budget.slot("search") as slot:
+    with budget.slot("description", overdue=True) as slot:
+        assert {"description", "overdue"} <= set(_row(budget, "wanting")[0])
         slot.clean(200)
-    with other.conn.cursor() as cur:
-        cur.execute("UPDATE pace_budgets SET wanting = %s::jsonb WHERE host = 'linkedin.com'",
-                    (json.dumps({"description": fake.clock().timestamp()}),))
+    assert _row(budget, "wanting") == ({},)
 
-    def description_takes_its_turn(_seconds):
-        if _seconds == pace_module.YIELD_SECONDS:
-            with other.conn.cursor() as cur:
-                cur.execute("UPDATE pace_budgets SET last_kind = 'description', wanting = '{}'::jsonb "
-                            "WHERE host = 'linkedin.com'")
-    fake.on_sleep = description_takes_its_turn
 
-    with budget.slot("search") as slot:
+def test_two_waiters_wake_together_and_the_search_wins(make_budget):
+    fake = FakeTime()
+    description, search = make_budget(fake), make_budget(fake)
+    description.snapshot()
+    _set(description, next_slot_at=fake.now + timedelta(seconds=10))
+    search._declare_wanting("search")          # the search caller sleeps in its own 10 s wait
+    order = []
+
+    def hook(seconds):
+        if seconds == 10:                      # both waits end: the search caller wakes and re-declares
+            search._declare_wanting("search")
+        elif seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with search.slot("search") as slot:
+                order.append("search")
+                slot.clean(200)
+            fake.on_sleep = hook
+    fake.on_sleep = hook
+    with description.slot("description") as slot:
+        order.append("description")
         slot.clean(200)
-    assert pace_module.YIELD_SECONDS in fake.sleeps
-    assert _row(budget, "last_kind")[0] == "search"
+    assert order == ["search", "description"]
+    assert fake.sleeps[:2] == [10, pace_module.YIELD_SECONDS]
+    assert _events(description, "kind") == [("search",), ("description",)]
 
 
-def test_a_stale_waiting_marker_does_not_block_the_same_kind(make_budget):
+def test_a_caller_that_cannot_get_a_turn_gives_up_without_a_request(make_budget):
+    fake = FakeTime()
+    description, search = make_budget(fake, give_up_after=10), make_budget(fake)
+    description.snapshot()
+    search._declare_wanting("search")
+    fake.on_sleep = lambda _seconds: search._declare_wanting("search")  # a long walk keeps wanting
+    with pytest.raises(PaceBusy):
+        with description.slot("description"):
+            raise AssertionError("no request may be made")
+    assert _row(description, "requests_today") == (0,) and _events(description, "kind") == []
+    wanting = _row(description, "wanting")[0]
+    assert "description" not in wanting and "search" in wanting
+    assert set(fake.sleeps) == {pace_module.YIELD_SECONDS} and sum(fake.sleeps) == pytest.approx(10)
+
+
+def test_giving_up_writes_only_the_markers_so_another_services_refusal_survives(make_budget):
+    """The processor unlocks, the collector is refused in that instant, then the processor gives up.
+    The processor loaded the row before the collector wrote it, so any save of its state on the way
+    out would overwrite the refusal. The patched unlock puts the collector's request exactly there."""
+    fake = FakeTime()
+    collector, processor = make_budget(fake), make_budget(fake, give_up_after=0.1)
+    collector.snapshot()
+    collector._declare_wanting("search")       # so the processor yields its turn
+    refused = []
+    real_unlock = processor._unlock
+
+    def unlock_then_the_collector_is_refused():
+        real_unlock()
+        if not refused:
+            with collector.slot("search") as slot:
+                slot.throttled(429)
+                refused.append(fake.now)
+    processor._unlock = unlock_then_the_collector_is_refused
+    with pytest.raises(PaceBusy):
+        with processor.slot("description"):
+            raise AssertionError("no request may be made")
+    at = refused[0]
+    # next_slot_at carries the hour nudge (1 refusal in 1 request): 75 s x 1.5
+    assert _row(collector, "requests_today", "refusal_streak", "cooldown_until", "next_slot_at", "last_kind") == (
+        1, 1, at + timedelta(seconds=60), at + timedelta(seconds=112.5), "search")
+    assert "description" not in _row(collector, "wanting")[0]
+
+
+def test_a_closed_gate_writes_only_the_markers(make_budget):
+    fake = FakeTime(datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc))  # 01:00 Rome: window closed
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, last_kind="search", requests_today=7, day=date(2026, 10, 14))
+    with pytest.raises(PaceGateClosed):
+        with budget.slot("description", overdue=True):
+            raise AssertionError("no request may be made")
+    assert _row(budget, "last_kind", "requests_today", "wanting") == ("search", 7, {})
+
+
+def test_a_long_refusal_wait_is_slept_in_chunks_that_beat_the_heartbeat(make_budget, pulses):
     fake = FakeTime()
     budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, cooldown_until=fake.now + timedelta(seconds=1800))
     with budget.slot("search") as slot:
         slot.clean(200)
-    with budget.conn.cursor() as cur:
-        cur.execute("UPDATE pace_budgets SET wanting = %s::jsonb WHERE host = 'linkedin.com'",
-                    (json.dumps({"description": fake.clock().timestamp() - 600}),))
-    with budget.slot("search") as slot:
+    assert max(fake.sleeps) <= pace_module.WAIT_CHUNK_SECONDS and sum(fake.sleeps) == pytest.approx(1800)
+    assert len([p for p in pulses if "linkedin_wait" in p]) == len(fake.sleeps)
+
+
+def test_a_stale_search_marker_does_not_hold_back_a_description(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, wanting=Json({"search": fake.now.timestamp() - 600}))
+    with budget.slot("description") as slot:
         slot.clean(200)
-    assert pace_module.YIELD_SECONDS not in fake.sleeps
+    assert fake.sleeps == []
 
 
 def test_a_marker_declared_while_a_slot_is_held_survives_its_release(make_budget):
     fake = FakeTime()
     search, other = make_budget(fake), make_budget(fake)
     with search.slot("search") as slot:
-        other._declare_wanting("description")
-        assert "description" in search.snapshot().wanting
-    assert "description" in search.snapshot().wanting
-    before = len(fake.sleeps)
-    with search.slot("search") as slot:
+        other._declare_wanting("description")  # the description caller arrives mid-request
         slot.clean(200)
-    assert pace_module.YIELD_SECONDS in fake.sleeps[before:]
+    wanting = search.snapshot().wanting
+    assert "description" in wanting and "search" not in wanting
+
+
+def test_managed_pace_forwards_give_up_after_and_overdue(store_conn, store_conn_factory):
+    fake = FakeTime()
+    managed = ManagedPace(lambda: store_conn_factory(store_conn), clock=fake.clock, sleep=fake.sleep,
+                          uniform=lambda a, b: (a + b) / 2, give_up_after=10)
+    with managed.slot("description", overdue=True) as slot:
+        assert "overdue" in managed._current().snapshot().wanting
+        slot.clean(200)
+    assert managed._current().give_up_after == 10
+    managed._current().conn.close()
 
 
 def test_managed_pace_reopens_a_dropped_connection(store_conn, store_conn_factory):
