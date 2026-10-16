@@ -121,3 +121,15 @@ def test_a_tick_with_other_work_skips_a_far_away_linkedin_turn_but_an_idle_tick_
     idle = process_once(store_conn, FakePace(wait=600), cfg, KEYS, now=NOW, get=get, **kwargs)
     assert idle.detail["described"] == 1 and len(get.calls) == 1
     assert _stage(store_conn, waiting)[0] == "described"
+
+
+def test_a_processor_tick_reuses_one_session(monkeypatch, store_conn, cfg):
+    from types import SimpleNamespace
+    import src.processor.runner as runner_module
+    made = []
+    monkeypatch.setattr(runner_module, "new_session",
+                        lambda: made.append(1) or SimpleNamespace(get=ScriptedGet()))
+    tick = runner_module.make_tick(FakePace(), cfg, KEYS)
+    tick(store_conn)
+    tick(store_conn)
+    assert len(made) == 1

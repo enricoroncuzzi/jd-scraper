@@ -24,7 +24,7 @@ from src.autoapply.package import notify_package, write_manifest
 from src.delivery.daily import note_path
 from src.delivery.jobs import DeliveryJob, load_jobs, to_scored_offer
 from src.delivery.settings import DeliverySettings
-from src.linkedin.pace import PaceGateClosed
+from src.linkedin.pace import PaceBusy, PaceGateClosed
 from src.processor.config import ProcessorConfig
 from src.scorer import _openrouter_quota_exhausted
 from src.services.pulse import pulse
@@ -105,8 +105,13 @@ def candidates(conn, cfg: ProcessorConfig, now: datetime) -> list[DeliveryJob]:
     return [job for job in jobs if not _gated(failures.get(job.id), now)]
 
 
+def is_linkedin_link(link: str) -> bool:
+    """True when the application link is hosted on linkedin.com."""
+    return urlsplit(link).netloc.lower().endswith("linkedin.com")
+
+
 def classify_through_pace(pace, link: str, classify=classify_channel) -> str:
-    if urlsplit(link).netloc.lower().endswith("linkedin.com"):
+    if is_linkedin_link(link):
         with pace.slot("description") as slot:
             channel = classify(link)
             slot.clean() if channel != "unknown" else slot.neutral()
@@ -125,15 +130,22 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
         return []
     check_cv_sources(pkg)
     results = []
+    linkedin_waits = False
     for job in due:
         pulse({"packaging": len(results)})
         policy = cfg.policies[job.tier]
+        if linkedin_waits and is_linkedin_link(job.canonical_url):
+            # The pace already said no to this pass: do not spend its turn budget again.
+            print(f"[deliver] LinkedIn is busy or closed, deferring packaging of {job.company}")
+            continue
         try:
             channel = classify_through_pace(pace, job.canonical_url, classify)
-        except PaceGateClosed:
-            # LinkedIn is closed (quiet hours or the shared daily cap). Leave the
-            # job a candidate for the next pass: no failure row, no channel, no notice.
-            print(f"[deliver] LinkedIn is closed, deferring packaging of {job.company}")
+        except (PaceGateClosed, PaceBusy):
+            # LinkedIn is closed (quiet hours or the shared daily cap) or had no turn in
+            # time. Leave the job a candidate for the next pass: no failure row, no
+            # channel, no notice. Other hosts still package in this pass.
+            print(f"[deliver] LinkedIn is busy or closed, deferring packaging of {job.company}")
+            linkedin_waits = True
             continue
         path = note_path(settings, job, job.note_day)
         try:

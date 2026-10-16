@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
+from src.jobstore.db import connect, store_url
 from src.linkedin.schedule import (
     RefusalPolicy,
     ScheduleConfig,
@@ -473,3 +474,10 @@ class ManagedPace:
     def slot(self, kind: str, *, overdue: bool = False):
         with self._current().slot(kind, overdue=overdue) as slot:
             yield slot
+
+
+def linkedin_pace(service: str, schedule: ScheduleConfig,
+                  give_up_after: float | None) -> ManagedPace:
+    """The shared LinkedIn pace for one service, with an optional turn budget."""
+    return ManagedPace(lambda: connect(store_url()), service=service, schedule=schedule,
+                       give_up_after=give_up_after)

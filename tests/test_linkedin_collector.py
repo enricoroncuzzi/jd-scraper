@@ -95,3 +95,14 @@ def test_startup_sync_also_clamps_the_cadence(store_conn):
     with store_conn.cursor() as cur:
         cur.execute("SELECT interval_seconds FROM slices")
         assert cur.fetchone() == (12 * H,)
+
+
+def test_a_collector_tick_reuses_one_session(monkeypatch, store_conn):
+    from types import SimpleNamespace
+    made = []
+    monkeypatch.setattr("src.linkedin.collector.new_session",
+                        lambda: made.append(1) or SimpleNamespace(get=ScriptedGet()))
+    tick = make_tick(FakePace(), CFG)
+    tick(store_conn)
+    tick(store_conn)
+    assert len(made) == 1

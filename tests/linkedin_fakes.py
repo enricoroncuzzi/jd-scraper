@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
-from src.linkedin.pace import Gate, Slot
+from src.linkedin.pace import Gate, PaceBusy, Slot
 
 
 def card_html(job_id: str, location: str = "Milan, Italy") -> str:
@@ -71,3 +71,17 @@ class FakePace:
         self.events.append((kind, slot.outcome))
         if slot.outcome == "throttled":
             self.retry_afters.append(slot.retry_after)
+
+
+class BusyPace(FakePace):
+    """A pace that never grants a turn: the caller must defer without a request."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.attempts = 0
+
+    @contextmanager
+    def slot(self, kind, *, overdue=False):
+        self.attempts += 1
+        raise PaceBusy("no turn")
+        yield

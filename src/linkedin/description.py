@@ -18,7 +18,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.http_session import retry_after_seconds
-from src.linkedin.pace import PaceGateClosed
+from src.linkedin.pace import PaceBusy, PaceGateClosed
 from src.linkedin.search import HEADERS, RETRY_WAITS, THROTTLE_STATUSES
 from src.services.pulse import pulse
 
@@ -86,9 +86,9 @@ def fetch_description(pace, job_id: str, *, overdue: bool = False,
                     else:
                         slot.neutral(status)
                         return FragmentResult("failed")
-        except PaceGateClosed:
-            # The schedule gate (quiet hours, the daily cap) closed between requests:
-            # hand the job back untouched, the caller retries next tick.
+        except (PaceGateClosed, PaceBusy):
+            # The schedule gate closed (quiet hours, the daily cap), or no turn was
+            # granted in time: hand the job back untouched, the caller retries next tick.
             return FragmentResult("deferred")
         if attempt < len(RETRY_WAITS):
             sleep(RETRY_WAITS[attempt])

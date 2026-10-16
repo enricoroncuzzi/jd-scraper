@@ -5,12 +5,13 @@ import pytest
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.description import extract_description, extract_posted_text, fetch_description
-from src.linkedin.pace import Gate, PaceGateClosed
+from src.linkedin.pace import Gate, PaceBusy, PaceGateClosed, linkedin_pace
+from src.linkedin.schedule import ScheduleConfig
 from src.linkedin.search import RETRY_WAITS
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
 from src.processor.describe import describe_next, expire_stale, refusal_delay, run_descriptions
-from tests.linkedin_fakes import FakePace, ScriptedGet, response
+from tests.linkedin_fakes import BusyPace, FakePace, ScriptedGet, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 ENGLISH = ("We are looking for an AI Engineer to build retrieval augmented generation pipelines, "
@@ -128,7 +129,7 @@ def test_a_refusal_keeps_the_job_in_line_and_doubles_the_wait(store_conn, cfg):
     job_id = _tiered_job(store_conn, cfg)
     for attempt, expected in ((1, timedelta(minutes=30)), (2, timedelta(hours=1))):
         later = NOW + timedelta(days=attempt)
-        get = ScriptedGet(*[response(429) for _ in range(4)])
+        get = ScriptedGet(*[response(403) for _ in range(4)])
         describe_next(store_conn, FakePace(), cfg, later, get=get, sleep=lambda _s: None)
         stage, _r, status, attempts, next_at, first_refused, _s = _state(store_conn, job_id)
         assert (stage, status, attempts) == ("seen", "rate_limited", attempt)
@@ -138,7 +139,7 @@ def test_a_refusal_keeps_the_job_in_line_and_doubles_the_wait(store_conn, cfg):
 
 def test_a_job_waiting_out_a_backoff_is_not_fetched_early(store_conn, cfg):
     _tiered_job(store_conn, cfg)
-    describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
+    describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(*[response(403)] * 4), sleep=lambda _s: None)
     get = ScriptedGet()
     assert describe_next(store_conn, FakePace(), cfg, NOW + timedelta(minutes=10), get=get,
                          sleep=lambda _s: None) is None
@@ -304,3 +305,109 @@ def test_a_gate_that_closes_mid_flight_defers_the_job_untouched(store_conn, cfg)
 
 def test_fetch_description_reports_a_gate_that_closed_between_requests():
     assert fetch_description(_ClosedPace(), "1", get=ScriptedGet(), sleep=lambda _s: None).status == "deferred"
+
+
+# -- host throttles carry no job penalty; the 24 h deadline guard (design 4.2/4.3) -------
+
+def test_a_throttled_description_goes_back_to_the_queue_without_a_penalty(store_conn, cfg):
+    job_id = _tiered_job(store_conn, cfg)
+    before = _state(store_conn, job_id)[4]
+    assert describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(response(429)),
+                         sleep=lambda _s: None) == "throttled"
+    stage, _r, status, attempts, next_at, refused_at, _src = _state(store_conn, job_id)
+    assert (stage, status, attempts, next_at, refused_at) == ("seen", "rate_limited", 0, before, NOW)
+    get = ScriptedGet(response(200, FRAGMENT))
+    assert describe_next(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == "described"
+
+
+def test_a_throttled_job_still_expires_seven_days_after_its_first_refusal(store_conn, cfg):
+    job_id = _tiered_job(store_conn, cfg)
+    describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(response(429)), sleep=lambda _s: None)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET first_refused_at = %s WHERE id = %s",
+                    (NOW - timedelta(days=8), job_id))
+    store_conn.commit()
+    assert expire_stale(store_conn, cfg, NOW) == 1
+    assert _state(store_conn, job_id)[:2] == ("expired", "description_refused")
+
+
+def test_a_job_specific_refusal_keeps_its_per_job_backoff(store_conn, cfg):
+    job_id = _tiered_job(store_conn, cfg)
+    describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(*[response(403)] * 4),
+                  sleep=lambda _s: None)
+    assert _state(store_conn, job_id)[3:5] == (1, NOW + timedelta(minutes=30))
+
+
+def test_a_403_job_at_the_head_of_the_queue_does_not_block_the_next_one(store_conn, cfg):
+    _tiered_job(store_conn, cfg, "3900000001")
+    second = _tiered_job(store_conn, cfg, "3900000002")
+    describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(*[response(403)] * 4),
+                  sleep=lambda _s: None)
+    get = ScriptedGet(response(200, FRAGMENT))
+    assert describe_next(store_conn, FakePace(), cfg, NOW + timedelta(minutes=1), get=get,
+                         sleep=lambda _s: None) == "described"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE stage = 'described'")
+        assert cur.fetchone()[0] == second
+
+
+def test_descriptions_are_overdue_once_the_oldest_waiting_job_is_a_day_old(store_conn, cfg):
+    job_id = _tiered_job(store_conn, cfg)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET first_seen_at = %s WHERE id = %s", (NOW - timedelta(hours=25), job_id))
+    store_conn.commit()
+    pace = FakePace()
+    describe_next(store_conn, pace, cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)), sleep=lambda _s: None)
+    assert pace.overdue_flags == [True]
+    fresh = _tiered_job(store_conn, cfg, "3900000002")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET first_seen_at = %s WHERE id = %s", (NOW - timedelta(hours=23), fresh))
+    store_conn.commit()
+    newer = FakePace()
+    describe_next(store_conn, newer, cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)), sleep=lambda _s: None)
+    assert newer.overdue_flags == [False]
+
+
+def test_a_job_in_backoff_does_not_make_the_queue_overdue(store_conn, cfg):
+    old = _tiered_job(store_conn, cfg, "3900000001")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET first_seen_at = %s, next_attempt_at = %s WHERE id = %s",
+                    (NOW - timedelta(hours=30), NOW + timedelta(hours=1), old))
+    fresh = _tiered_job(store_conn, cfg, "3900000002")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET first_seen_at = %s WHERE id = %s", (NOW - timedelta(hours=1), fresh))
+    store_conn.commit()
+    pace = FakePace()
+    describe_next(store_conn, pace, cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)), sleep=lambda _s: None)
+    assert pace.overdue_flags == [False]
+
+
+def test_a_busy_pace_defers_the_job_untouched(store_conn, cfg):
+    first = _tiered_job(store_conn, cfg, "3900000001")
+    _tiered_job(store_conn, cfg, "3900000002")
+    before = _state(store_conn, first)
+    get, pace = ScriptedGet(), BusyPace()
+    assert run_descriptions(store_conn, pace, cfg, NOW, get=get, sleep=lambda _s: None) == 1
+    assert pace.attempts == 1 and get.calls == []
+    assert _state(store_conn, first) == before
+
+
+def test_fetch_description_reports_a_busy_pace_as_deferred():
+    assert fetch_description(BusyPace(), "1", get=ScriptedGet(), sleep=lambda _s: None).status == "deferred"
+
+
+def test_the_shipped_processor_config_has_a_24_hour_description_deadline():
+    assert load_processor_config().description_deadline_hours == 24
+
+
+def test_the_processor_and_deliver_paces_give_up_after_the_description_budget(cfg):
+    pace = linkedin_pace("process", ScheduleConfig(), cfg.description_seconds_per_tick)
+    assert pace._options["give_up_after"] == 120
+
+
+def test_a_job_specific_refusal_also_ends_the_round(store_conn, cfg):
+    for n in range(3):
+        _tiered_job(store_conn, cfg, f"390000000{n + 1}")
+    get = ScriptedGet(*[response(403)] * 4)
+    assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
+    assert len(get.calls) == 4

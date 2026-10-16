@@ -15,6 +15,7 @@ import psycopg2
 import requests
 from dotenv import load_dotenv
 
+from src.http_session import new_session
 from src.jobstore.db import connect, store_url, utcnow
 from src.jobstore.schema import init_store
 from src.linkedin.catalog import (
@@ -84,8 +85,12 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
                        "new_jobs": result.new_jobs})
 
 
-def make_tick(pace, cfg: CollectorConfig, *, get=requests.get, sleep=time.sleep,
+def make_tick(pace, cfg: CollectorConfig, *, get=None, sleep=time.sleep,
               schedule: ScheduleConfig | None = None):
+    """Build the collector's tick, reusing one LinkedIn HTTP session for every walk."""
+    if get is None:
+        get = new_session().get
+
     def tick(conn) -> Tick:
         if legacy_run_active(cfg.legacy_lock_path):
             return Tick(False, {"waiting": "legacy cron run holds the lock"})
