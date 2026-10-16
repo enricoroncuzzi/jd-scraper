@@ -36,7 +36,7 @@ Every LinkedIn request the collector, the processor and the packaging stage make
 - a steady, slow pace that starts at 75 s weekday / 110 s weekend, jittered +/-20 %, never below the cap-derived floor (46 s / 81 s), tightened after three calm days and loosened after a bad one;
 - a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown, and refusals crowding an hour nudge the spacing up (at most 3x);
 - searches first, descriptions second, with a 24 h guard so a backlog cannot wait out the four-day window;
-- every area walked at least every 48 h.
+- every area walked within its cadence, with a 6 h tolerance on the 48 h bound.
 
 Slices carry their own cadence (`config/collector.json`, `due_hours` 12/24/48/24 plus per-area overrides, bounded by `min_interval_hours`/`max_interval_hours`). The ten large tier-3 countries are walked at most 20 pages per walk. freehire and Himalayas use the same patient approach: jittered 1-2 s / 2-5 s spacing and a bounded 429 wait, with the 30-minute resume timers for an unfinished walk. The live gate, budget and pace are in `python -m src.services.status`, and `deploy/RUNBOOK.md` carries the config tables and the deploy order.
 

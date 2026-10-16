@@ -200,7 +200,16 @@ def test_finishing_a_walk_schedules_the_next_one(store_conn):
     last_walked, reason, interval, empty, resume, due, pages = _slice_state(store_conn)
     assert last_walked == NOW and reason == "end_of_results" and pages == 3
     assert (interval, empty, resume) == (12 * H, 0, 0)
-    assert due == NOW + timedelta(minutes=2, seconds=12 * H)
+    assert due == NOW + timedelta(seconds=12 * H)
+
+
+def test_the_next_walk_is_measured_from_the_walk_start_not_the_finish(store_conn):
+    row = _seed_slice(store_conn, base=48 * H)
+    result = WalkResult(20, 200, 0, "area_cap", 86400, 200)
+    finish_walk(store_conn, row, result, NOW, NOW + timedelta(minutes=25),
+                _cfg(area_max_pages={"Italy": 20}))
+    last_walked, _r, _i, _e, _resume, due, _p = _slice_state(store_conn)
+    assert last_walked == NOW and due == NOW + timedelta(hours=48)
 
 
 def test_cap_hit_never_takes_a_slice_below_the_12_hour_floor(store_conn):

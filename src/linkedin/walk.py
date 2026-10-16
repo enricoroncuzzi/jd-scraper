@@ -185,6 +185,6 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
                 started_at if result.finished else row.last_walked_at,
                 result.window, result.pages, result.cards_seen, result.stop_reason,
                 consecutive_empty, interval, 0 if result.finished else result.next_start,
-                next_due(finished_at, interval, result.stop_reason), row.id,
+                next_due(started_at, interval, result.stop_reason), row.id,
             ),
         )

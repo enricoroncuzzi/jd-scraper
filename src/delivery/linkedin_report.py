@@ -46,6 +46,7 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
     schedule = schedule or load_schedule_config()
     collector = collector or load_collector_config()
     since = now - timedelta(hours=WINDOW_HOURS)
+    tolerance = collector.cadence_tolerance_hours * 3600
     with conn.cursor() as cur:
         cur.execute(
             "SELECT count(*), count(*) FILTER (WHERE kind = 'search'), "
@@ -56,14 +57,14 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         state = _pace_state(cur, now)
         cur.execute(
             "SELECT count(*) FILTER (WHERE last_walked_at IS NULL OR "
-            "last_walked_at < %s - make_interval(secs => interval_seconds)), count(*) "
-            "FROM slices WHERE active AND source = 'linkedin'", (now,))
+            "last_walked_at < %s - make_interval(secs => interval_seconds + %s)), count(*) "
+            "FROM slices WHERE active AND source = 'linkedin'", (now, tolerance))
         behind, active = cur.fetchone()
         cur.execute(
             "SELECT role, area FROM slices WHERE active AND source = 'linkedin' "
             "AND last_walked_at IS NOT NULL "
             "AND last_walked_at < %s - make_interval(secs => %s) ORDER BY role, area",
-            (now, collector.max_interval_hours * 3600))
+            (now, collector.max_interval_hours * 3600 + tolerance))
         past = cur.fetchall()
         cur.execute(
             "SELECT min(first_seen_at) FROM jobs WHERE stage = 'seen' AND tier IS NOT NULL "

@@ -191,3 +191,7 @@ def test_a_slice_the_adaptive_cadence_shortened_keeps_its_shorter_interval(store
 
 def test_the_shipped_collector_config_defers_after_three_refusals():
     assert load_collector_config().refused_pages_to_defer == 3
+
+
+def test_the_shipped_collector_config_has_a_six_hour_cadence_tolerance():
+    assert load_collector_config().cadence_tolerance_hours == 6

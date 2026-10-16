@@ -51,11 +51,20 @@ def test_the_block_names_slices_past_48_hours(store_conn):
     ], NOW)
     with store_conn.cursor() as cur:
         cur.execute("UPDATE slices SET last_walked_at = %s WHERE area = 'Italy'", (NOW - timedelta(hours=2),))
-        cur.execute("UPDATE slices SET last_walked_at = %s WHERE area = 'France'", (NOW - timedelta(hours=30),))
-        cur.execute("UPDATE slices SET last_walked_at = %s WHERE area = 'Germany'", (NOW - timedelta(hours=50),))
+        cur.execute("UPDATE slices SET last_walked_at = %s WHERE area = 'France'", (NOW - timedelta(hours=35),))
+        cur.execute("UPDATE slices SET last_walked_at = %s WHERE area = 'Germany'", (NOW - timedelta(hours=60),))
     store_conn.commit()
     lines = _lines(store_conn)
     assert lines[4] == "Slices behind cadence: 2 of 3; past 48h: AI Engineer / Germany"
+
+
+def test_the_block_tolerates_six_hours_past_the_cadence(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Germany", 3, 48 * H)], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET last_walked_at = %s", (NOW - timedelta(hours=50),))
+    store_conn.commit()
+    lines = _lines(store_conn)
+    assert lines[4] == "Slices behind cadence: 0 of 1; past 48h: none"
 
 
 def test_the_block_shows_the_oldest_job_waiting_for_a_description(store_conn):

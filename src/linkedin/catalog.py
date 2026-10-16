@@ -27,6 +27,7 @@ class CollectorConfig:
     refused_pages_to_defer: int = 3
     min_interval_hours: int = 12
     max_interval_hours: int = 48
+    cadence_tolerance_hours: int = 6
     skip_slices: frozenset = frozenset()  # (role, area) pairs that are not walked
 
     def max_pages_for(self, area: str) -> int:
@@ -66,6 +67,7 @@ def load_collector_config(path: str = COLLECTOR_CONFIG_PATH) -> CollectorConfig:
         raise ValueError("refused_pages_to_defer must be an integer >= 1")
     min_interval_hours = _require_int(data, "min_interval_hours", "collector", minimum=1)
     max_interval_hours = _require_int(data, "max_interval_hours", "collector", minimum=1)
+    cadence_tolerance_hours = _require_int(data, "cadence_tolerance_hours", "collector", minimum=0)
     if min_interval_hours > max_interval_hours:
         raise ValueError("collector.min_interval_hours must not exceed max_interval_hours")
     for label, hours in list(due_hours.items()) + list(area_due_hours.items()):
@@ -86,6 +88,7 @@ def load_collector_config(path: str = COLLECTOR_CONFIG_PATH) -> CollectorConfig:
         refused_pages_to_defer=refused_pages_to_defer,
         min_interval_hours=min_interval_hours,
         max_interval_hours=max_interval_hours,
+        cadence_tolerance_hours=cadence_tolerance_hours,
         skip_slices=skip_slices,
     )
 

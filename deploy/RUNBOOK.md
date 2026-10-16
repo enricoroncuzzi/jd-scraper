@@ -226,6 +226,7 @@ configured in `config/schedule.json`:
 |---|---|---|
 | `due_hours` | `12/24/48/24` | tier 1 / tier 2 / tier 3 / tier 4 base cadence, in hours |
 | `min_interval_hours` / `max_interval_hours` | `12` / `48` | hard bounds on any adaptive interval |
+| `cadence_tolerance_hours` | `6` | a slice counts as past its cadence only beyond its interval plus this tolerance |
 | `area_max_pages` | ten countries at `20` | the page cap for the ten large tier-3 countries, a walk that reaches it ends as `area_cap` |
 | `refused_pages_to_defer` | `3` | refusals in a row before a walk defers its slice |
 
@@ -363,11 +364,12 @@ WHERE s.source = 'linkedin' AND s.active AND w.walked_at > now() - interval '7 d
 GROUP BY 1 ORDER BY 2 DESC;
 ```
 
-Active slices whose last walk is older than 48 h:
+Active slices whose last walk is older than 48 h plus the 6 h cadence tolerance:
 
 ```sql
 SELECT role, area, last_walked_at FROM slices
-WHERE active AND source = 'linkedin' AND (last_walked_at IS NULL OR last_walked_at < now() - interval '48 hours')
+WHERE active AND source = 'linkedin'
+  AND (last_walked_at IS NULL OR last_walked_at < now() - (interval '48 hours' + interval '6 hours'))
 ORDER BY last_walked_at NULLS FIRST;
 ```
 

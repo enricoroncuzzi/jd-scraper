@@ -7,6 +7,7 @@
   },
   "min_interval_hours": 12,
   "max_interval_hours": 48,
+  "cadence_tolerance_hours": 6,
   "max_pages_per_slice": 90,
   "area_max_pages": {
     "Belgium": 20,
