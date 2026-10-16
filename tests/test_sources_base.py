@@ -228,3 +228,10 @@ def test_a_non_ascii_rate_limit_header_is_ignored():
     get = Scripted(_response(body={}, headers={"X-RateLimit-Remaining": "\u00b2", "X-RateLimit-Reset": "\u00b2"}))
     client, sleeps, _clock = _client(get)
     assert client.get_json("/jobs", {}) == {}
+
+
+def test_a_non_ascii_reset_header_is_ignored():
+    get = Scripted(_response(body={}, headers={"X-RateLimit-Remaining": "1", "X-RateLimit-Reset": "\u00b2"}))
+    client, sleeps, _clock = _client(get)
+    assert client.get_json("/jobs", {}) == {}
+    assert sleeps == [5]
