@@ -9,7 +9,10 @@ from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.catalog import CollectorConfig, SOURCE
 from src.linkedin.pace import PaceGateClosed
 from src.linkedin.search import Page, SearchFailed, SearchThrottled, fetch_page
-from src.linkedin.windows import f_tpr, next_due, next_interval, window_seconds
+from src.linkedin.windows import (
+    DEFAULT_MAX_INTERVAL_SECONDS, DEFAULT_MIN_INTERVAL_SECONDS, f_tpr, next_due, next_interval,
+    window_seconds,
+)
 from src.services.pulse import pulse
 
 # Stop reasons that leave the slice unfinished: it resumes from `next_start`.
@@ -43,24 +46,16 @@ class WalkResult:
         return self.stop_reason not in UNFINISHED
 
 
-def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
-                    taper_below_seconds: int | None = None) -> SliceRow | None:
+def claim_due_slice(conn, now: datetime, source: str = SOURCE) -> SliceRow | None:
     """The next due slice of `source`: tier 1 first, oldest due first. One collector per
-    source, so no row lock.
-
-    `taper_below_seconds` is the weekend taper: when set, a slice whose *base* cadence is
-    that long or longer is skipped (its window simply grows, nothing is lost)."""
+    source, so no row lock."""
     query = (
         "SELECT id, role, area, tier, base_interval_seconds, interval_seconds, last_walked_at, "
         "consecutive_empty, resume_start FROM slices "
         "WHERE active AND source = %s AND due_at <= %s")
-    params: list = [source, now]
-    if taper_below_seconds is not None:
-        query += " AND base_interval_seconds < %s"
-        params.append(taper_below_seconds)
     query += " ORDER BY tier, due_at LIMIT 1"
     with conn.cursor() as cur:
-        cur.execute(query, params)
+        cur.execute(query, (source, now))
         row = cur.fetchone()
     return SliceRow(*row) if row else None
 
@@ -84,7 +79,7 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
     refusals = 0        # consecutive refusals in this walk
     distrust = False    # True right after a refusal: an empty 200 is not trusted
 
-    while pages < cfg.max_pages_per_slice:
+    while pages < cfg.max_pages_for(row.area):
         pulse({"slice": f"{row.role} / {row.area}", "pages": pages, "new_jobs": new_jobs})
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
@@ -142,24 +137,32 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
             stop_reason = "known_page"
             break
     else:
-        stop_reason = "cap_hit" if last_page_full else "end_of_results"
+        if not last_page_full:
+            stop_reason = "end_of_results"
+        elif cfg.max_pages_for(row.area) < cfg.max_pages_per_slice:
+            stop_reason = "area_cap"
+        else:
+            stop_reason = "cap_hit"
 
     return WalkResult(pages, cards_seen, new_jobs, stop_reason, window, start)
 
 
 def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
-                finished_at: datetime) -> None:
+                finished_at: datetime, cfg: CollectorConfig | None = None) -> None:
     """Persist the walk on the slice and schedule the next one. The caller commits.
 
     A walk that did not finish keeps last_walked_at, so the next window still
     reaches back to the last complete walk, and resumes at result.next_start.
+    The 12-48 h bounds come from the collector config when one is given.
     """
     empty = result.finished and result.cards_seen == 0
     consecutive_empty = row.consecutive_empty + 1 if empty else (
         0 if result.cards_seen else row.consecutive_empty)
     interval = next_interval(
         base=row.base_interval_seconds, current=row.interval_seconds,
-        stop_reason=result.stop_reason, consecutive_empty=consecutive_empty)
+        stop_reason=result.stop_reason, consecutive_empty=consecutive_empty,
+        min_interval=(cfg.min_interval_hours * 3600 if cfg else DEFAULT_MIN_INTERVAL_SECONDS),
+        max_interval=(cfg.max_interval_hours * 3600 if cfg else DEFAULT_MAX_INTERVAL_SECONDS))
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO slice_walks (slice_id, walked_at, pages, cards_seen, new_jobs, stop_reason, "

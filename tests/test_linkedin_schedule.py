@@ -22,7 +22,11 @@ def test_the_shipped_schedule_loads():
     assert (cfg.weekday_cap, cfg.weekend_cap) == (1400, 800)
     assert (cfg.breaker_refusals, cfg.breaker_window_minutes) == (3, 30)
     assert cfg.rest_ladder_hours == (2, 6, 24)
-    assert cfg.weekend_taper_min_interval_hours == 24
+
+
+def test_a_leftover_taper_key_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="removed"):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS, "weekend_taper_min_interval_hours": 24}))
 
 
 def test_the_shipped_schedule_carries_the_pace_and_refusal_numbers():
@@ -129,7 +133,6 @@ DEFAULTS = {
     "closed_hours": [0, 6],
     "daily_caps": {"weekday": 1400, "weekend": 800},
     "breaker": {"refusals": 3, "window_minutes": 30, "rest_ladder_hours": [2, 6, 24]},
-    "weekend_taper_min_interval_hours": 24,
     "pace": {
         "start_spacing_seconds": {"weekday": 75, "weekend": 110},
         "jitter": 0.2,
@@ -160,7 +163,6 @@ PACE, TIGHTEN, REFUSALS = DEFAULTS["pace"], DEFAULTS["pace"]["tighten"], DEFAULT
     {"breaker": {"refusals": 0, "window_minutes": 30, "rest_ladder_hours": [2]}},
     {"breaker": {"refusals": 3, "window_minutes": 0, "rest_ladder_hours": [2]}},
     {"breaker": {"refusals": 3, "window_minutes": 30, "rest_ladder_hours": []}},
-    {"weekend_taper_min_interval_hours": 0},
     {"pace": {**PACE, "jitter": 0.6}},
     {"pace": {**PACE, "tighten": {**TIGHTEN, "step": 0}}},
     {"pace": {**PACE, "tighten": {**TIGHTEN, "calm_refusal_rate": 1.5}}},

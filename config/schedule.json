@@ -10,7 +10,6 @@
     "window_minutes": 30,
     "rest_ladder_hours": [2, 6, 24]
   },
-  "weekend_taper_min_interval_hours": 24,
   "pace": {
     "start_spacing_seconds": {"weekday": 75, "weekend": 110},
     "jitter": 0.2,

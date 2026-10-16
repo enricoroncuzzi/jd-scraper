@@ -1,11 +1,15 @@
+import json
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from src.linkedin.catalog import (
-    SliceSpec, build_slices, load_collector_config, load_tier_configs, sync_slices,
+    SliceSpec, build_slices, clamp_cadence, load_collector_config, load_tier_configs, sync_slices,
 )
+
+NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+H = 3600
 
 
 def _real_specs():
@@ -32,14 +36,58 @@ def test_the_reduction_drops_the_redundant_roles_and_keeps_only_ai_engineer_in_s
             ("ML Engineer", "Germany"), ("ML Engineer", "United Kingdom")} <= pairs
 
 
-def test_the_cadence_follows_the_area_overrides_then_the_tier():
-    hours = Counter(s.base_interval_seconds // 3600 for s in _real_specs())
-    assert hours == {4: 3, 6: 3, 12: 44, 24: 24, 48: 1, 72: 52}
-    by_area = {s.area: s.base_interval_seconds // 3600 for s in _real_specs()}
-    assert by_area["Malta"] == by_area["Liechtenstein"] == 72
-    assert by_area["Greece"] == by_area["Finland"] == 24
-    assert by_area["Germany"] == by_area["United Kingdom"] == 12
-    assert by_area["Italy"] == 4 and by_area["Switzerland"] == 6 and by_area["San Marino, San Marino"] == 48
+def test_the_shipped_cadences_keep_every_area_within_48_hours():
+    cadence = {(s.role, s.area): s.base_interval_seconds // H for s in _real_specs()}
+    by_area = {area: hours for (_role, area), hours in cadence.items()}
+    assert by_area["Italy"] == 12 and by_area["Switzerland"] == 24 and by_area["United Kingdom"] == 24
+    assert by_area["San Marino, San Marino"] == 48 and by_area["Germany"] == 48
+    assert by_area["Slovakia"] == 48 and by_area["Greece"] == 24
+    assert all(12 <= hours <= 48 for hours in cadence.values())
+
+
+def test_the_ten_large_areas_are_capped_at_20_pages_and_the_rest_at_90():
+    cfg = load_collector_config()
+    assert set(cfg.area_max_pages) == {"Belgium", "France", "Germany", "Ireland", "Netherlands",
+                                      "Poland", "Portugal", "Romania", "Spain", "Sweden"}
+    assert cfg.max_pages_for("Germany") == 20 and cfg.max_pages_for("Italy") == 90
+
+
+@pytest.mark.parametrize("change", [{"due_hours": {"1": 12, "2": 24, "3": 72, "4": 24}},
+                                    {"area_due_hours": {"Malta": 6}},
+                                    {"min_interval_hours": 0}])
+def test_a_cadence_outside_the_bounds_is_rejected(tmp_path, change):
+    data = json.load(open("config/collector.json"))
+    data.update(change)
+    path = tmp_path / "collector.json"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        load_collector_config(str(path))
+
+
+def test_an_unknown_area_in_the_page_caps_is_an_error():
+    with pytest.raises(ValueError, match="Atlantis"):
+        build_slices(load_tier_configs(), {1: 12, 2: 24, 3: 48, 4: 24}, area_max_pages={"Atlantis": 20})
+
+
+def test_the_clamp_pulls_shortened_and_overlong_slices_into_range(store_conn):
+    sync_slices(store_conn, [
+        SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
+        SliceSpec("linkedin", "AI Engineer", "Germany", 3, 48 * H),
+        SliceSpec("linkedin", "AI Engineer", "France", 3, 24 * H),
+    ], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET interval_seconds = 3600 WHERE area = 'Italy'")
+        cur.execute("UPDATE slices SET last_walked_at = %s, interval_seconds = 72 * 3600, "
+                    "due_at = %s + interval '72 hours' WHERE area = 'Germany'", (NOW, NOW))
+        cur.execute("UPDATE slices SET interval_seconds = 24 * 3600 WHERE area = 'France'")
+    store_conn.commit()
+    assert clamp_cadence(store_conn, "linkedin", 12 * H, 48 * H) == 2
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT area, interval_seconds, due_at FROM slices ORDER BY area")
+        rows = {area: (interval, due) for area, interval, due in cur.fetchall()}
+    assert rows["Italy"][0] == 12 * H
+    assert rows["Germany"][0] == 48 * H and rows["Germany"][1] == NOW + timedelta(hours=48)
+    assert rows["France"][0] == 24 * H
 
 
 def test_a_typo_in_the_overrides_or_skips_is_an_error_not_a_silent_full_cost_slice():
@@ -62,7 +110,7 @@ def test_tier_areas_are_the_ones_the_old_searches_used():
 def test_base_cadence_follows_the_tier_without_overrides():
     config = load_collector_config()
     cadence = {s.tier: s.base_interval_seconds for s in build_slices(load_tier_configs(), config.due_hours)}
-    assert cadence == {1: 4 * 3600, 2: 6 * 3600, 3: 12 * 3600, 4: 12 * 3600}
+    assert cadence == {1: 12 * 3600, 2: 24 * 3600, 3: 48 * 3600, 4: 24 * 3600}
 
 
 def test_the_roles_are_the_four_current_searches():

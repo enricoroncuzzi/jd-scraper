@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
 from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
-from src.linkedin.collector import collect_once, make_tick
+from src.linkedin.collector import collect_once, make_tick, sync_and_clamp
 from src.linkedin.pace import Gate
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 SAT = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+H = 3600
 CFG = CollectorConfig(due_hours={1: 4, 3: 12}, legacy_lock_path=None)
 
 
@@ -76,13 +77,21 @@ def test_a_closed_schedule_gate_makes_the_tick_idle_without_a_request(store_conn
     assert get.calls == []
 
 
-def test_the_weekend_taper_skips_slices_at_twentyfour_hours_or_longer(store_conn):
-    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 172800),
-            SliceSpec("linkedin", "AI Engineer", "Germany", 3, 14400))
-    for now, expected in ((NOW, "AI Engineer / Italy"), (SAT, "AI Engineer / Germany")):
-        with store_conn.cursor() as cur:
-            cur.execute("UPDATE slices SET due_at = %s", (NOW - timedelta(days=1),))
-        store_conn.commit()
-        tick = collect_once(store_conn, FakePace(), CFG, now=now,
-                            get=ScriptedGet(response(200, page_html())), sleep=lambda _s: None)
-        assert tick.detail["slice"] == expected, now
+def test_the_weekend_walks_a_due_daily_slice(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Switzerland", 2, 24 * 3600))
+    get = ScriptedGet(response(200, page_html(*ids(0, 2))), response(200, page_html()))
+    tick = collect_once(store_conn, FakePace(), CFG, now=SAT, get=get, sleep=lambda _s: None)
+    assert tick.did_work and tick.detail["slice"] == "AI Engineer / Switzerland"
+
+
+def test_startup_sync_also_clamps_the_cadence(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H)], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET interval_seconds = 3600")
+    store_conn.commit()
+    counts = sync_and_clamp(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H)], CFG)
+    store_conn.commit()
+    assert counts["clamped"] == 1
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT interval_seconds FROM slices")
+        assert cur.fetchone() == (12 * H,)

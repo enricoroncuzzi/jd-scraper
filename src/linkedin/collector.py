@@ -18,10 +18,11 @@ from dotenv import load_dotenv
 from src.jobstore.db import connect, store_url, utcnow
 from src.jobstore.schema import init_store
 from src.linkedin.catalog import (
-    CollectorConfig, build_slices, load_collector_config, load_tier_configs, sync_slices,
+    SOURCE, CollectorConfig, build_slices, clamp_cadence, load_collector_config, load_tier_configs,
+    sync_slices,
 )
 from src.linkedin.pace import ManagedPace
-from src.linkedin.schedule import ScheduleConfig, is_weekend, load_schedule_config
+from src.linkedin.schedule import ScheduleConfig, load_schedule_config
 from src.linkedin.walk import WalkResult, claim_due_slice, finish_walk, walk_slice
 from src.services.legacy_guard import legacy_run_active
 from src.services.runner import Tick, run_service
@@ -35,15 +36,22 @@ def _current_resume_start(conn, slice_id: int) -> int:
         return cur.fetchone()[0]
 
 
+def sync_and_clamp(conn, specs, cfg: CollectorConfig) -> dict[str, int]:
+    """Create or refresh the slices, then pull every stored interval into the
+    configured 12-48 h range (the deploy clamp). The caller commits."""
+    counts = sync_slices(conn, specs)
+    counts["clamped"] = clamp_cadence(conn, SOURCE, cfg.min_interval_hours * 3600,
+                                      cfg.max_interval_hours * 3600)
+    return counts
+
+
 def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = None,
                  get=requests.get, sleep=time.sleep,
                  schedule: ScheduleConfig | None = None) -> Tick:
     """Walk the next due slice, if any.
 
-    The schedule gate (quiet hours, shared daily cap, breaker rest) is checked before a
-    slice is claimed, so a closed gate is one idle tick, not a request. On Saturday and
-    Sunday the weekend taper skips slices whose base cadence is 24 h or longer; their
-    window grows, so nothing is lost.
+    The schedule gate (quiet hours, shared daily cap) is checked before a slice is
+    claimed, so a closed gate is one idle tick, not a request.
 
     One slice's unexpected failure must not wedge the collector on a poison card:
     it becomes a retryable `error` (due again in 30 minutes, resuming where the
@@ -56,9 +64,7 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
     if not gate.open:
         return Tick(False, {"waiting": f"linkedin {gate.reason}", "requests_today": gate.requests_today,
                             "cap": gate.cap})
-    taper = (schedule.weekend_taper_min_interval_hours * 3600
-             if is_weekend(schedule, started) else None)
-    row = claim_due_slice(conn, started, taper_below_seconds=taper)
+    row = claim_due_slice(conn, started)
     if row is None:
         return Tick(False, {"due_slices": 0})
     try:
@@ -70,7 +76,7 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
         print(f"[{SERVICE}] tier {row.tier} {row.role} / {row.area} failed: "
               f"{type(exc).__name__}: {exc}")
         result = WalkResult(0, 0, 0, "error", 0, _current_resume_start(conn, row.id))
-    finish_walk(conn, row, result, started, now or utcnow())
+    finish_walk(conn, row, result, started, now or utcnow(), cfg)
     conn.commit()
     print(f"[{SERVICE}] tier {row.tier} {row.role} / {row.area}: {result.pages} pages, "
           f"{result.cards_seen} cards, {result.new_jobs} new, stop={result.stop_reason}")
@@ -95,13 +101,14 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     cfg = load_collector_config()
     schedule = load_schedule_config()
-    specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices)
+    specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices,
+                         cfg.area_max_pages)
 
     if args.sync_slices or args.once:
         conn = connect(store_url())
         try:
             init_store(conn)
-            counts = sync_slices(conn, specs)
+            counts = sync_and_clamp(conn, specs, cfg)
             conn.commit()
             print(f"[{SERVICE}] slices: {counts}, total configured {len(specs)}")
             if args.once:
@@ -112,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     def sync_then_tick(conn) -> Tick:
-        counts = sync_slices(conn, specs)
+        counts = sync_and_clamp(conn, specs, cfg)
         conn.commit()
         if any(counts.values()):
             print(f"[{SERVICE}] slices: {counts}")

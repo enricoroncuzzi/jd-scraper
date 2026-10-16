@@ -55,7 +55,6 @@ class ScheduleConfig:
     breaker_refusals: int = 3
     breaker_window_minutes: int = 30
     rest_ladder_hours: tuple[int, ...] = (2, 6, 24)
-    weekend_taper_min_interval_hours: int = 24
     pace: PacePolicy = PacePolicy()
     refusals: RefusalPolicy = RefusalPolicy()
 
@@ -174,7 +173,10 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
             or not all(isinstance(h, int) and not isinstance(h, bool) and h >= 1 for h in ladder)):
         raise ValueError("schedule.breaker.rest_ladder_hours must be a non-empty list of positive integers")
 
-    taper = _require_int(data, "weekend_taper_min_interval_hours", "schedule", minimum=1)
+    taper = data.get("weekend_taper_min_interval_hours")
+    if taper is not None:
+        raise ValueError("schedule.weekend_taper_min_interval_hours was removed "
+                         "(design 2026-10-16); delete it")
     return ScheduleConfig(
         timezone=timezone_name,
         closed_hours=(closed[0], closed[1]),
@@ -183,7 +185,6 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
         breaker_refusals=refusals,
         breaker_window_minutes=window_minutes,
         rest_ladder_hours=tuple(ladder),
-        weekend_taper_min_interval_hours=taper,
         pace=_load_pace(data),
         refusals=_load_refusals(data),
     )
