@@ -1,59 +1,78 @@
 # jd-scraper - grounded LLM pipeline for AI/ML job hunting
 
-> A production pipeline that scrapes AI/ML job postings across four regions daily, verifies remote eligibility and scores fit with structured LLM output, stores everything in a Postgres corpus, and tailors a CV, cover letter, and recruiter message per posting, with every CV bullet taken from the real CV.
+> A production job-hunt pipeline that collects AI/ML postings across four regions, verifies remote eligibility and scores fit with structured LLM output, keeps everything in a server-side Postgres job store (archived to Neon), and tailors a CV, cover letter, and recruiter message per posting, with every CV bullet taken from the real CV.
 
-Built solo, test-driven, running unattended in production.
+Built solo, test-driven, running unattended in production as systemd services.
 
 ## The interesting part: grounded generation, enforced in code
 
-The hard problem here isn't scraping, it's making an LLM produce text a hiring manager can trust. Two design choices do that:
+The hard problem here isn't collecting jobs, it's making an LLM produce text a hiring manager can trust. Three design choices do that:
 
 - **Structured output everywhere an LLM touches the pipeline.** Scoring (`src/scorer.py`), remote-eligibility verification (`src/remote_verifier.py`), and CV tailoring (`src/tailor/generate.py`) each define a Pydantic schema and parse the model's response into it. No regex on free text, no brittle string parsing.
 - **Anti-hallucination enforced at runtime, not by prompt wording.** `src/tailor/cv_master.py`'s `assemble()` never asks the LLM to write CV content: every bullet is included in canonical order, and only the skill groups are reordered, verbatim, from a hand-written canonical CV. The LLM only writes the cover-letter hook/bridge and the recruiter message. `src/tailor/validate.py` then byte-matches the assembled CV against six required metrics (e.g. `"94.1%"`, `"10.5M"`) and halts the run if one is missing. The cover letter is checked for banned phrases, length, and a concrete bridge. Hook claims are written to `CLAIMS_REVIEW.txt` for a person to confirm, rather than trusting the model to have been careful.
-- **A Postgres corpus of scored, full-text job descriptions** (`src/storage.py`), the kind of ground-truth data set an eval or retrieval layer would need, growing daily from real production traffic rather than a scraped-once snapshot.
+- **A server-side Postgres job store** (`src/jobstore/schema.py`) that is the only state the collector, processor and delivery services share, with every stage committing per job or per batch so a restart resumes where it stopped. Finished jobs are copied in batches to a Neon archive (`src/delivery/archive.py`) that holds the scored, full-text corpus, the kind of ground-truth data set an eval or retrieval layer would need, growing daily from real traffic rather than a scraped-once snapshot.
 
-## What runs daily, zero-touch
+## How it runs today: a job store and long-running services
 
-1. **Scrape** - four region-scoped LinkedIn sweeps, paginated per query up to a per-tier page cap (`search.max_pages_per_query` in each tier config, resolved by `src/scraper.py`), where each page advances `start` by the number of cards the endpoint actually returned rather than by an assumed page size: tier 1 Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA full-remote, tier 4 United Kingdom full-remote. A tier narrows its results to the countries listed in its config's `search.allowed_countries` (enforced by `src/tier_scope.py`); tiers 1 and 4 list none and do no narrowing. Requests are paced, and a 429 (or LinkedIn's 999 anti-bot refusal) widens the gap. Descriptions are kept when they are English, Spanish, or Italian (`src/language_filter.py`); very short text, and text the detector cannot classify, is kept too.
-2. **Verify** - when the tier enables it, `src/remote_verifier.py` runs an LLM (OpenRouter `nvidia/nemotron-3-super-120b-a12b:free` primarily, falling back to Groq `openai/gpt-oss-20b` when that share is spent or a batch fails; the daily OpenRouter verification share is 4/10 of the allowance in `config/llm_limits.json`, 400 of 1000 requests, and only that stage is capped) over each description and rules it confirmed, rejected, or unconfirmed for genuine remote eligibility. Tier 2 leaves this off, because that sweep accepts any work mode. Verification runs before scoring, and every failure mode (no API key, an incomplete batch, an ambiguous description, both providers unavailable) resolves to unconfirmed instead of silently dropping a real job.
-3. **Score** - every remaining posting is rated for fit against my profile by an LLM on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a 3-model native fallback array: `dots-studio/dots-3-note-preview:free`, `liquid/lfm-2.5-2.6b:free`, `apodex/apodex-1.1-mini:free`), returning structured Pydantic output with a one-line rationale. The shipped score cutoff is 8.
-4. **Store** - every scored offer persists to a Neon Postgres corpus, full text included. Each run records telemetry for the tier, each search, and each LLM call (`src/telemetry.py`), which the morning report reads.
-5. **Digest** - a ranked `digest.md` per tier lands in Obsidian, alongside a `rejected.md` audit trail of what verification screened out and why, plus a Telegram summary.
-6. **Tailor** - one click on any offer in the digest runs the CV tailoring engine end to end, and the daily run does the same for offers that clear the cutoff. Each offer gets its own package directory.
-7. **Morning health report** - Telegram gets nine messages a day: each tier sends its results message and then, as soon as that tier finishes, its own health report with a legend; when the whole four-tier cron run ends, `orchestrator.py` sends a final day summary with per-tier totals (found, scored, 8+, packaged). On the server, `python scripts/run_report.py day` prints the same view (`trend`, `compare`, and `llm` in `scripts/run_report.py`).
+The production path is no longer a once-a-day cron run. It is long-running services around a PostgreSQL job store on the server. Services never call each other; the store is their only shared state. The install, switch-over and rollback procedure, including the systemd units in `deploy/systemd/`, lives in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
 
-`LinkedIn -> scrape/dedup/filter -> remote verifier (OpenRouter, Groq fallback) -> LLM scorer (OpenRouter) -> Postgres corpus -> digest.md + Telegram -> [tailor] -> OpenRouter generation + validation gate -> PDF`
+- **LinkedIn collector** (`jds-collect-linkedin`, `src/linkedin/collector.py`) - walks "slices", one per role and area, built from the four tier configs by `src/linkedin/catalog.py` into the `slices` table, and records every card as a sighting. It never fetches a description and never judges a job.
+- **Daily source collectors** (`jds-collect-freehire`, `jds-collect-himalayas`, `src/sources/`) - one oneshot pull a day each (03:00 and 04:00) from freehire.me and Himalayas, whose public JSON APIs return full descriptions inline. Configured in `config/sources.json`.
+- **Processor** (`jds-process`, `src/processor/runner.py`) - the stage machine: expire stale jobs, cheap no-network checks (tier assignment, cross-source merge, title pre-filter, language), deterministic remote rules, the LLM remote check, LLM scoring, then LinkedIn description fetches through the shared pace. Batch sizes, backoff and tick limits are in `config/processor.json`; the score cutoff, keywords and candidate profile come from the tier configs.
+- **Delivery** (`jds-deliver`, `src/delivery/`) - immediate Telegram alerts for jobs at or above the cutoff, the daily delivery at 08:00 Europe/Rome (one digest per tier plus a day summary with collection, budget and service health), draft-and-notify auto-tailoring of above-cutoff jobs, and the periodic Neon archive copy. Timing and expectations are in `config/deliver.json`.
+- **Watchdog** (`jds-watchdog.timer`, `src/services/watchdog.py`) - every ten minutes, messages Telegram when a service has been silent for over an hour, a source collector is past its interval, nothing has been collected for six hours, or the job store is unreachable.
+- **Nightly backup** (`jds-backup.timer`, `deploy/backup-jobstore.sh`) - a `pg_dump` of the job store, keeping the seven newest dumps.
 
-The scraper runs on a VPS via cron. Tailoring runs on demand, one click from the digest, and every tailored offer lands in its own directory.
+`LinkedIn slices -> sightings -> cheap checks -> description -> remote check -> score -> delivery (digest + alerts) -> [tailor] -> OpenRouter generation + validation gate -> PDF -> Neon archive`
 
-The redesign turns this into long-running services (a LinkedIn collector, daily freehire.me and Himalayas collectors, a processor, a delivery service, a watchdog and a nightly backup) around a server-side PostgreSQL job store. The operational procedure for installing, switching to, watching and rolling back those services lives in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
+The `jobs` table is the stage machine: `seen -> described -> filtered_out | scored -> delivered | expired`. `sightings` records every source that saw a posting, `job_applications` the packaged ones, and `service_heartbeats`/`pace_events`/`llm_calls` the operational record. The pre-redesign entrypoints (`main.py`, `orchestrator.py`, `src/scraper.py`) still ship during the switch-over window; `deploy/RUNBOOK.md` covers their retirement.
+
+## The LinkedIn schedule (schedule C)
+
+Every LinkedIn request the collector, the processor and the packaging stage make passes one choke point, `src/linkedin/pace.py`, so they cannot exceed a shared budget together or have two requests in flight. `config/schedule.json` sets the policy:
+
+- quiet hours 00:00-06:00 Europe/Rome;
+- a shared daily budget of 1,400 requests on weekdays and 800 at weekends, on the Rome calendar day;
+- a circuit breaker that rests LinkedIn for 2h, then 6h, then 24h after repeated refusals;
+- a weekend taper that skips slices whose base cadence is a day or longer.
+
+The rate adapts: a throttle doubles the spacing (up to 100x) and starts a cooldown, and calm periods and clean streaks bring it back down. Slices carry their own cadence (`config/collector.json`, plus per-area overrides), so a slow area is walked less often than a fast one. The live gate, budget and pace are in `python -m src.services.status`.
+
+## LLM stages and caps
+
+Remote verification runs on OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`, with a three-model native fallback chain) and falls back to Groq `openai/gpt-oss-20b`. Verification is capped at 4/10 of the account-wide OpenRouter allowance (400 of 1,000 requests), and only that stage is capped. Scoring uses the same OpenRouter primary and fallback chain. Daily provider limits live in `config/llm_limits.json` (Groq 200,000 tokens; OpenRouter 1,000 free-model requests per account), and the processor stops the LLM stages at `llm_stop_at_requests` (950 today) to leave headroom for tailoring.
 
 ## CV tailoring, working today
 
 `tailor.py <job>` calls OpenRouter (`nvidia/nemotron-3-super-120b-a12b:free`) to reorder skill groups from a canonical CV for the specific job description. Every bullet is included, in canonical order. The model writes only the cover letter's hook/bridge and the recruiter message as free text. Everything else in the CV is copied byte-for-byte. The validation gate in `src/tailor/validate.py` aborts the run if a required metric is missing, or if the cover letter fails its checks for banned phrases, length, and a concrete bridge. Hook claims are written to `CLAIMS_REVIEW.txt` for a person to confirm. Headless Chromium then renders CV, cover letter, and recruiter message to PDF, reproducing the original template offline, and the CV must stay a single page. The package is one directory per offer.
 
-Each digest entry also has ⭐ golden and 👎 not for me links. After a confirmation dialog they record the offer in the `offer_labels` table (one label per posting, re-clicking is a no-op), building a labelled set for evals. `python label.py --list golden` prints it and `python label.py --remove golden <link-or-note>` undoes a label. The handler is installed by `scripts/install-tailor-app.command`.
+The delivery service runs the same engine automatically for above-cutoff jobs and only notifies: it is a draft-and-notify system with no code path that submits an application. Each digest entry also has ⭐ golden and 👎 not for me links. After a confirmation dialog they record the offer in the `offer_labels` table (one label per posting, re-clicking is a no-op), building a labelled set for evals. `python label.py --list golden` prints it and `python label.py --remove golden <link-or-note>` undoes a label. The handler is installed by `scripts/install-tailor-app.command`.
 
 ## Tech stack
 
-`Python` - `OpenRouter` & `Groq` LLM APIs - `Pydantic` - `PostgreSQL (Neon)` - `Playwright` (headless Chromium) - `LangChain` (thin scoring adapter over OpenRouter) - `pytest` (TDD)
+`Python` - `OpenRouter` & `Groq` LLM APIs - `Pydantic` - `PostgreSQL` (server job store + Neon archive) - `systemd` - `Playwright` (headless Chromium) - `LangChain` (thin scoring adapter) - `BeautifulSoup` (source parsing) - `pytest` (TDD)
 
 ## Engineering notes
 
 - **Test-driven throughout**: `.venv/bin/python -m pytest tests/`, every module built red to green. Count them with `pytest tests/ --collect-only -q`; the number moves.
-- **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and tailoring (skill order, cover letter, recruiter message), no string-parsed output.
-- **No silent loss**: the dedup log records offers that were *handled*, not merely fetched. Whatever scoring never reached (a quota-exhausted or 5xx day) is written to a per-tier retry queue (`src/retry_queue.py`) with its description and remote verdict intact, re-scored ahead of fresh offers by the next run, expired after 3 days, and counted in the digest and Telegram summary. A description LinkedIn rate-limited is queued on that same path, refetched next run, and dropped after 2 days.
-- **Resilience by design**: quota-aware exponential backoff (`src/retry.py`) and batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying. Late-stage notification calls are guarded so a Telegram outage degrades the message rather than the run: an uncaught error there used to re-trigger the whole tier, re-scraping and re-scoring up to four times.
-- **Anti-hallucination in code, not just the prompt**: the CV is checked at runtime against the canonical source, not left to an instruction the model can ignore. The cover letter is checked for banned phrases, length, and a concrete bridge. Hook claims are listed in `CLAIMS_REVIEW.txt` for a person to confirm, not matched against the canonical CV.
+- **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and tailoring, no string-parsed output.
+- **No silent loss**: every stage transition is one `UPDATE` in the caller's transaction, and each stage commits per job or per batch, so a crash leaves a job exactly where it was and the next tick picks it up. A description LinkedIn refuses keeps its place and doubles its wait (30 minutes up to 12 hours); a job expires after seven days of refusals or when the posting is over 30 days old.
+- **Resilience by design**: batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying. A quota day stops the LLM stages and leaves jobs waiting, not lost.
+- **Shared LinkedIn pace**: the quiet window, the shared daily budget, the circuit breaker and the adaptive spacing all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
+- **Anti-hallucination in code, not just the prompt**: the CV is checked at runtime against the canonical source, not left to an instruction the model can ignore. The cover letter is checked for banned phrases, length, and a concrete bridge. Hook claims are listed in `CLAIMS_REVIEW.txt` for a person to confirm.
 
 ## By the numbers
 
 | Metric | Value | Verified via |
 |---|---|---|
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
-| Max pages per query | **16-100** per tier (~160-1000 cards at the endpoint's current 10/request); LinkedIn serves at most about 100 pages per search, so higher values have no effect | `search.max_pages_per_query` in `config/config_tier{1..4}.json` |
-| Pipeline source lines (`main.py`, `orchestrator.py`, `src/`) | **~5,800** | `wc -l` |
-| Manual steps in the daily run | **0** | cron-driven, see `AGENTS.md` |
+| LinkedIn search slices | **127** (role x area) | built from the tier configs and `config/collector.json` |
+| Max pages per slice | **90** | `config/collector.json` |
+| Shared daily LinkedIn budget | **1,400 weekday / 800 weekend** requests | `config/schedule.json` |
+| Score cutoff | **8** | `scoring.threshold` in each tier config |
+| Manual steps in the daily run | **0** | systemd services |
+
+Tier 1 is Italy full-remote, tier 2 Switzerland and San Marino in any work mode, tier 3 the EU/EEA full-remote workable from Italy, tier 4 the UK full-remote.
 
 ## Run it
 
@@ -63,11 +82,16 @@ playwright install chromium
 cp .env.template .env
 ```
 
-Set `LLM_API_KEY`, `GROQ_API_KEY`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `DATABASE_URL`, and `OUTPUT_PATH`. Tailoring also needs `CV_MASTER_PATH`, `CV_CSS_PATH`, and `JD_OUTPUT_ROOT`. The CV source files are not in this repo.
+Set `JOBSTORE_URL` (the server PostgreSQL store) plus `LLM_API_KEY`, `GROQ_API_KEY`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `DATABASE_URL` (Neon archive), and `OUTPUT_PATH`. Tailoring also needs `CV_MASTER_PATH`, `CV_CSS_PATH`, and `JD_OUTPUT_ROOT`; the CV source files are not in this repo. `deploy/RUNBOOK.md` covers provisioning and the systemd units.
 
 ```bash
-python orchestrator.py
-python main.py config/config_tier1.json
+python -m src.linkedin.collector --sync-slices   # create/refresh the slices, then exit
+python -m src.linkedin.collector                 # run the collector
+python -m src.processor.runner --once            # one processor tick (drop --once to run forever)
+python -m src.delivery.service --once            # one delivery tick
+python -m src.sources.service freehire --sync-slices
+python -m src.services.status                    # operator view of the store, pace and services
+python -m src.services.watchdog                  # one health check
 python tailor.py path/to/note.md
 python -m pytest tests/
 ```
