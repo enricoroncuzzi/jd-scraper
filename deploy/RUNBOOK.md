@@ -192,7 +192,7 @@ loses nothing.
   waits at most `TimeoutStopSec` (5 minutes) and then systemd kills it; killing mid-job is safe
   because every stage commits per job or per batch. Database changes are additive and applied
   by `init_store` when a service starts. The pacing change has its own order below.
-- Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process`.
+- Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
 
 ### The LinkedIn pace and schedule gate
 
@@ -341,11 +341,13 @@ SELECT (at AT TIME ZONE 'Europe/Rome')::date AS day, kind, outcome, count(*)
 FROM pace_events GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 ```
 
-The longest open-hours gap between consecutive requests (07:00-24:00 Rome only):
+The longest open-hours gap between consecutive requests (partitioned by Rome day, so the
+night gap is not counted):
 
 ```sql
-SELECT max(at - lag(at) OVER (ORDER BY at)) FROM pace_events
-WHERE (at AT TIME ZONE 'Europe/Rome')::time >= '07:00';
+SELECT max(gap) FROM (
+  SELECT at - lag(at) OVER (PARTITION BY (at AT TIME ZONE 'Europe/Rome')::date ORDER BY at) AS gap
+  FROM pace_events) g;
 ```
 
 Pages per walk by area, with the caps hit next to each other:
@@ -368,11 +370,11 @@ WHERE active AND source = 'linkedin' AND (last_walked_at IS NULL OR last_walked_
 ORDER BY last_walked_at NULLS FIRST;
 ```
 
-Description lag percentiles (jobs that reached `described`):
+Description lag, sampled from jobs still in `described` (the stage changes when they are scored):
 
 ```sql
 SELECT percentile_cont(ARRAY[0.5, 0.9, 0.95]) WITHIN GROUP (ORDER BY stage_changed_at - first_seen_at)
-FROM jobs WHERE stage IN ('described', 'scored', 'delivered');
+FROM jobs WHERE stage = 'described';
 ```
 
 Share of delivered LinkedIn jobs that reached the digest within 4 days of posting:

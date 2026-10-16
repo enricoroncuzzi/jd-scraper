@@ -219,10 +219,51 @@ def test_a_resume_run_with_nothing_to_resume_leaves_the_heartbeat_alone(store_co
 def test_a_second_run_of_the_same_source_exits_without_a_request(store_conn, store_conn_factory):
     from src.services.runner import acquire_single_instance
     cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    store_conn.commit()
     holder = store_conn_factory(store_conn)
     holder.autocommit = True
     assert acquire_single_instance(holder, "collect-freehire")
-    get = Pages()
-    assert service.run_oneshot(store_conn, "freehire", cfg, _client(cfg, get), resume=False) == 0
+    get = Pages(_body(_hits(0, 1)))
+    assert service.run_oneshot(store_conn, "freehire", cfg, _client(cfg, get), resume=False,
+                               now_fn=lambda: NOW) == 0
     assert get.calls == []
     holder.close()
+
+
+def test_a_walk_finished_by_a_resume_run_is_due_at_the_next_daily_run(store_conn):
+    from src.linkedin.walk import claim_due_slice
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page', due_at = %s",
+                    (NOW + timedelta(days=30),))
+        cur.execute("UPDATE slices SET stop_reason = 'rate_limited', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)", (NOW,))
+        cur.execute("SELECT id FROM slices ORDER BY id LIMIT 1")
+        resumed_id = cur.fetchone()[0]
+    store_conn.commit()
+    resume_at = NOW + timedelta(hours=2)
+    pages = Pages(_body(_hits(0, 1)))
+    assert len(service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
+                                          now_fn=lambda: resume_at, unfinished_only=True)) == 1
+    # Only the next daily run can take the now-finished slice, so it must be due by then.
+    row = claim_due_slice(store_conn, NOW + timedelta(days=1), "freehire")
+    assert row is not None and row.id == resumed_id
+
+
+def test_a_resume_run_that_recovers_a_walk_re_beats_ok(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+        cur.execute("UPDATE slices SET stop_reason = 'error', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)", (NOW,))
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    pages = Pages(_body(_hits(0, 1)))
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
+                               now_fn=lambda: NOW, unfinished_only=True)
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "ok"

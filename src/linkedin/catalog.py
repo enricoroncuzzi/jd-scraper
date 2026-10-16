@@ -186,6 +186,9 @@ def clamp_cadence(conn, source: str, min_seconds: int, max_seconds: int) -> int:
             "UPDATE slices SET interval_seconds = LEAST(GREATEST(interval_seconds, %s), %s), "
             "due_at = LEAST(due_at, COALESCE(last_walked_at, due_at) "
             "+ LEAST(GREATEST(interval_seconds, %s), %s) * interval '1 second') "
-            "WHERE source = %s AND active AND (interval_seconds < %s OR interval_seconds > %s)",
-            (min_seconds, max_seconds, min_seconds, max_seconds, source, min_seconds, max_seconds))
+            "WHERE source = %s AND active AND (interval_seconds < %s OR interval_seconds > %s "
+            "OR due_at > COALESCE(last_walked_at, due_at) "
+            "+ LEAST(GREATEST(interval_seconds, %s), %s) * interval '1 second')",
+            (min_seconds, max_seconds, min_seconds, max_seconds, source, min_seconds, max_seconds,
+             min_seconds, max_seconds))
         return cur.rowcount

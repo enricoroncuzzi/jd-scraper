@@ -13,3 +13,13 @@ def test_the_runbook_names_every_new_config_key():
                 "linkedin_blocked_repeat_hours", "run_budget_seconds", "jds-resume-freehire.timer",
                 "00..01,05..06,11..23:00/30:00", "area_cap"):
         assert key in text
+
+
+def test_every_runbook_sql_block_executes(store_conn):
+    import re
+    text = open("deploy/RUNBOOK.md").read()
+    blocks = re.findall(r"```sql\n(.*?)```", text, re.DOTALL)
+    assert len(blocks) >= 6
+    with store_conn.cursor() as cur:
+        for block in blocks:
+            cur.execute(block)

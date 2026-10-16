@@ -215,3 +215,16 @@ def test_finishing_a_daily_walk_schedules_the_next_day_and_a_failed_one_30_minut
     with store_conn.cursor() as cur:
         cur.execute("SELECT last_walked_at, stop_reason, due_at, resume_start FROM slices")
         assert cur.fetchone() == (NOW, "rate_limited", NOW + timedelta(days=1, minutes=30), 100)
+
+
+def test_himalayas_retries_a_429_on_every_page_not_just_the_first():
+    get = Scripted(_response(429), _response(body={"a": 1}), _response(429), _response(body={"b": 2}))
+    client, sleeps, _clock = _client(get, retries=1)
+    assert client.get_json("/jobs", {}) == {"a": 1}
+    assert client.get_json("/jobs", {}) == {"b": 2}
+
+
+def test_a_non_ascii_rate_limit_header_is_ignored():
+    get = Scripted(_response(body={}, headers={"X-RateLimit-Remaining": "\u00b2", "X-RateLimit-Reset": "\u00b2"}))
+    client, sleeps, _clock = _client(get)
+    assert client.get_json("/jobs", {}) == {}

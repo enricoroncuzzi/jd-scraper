@@ -467,3 +467,17 @@ def test_the_day_verdict_is_persisted_and_tightens_the_spacing(make_budget):
         slot.clean(200)
     assert _row(budget, "weekday_spacing_seconds")[0] == pytest.approx(67.5)
     assert _row(budget, "calm_days")[0] == 0
+
+
+def test_an_overdue_next_in_line_description_gives_up_on_a_long_wait(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, give_up_after=120)
+    budget.snapshot()
+    _set(budget, last_kind="search", next_slot_at=fake.now,
+         cooldown_until=fake.now + timedelta(seconds=1800))
+    with pytest.raises(PaceBusy):
+        with budget.slot("description", overdue=True):
+            raise AssertionError("no request may be made")
+    assert _row(budget, "requests_today") == (0,) and _events(budget, "kind") == []
+    wanting = _row(budget, "wanting")[0]
+    assert "description" not in wanting and "overdue" not in wanting

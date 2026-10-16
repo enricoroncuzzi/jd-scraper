@@ -22,7 +22,7 @@ def test_retry_after_in_the_past_is_zero():
     assert retry_after_seconds("Wed, 14 Oct 2026 11:00:00 GMT", NOW) == 0.0
 
 
-@pytest.mark.parametrize("value", [None, "", "soon", "-5", "1.5e9x", MagicMock(), 42])
+@pytest.mark.parametrize("value", [None, "", "soon", "-5", "1.5e9x", "\u00b2", MagicMock(), 42])
 def test_a_missing_or_garbled_retry_after_is_none(value):
     assert retry_after_seconds(value, NOW) is None
 

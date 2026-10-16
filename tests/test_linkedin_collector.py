@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
-from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
+from src.linkedin.catalog import (
+    CollectorConfig, SliceSpec, build_slices, load_collector_config, load_tier_configs, sync_slices,
+)
 from src.linkedin.collector import collect_once, make_tick, sync_and_clamp
 from src.linkedin.pace import Gate
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
@@ -106,3 +108,32 @@ def test_a_collector_tick_reuses_one_session(monkeypatch, store_conn):
     tick(store_conn)
     tick(store_conn)
     assert len(made) == 1
+
+
+def test_a_former_72_hour_slice_is_pulled_into_48_hours_through_sync(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Malta", 3, 72 * H)], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET last_walked_at = %s, due_at = %s + interval '72 hours'",
+                    (NOW - timedelta(hours=1), NOW - timedelta(hours=1)))
+    store_conn.commit()
+    cfg = load_collector_config()
+    specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices,
+                         cfg.area_max_pages)
+    sync_and_clamp(store_conn, specs, cfg)
+    store_conn.commit()
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT interval_seconds, due_at <= last_walked_at + interval '48 hours' "
+                    "FROM slices WHERE role = 'AI Engineer' AND area = 'Malta'")
+        interval, within = cur.fetchone()
+    assert interval == 48 * H and within is True
+
+
+def test_collect_once_passes_the_configured_cadence_bounds(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H))
+    cfg = CollectorConfig(due_hours={1: 12}, legacy_lock_path=None, min_interval_hours=36,
+                          max_interval_hours=48)
+    get = ScriptedGet(response(200, page_html()))
+    collect_once(store_conn, FakePace(), cfg, now=NOW, get=get, sleep=lambda _s: None)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT interval_seconds FROM slices")
+        assert cur.fetchone()[0] == 36 * H

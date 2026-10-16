@@ -33,7 +33,7 @@ def retry_after_seconds(value, now: datetime) -> float | None:
     text = value.strip()
     if not text:
         return None
-    if text.isdigit():
+    if text.isascii() and text.isdigit():
         return float(text)
     try:
         parsed = parsedate_to_datetime(text)

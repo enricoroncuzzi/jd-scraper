@@ -16,7 +16,7 @@ from src.jobstore import heartbeat
 from src.jobstore.db import connect, store_url, utcnow
 from src.jobstore.schema import init_store
 from src.linkedin.catalog import sync_slices
-from src.linkedin.walk import claim_due_slice
+from src.linkedin.walk import RESUMABLE_STOPS, claim_due_slice
 from src.services.runner import Tick, acquire_single_instance, run_service
 from src.sources import freehire, himalayas
 from src.sources.base import (
@@ -44,6 +44,11 @@ def collect_source_once(conn, name: str, cfg: SourceConfig, client: JsonClient, 
         print(f"[collect-{name}] {row.role} / {row.area}: {exc}")
         walk = SourceWalk(0, 0, 0, "error", row.resume_start)
     interval_seconds = cfg.interval_hours * 3600
+    if unfinished_only and walk.finished:
+        # Only the daily run can take a finished slice (resume runs filter on unfinished stop
+        # reasons), so make it due well before the next daily start instead of a full interval
+        # after this resume run finished it, which would skip a day.
+        interval_seconds = DUE_SLACK_SECONDS
     finish_source_walk(conn, row, walk, started, now_fn(),
                        max(interval_seconds - DUE_SLACK_SECONDS, interval_seconds // 2))
     conn.commit()
@@ -88,7 +93,15 @@ def collect_due_slices(conn, name: str, cfg: SourceConfig, client: JsonClient, *
             heartbeat.beat(conn, service, "error", {"crashed": type(exc).__name__}, now=now_fn())
             conn.commit()
         raise
-    if not ticks and not unfinished_only:
+    if unfinished_only:
+        # A resume run writes no heartbeat of its own (D-k), but when it recovers a slice it
+        # re-beats ok so the watchdog's "last run ended in error" alert can clear.
+        if any(t.detail.get("stop_reason") not in RESUMABLE_STOPS for t in ticks):
+            heartbeat.beat(conn, service, "ok", {"slices": len(ticks), "recovered": True},
+                           now=now_fn())
+            conn.commit()
+        return ticks
+    if not ticks:
         heartbeat.beat(conn, service, "idle", {"slices": 0}, now=now_fn())
         conn.commit()
     return ticks

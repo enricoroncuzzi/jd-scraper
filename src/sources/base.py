@@ -113,6 +113,7 @@ class JsonClient:
         headers = {"User-Agent": self.cfg.user_agent, "Accept": "application/json"}
         problem = "no attempt"
         attempts = 0
+        self._throttles = 0  # 429 re-asks are counted per page, not per run
         while True:
             self._pace()
             try:
@@ -125,9 +126,10 @@ class JsonClient:
                 status = response.status_code
                 if status == 200:
                     remaining = response.headers.get("X-RateLimit-Remaining")
-                    if remaining is not None and remaining.isdigit() and int(remaining) <= 2:
+                    if remaining is not None and remaining.isascii() and remaining.isdigit() \
+                            and int(remaining) <= 2:
                         reset = response.headers.get("X-RateLimit-Reset", "5")
-                        self._bounded_wait(int(reset) + 1 if reset.isdigit() else 5)
+                        self._bounded_wait(int(reset) + 1 if reset.isascii() and reset.isdigit() else 5)
                     try:
                         return response.json()
                     except ValueError:
