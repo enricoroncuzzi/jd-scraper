@@ -165,3 +165,23 @@ def test_status_shows_a_closed_quiet_window(store_conn):
     text = status.render(store_conn, night, schedule)
     assert "window closed until 06:00 Rome" in text
 
+
+
+def test_every_status_time_is_converted_to_rome_and_labelled(store_conn):
+    import re
+    with store_conn.cursor() as cur:
+        cur.execute("SET TIME ZONE 'America/New_York'")  # the server zone must not leak
+        cur.execute("INSERT INTO jobs (canonical_url, title, company, company_norm, title_norm, "
+                    "first_seen_at) VALUES ('https://l/2', 't', 'c', 'c', 't', %s)", (NOW,))
+        cur.execute("INSERT INTO slices (source, role, area, tier, base_interval_seconds, "
+                    "interval_seconds, last_walked_at, due_at) "
+                    "VALUES ('linkedin', 'AI Engineer', 'Italy', 1, 43200, 43200, %s, %s)", (NOW, NOW))
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, last_clean_at, cooldown_until) "
+                    "VALUES ('linkedin.com', %s, %s, %s)",
+                    (NOW, NOW, NOW + timedelta(minutes=4)))
+    heartbeat.start(store_conn, "process", now=NOW + timedelta(seconds=5))
+    store_conn.commit()
+    text = status.render(store_conn, NOW + timedelta(minutes=1), ScheduleConfig())
+    assert "2026-10-14 14:00 Rome" in text and "2026-10-14 14:00:05 Rome" in text
+    assert "waiting until 14:04:00 Rome" in text
+    assert all(zone == "Rome" for zone in re.findall(r"\d{2}:\d{2}(?::\d{2})? (\w+)", text))
