@@ -23,6 +23,7 @@ class CollectorConfig:
     window_margin_hours: int = 2
     legacy_lock_path: str | None = None
     area_due_hours: dict[str, int] = field(default_factory=dict)
+    refused_pages_to_defer: int = 3
     skip_slices: frozenset = frozenset()  # (role, area) pairs that are not walked
 
 
@@ -41,6 +42,10 @@ def load_collector_config(path: str = COLLECTOR_CONFIG_PATH) -> CollectorConfig:
     area_due_hours = {str(area): int(hours) for area, hours in data.get("area_due_hours", {}).items()}
     if any(hours < 1 for hours in area_due_hours.values()):
         raise ValueError("area_due_hours must be at least 1 hour")
+    refused_pages_to_defer = data.get("refused_pages_to_defer", 3)
+    if not isinstance(refused_pages_to_defer, int) or isinstance(refused_pages_to_defer, bool) \
+            or refused_pages_to_defer < 1:
+        raise ValueError("refused_pages_to_defer must be an integer >= 1")
     skip_slices = frozenset(
         (str(entry["role"]), str(area)) for entry in data.get("skip_slices", []) for area in entry["areas"])
     return CollectorConfig(
@@ -50,6 +55,7 @@ def load_collector_config(path: str = COLLECTOR_CONFIG_PATH) -> CollectorConfig:
         window_margin_hours=int(data.get("window_margin_hours", 2)),
         legacy_lock_path=data.get("legacy_lock_path"),
         area_due_hours=area_due_hours,
+        refused_pages_to_defer=refused_pages_to_defer,
         skip_slices=skip_slices,
     )
 

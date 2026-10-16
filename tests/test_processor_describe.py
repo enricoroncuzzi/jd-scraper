@@ -63,19 +63,36 @@ def test_fetch_url_is_the_jobposting_fragment(monkeypatch):
     assert seen == ["https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/3900000001"]
 
 
-@pytest.mark.parametrize("status", [429, 999, 503, 504, 403])
-def test_a_refusal_is_retried_5_15_45_then_reported_as_refused_never_as_text(status):
-    get, sleeps = ScriptedGet(*[response(status, "<html>blocked</html>") for _ in range(4)]), []
-    result = fetch_description(FakePace(), "1", get=get, sleep=sleeps.append)
-    assert result.status == "refused" and result.text == ""
-    assert sleeps == list(RETRY_WAITS)
+@pytest.mark.parametrize("status", [429, 999])
+def test_a_throttled_description_returns_at_once(status):
+    get, sleeps, pace = ScriptedGet(response(status)), [], FakePace()
+    result = fetch_description(pace, "3900000001", get=get, sleep=sleeps.append)
+    assert result.status == "throttled" and result.text == ""
+    assert len(get.calls) == 1 and sleeps == [] and pace.events == [("description", "throttled")]
 
 
-def test_429_and_999_slow_the_pace_but_503_does_not():
+@pytest.mark.parametrize("status", [401, 403, 503, 504])
+def test_a_job_specific_refusal_keeps_the_5_15_45_ladder(status):
+    get = ScriptedGet(*[response(status)] * 4)
+    sleeps, pace = [], FakePace()
+    result = fetch_description(pace, "3900000001", get=get, sleep=sleeps.append)
+    assert result.status == "refused" and sleeps == [5, 15, 45]
+    assert [outcome for _k, outcome in pace.events] == ["neutral"] * 4
+
+
+def test_999_is_one_refusal_and_ends_the_fetch():
     pace = FakePace()
-    fetch_description(pace, "1", get=ScriptedGet(response(999), response(503), response(200, FRAGMENT)),
-                      sleep=lambda _s: None)
-    assert [outcome for _kind, outcome in pace.events] == ["throttled", "neutral", "clean"]
+    get = ScriptedGet(response(999), response(200, FRAGMENT))
+    assert fetch_description(pace, "1", get=get, sleep=lambda _s: None).status == "throttled"
+    assert len(get.calls) == 1
+    assert [outcome for _kind, outcome in pace.events] == ["throttled"]
+
+
+def test_503_retries_without_slowing_the_pace():
+    pace = FakePace()
+    get = ScriptedGet(response(503), response(200, FRAGMENT))
+    assert fetch_description(pace, "1", get=get, sleep=lambda _s: None).status == "ok"
+    assert [outcome for _kind, outcome in pace.events] == ["neutral", "clean"]
 
 
 def test_gone_and_unreadable_pages_are_not_retried():
@@ -150,9 +167,9 @@ def test_tier_one_is_described_before_tier_three(store_conn, cfg):
 def test_a_refusal_ends_the_round_so_the_rest_are_not_hammered(store_conn, cfg):
     for n in range(3):
         _tiered_job(store_conn, cfg, f"390000000{n + 1}")
-    get = ScriptedGet(*[response(429)] * 4)
+    get = ScriptedGet(response(429))
     assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
-    assert len(get.calls) == 4
+    assert len(get.calls) == 1
 
 
 def test_a_rate_limited_backlog_is_attempted_once_per_round(store_conn, cfg):
@@ -164,7 +181,7 @@ def test_a_rate_limited_backlog_is_attempted_once_per_round(store_conn, cfg):
         cur.execute("UPDATE jobs SET description_status = 'rate_limited'")
     get = ScriptedGet(*[response(429)] * 20)
     assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
-    assert len(get.calls) == 4
+    assert len(get.calls) == 1
 
 
 def test_a_round_fetches_at_most_descriptions_per_tick(store_conn, cfg):
@@ -200,14 +217,9 @@ def test_a_description_round_beats_before_every_fetch(store_conn, cfg, pulses):
     assert [call["describing"] for call in pulses if "describing" in call] == [0, 1, 2, 3]
 
 
-def test_one_refused_description_counts_as_one_throttle_not_one_per_retry():
-    pace = FakePace()
-    fetch_description(pace, "1", get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
-    assert [outcome for _kind, outcome in pace.events] == ["throttled"] + ["throttled_again"] * 3
-
-
 def test_the_retries_of_one_description_beat_while_it_waits(pulses):
-    fetch_description(FakePace(), "3900000009", get=ScriptedGet(*[response(429)] * 4), sleep=lambda _s: None)
+    fetch_description(FakePace(), "3900000009", get=ScriptedGet(*[response(503)] * 4),
+                      sleep=lambda _s: None)
     assert pulses == [{"description": "3900000009", "attempt": n} for n in (1, 2, 3, 4)]
 
 
@@ -271,7 +283,7 @@ class _ClosedPace:
         return Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
 
     @contextmanager
-    def slot(self, kind):
+    def slot(self, kind, *, overdue=False):
         raise PaceGateClosed(self.gate())
         yield
 

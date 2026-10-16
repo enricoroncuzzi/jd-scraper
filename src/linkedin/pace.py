@@ -213,19 +213,22 @@ class Slot:
     def __init__(self):
         self.outcome = "neutral"
         self.status: int | None = None
+        self.retry_after: float | None = None
 
     def clean(self, status: int | None = None) -> None:
         self.outcome = "clean"
         self.status = status
 
-    def throttled(self, status: int | None = None) -> None:
+    def throttled(self, status: int | None = None, retry_after: float | None = None) -> None:
         self.outcome = "throttled"
         self.status = status
+        self.retry_after = retry_after
 
-    def throttled_again(self, status: int | None = None) -> None:
+    def throttled_again(self, status: int | None = None, retry_after: float | None = None) -> None:
         """The retry of a request that was already throttled was refused too."""
         self.outcome = "throttled_again"
         self.status = status
+        self.retry_after = retry_after
 
     def neutral(self, status: int | None = None) -> None:
         self.outcome = "neutral"
@@ -381,7 +384,7 @@ class PaceBudget:
         self._unlock()
 
     @contextmanager
-    def slot(self, kind: str):
+    def slot(self, kind: str, *, overdue: bool = False):
         state = self._acquire(kind)
         gate = self._gate(state)
         if gate.open:
@@ -445,6 +448,6 @@ class ManagedPace:
         return self._current().seconds_until_slot()
 
     @contextmanager
-    def slot(self, kind: str):
-        with self._current().slot(kind) as slot:
+    def slot(self, kind: str, *, overdue: bool = False):
+        with self._current().slot(kind, overdue=overdue) as slot:
             yield slot

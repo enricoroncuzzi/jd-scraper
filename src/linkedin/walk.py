@@ -8,9 +8,7 @@ import requests
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.catalog import CollectorConfig, SOURCE
 from src.linkedin.pace import PaceGateClosed
-from src.linkedin.search import (
-    RETRY_WAITS, Page, SearchFailed, SearchThrottled, fetch_page,
-)
+from src.linkedin.search import Page, SearchFailed, SearchThrottled, fetch_page
 from src.linkedin.windows import f_tpr, next_due, next_interval, window_seconds
 from src.services.pulse import pulse
 
@@ -72,24 +70,6 @@ def _is_exhausted(page: Page, walk_seen: set[str]) -> bool:
     return not page.cards or all(card.job_id in walk_seen for card in page.cards)
 
 
-def _reask_throttled_page(pace, row: SliceRow, f_tpr_value: str, start: int, walk_seen: set[str],
-                          get, sleep) -> Page | None:
-    """An empty page that arrived on a request that saw a throttle is not trusted
-    as the end of the results. Ask for the same offset up to three more times."""
-    for wait in RETRY_WAITS:
-        sleep(wait)
-        try:
-            page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
-                              start=start, get=get, sleep=sleep)
-        except PaceGateClosed:
-            return None
-        except (SearchThrottled, SearchFailed):
-            continue
-        if not _is_exhausted(page, walk_seen) or (page.end and not page.throttled):
-            return page
-    return None
-
-
 def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *,
                get=requests.get, sleep=time.sleep) -> WalkResult:
     window = window_seconds(now, row.last_walked_at, margin=cfg.window_margin_hours * 3600)
@@ -101,32 +81,38 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
     pages = cards_seen = new_jobs = 0
     stop_reason = "cap_hit"
     last_page_full = False
+    refusals = 0        # consecutive refusals in this walk
+    distrust = False    # True right after a refusal: an empty 200 is not trusted
 
-    for _ in range(cfg.max_pages_per_slice):
+    while pages < cfg.max_pages_per_slice:
         pulse({"slice": f"{row.role} / {row.area}", "pages": pages, "new_jobs": new_jobs})
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
-                              start=start, get=get, sleep=sleep)
-        except (SearchThrottled, PaceGateClosed):
-            stop_reason = "rate_limited"
+                              start=start, distrust_empty=distrust, get=get, sleep=sleep)
+        except PaceGateClosed:
+            stop_reason = "rate_limited"  # unfinished, resumes at `start`
             break
+        except SearchThrottled:
+            refusals += 1
+            distrust = True
+            if refusals >= cfg.refused_pages_to_defer:
+                stop_reason = "rate_limited"
+                break
+            continue  # same `start`; the pace applies the host wait
         except SearchFailed:
             stop_reason = "error"
             break
-        pages += 1
-        if page.end:
-            stop_reason = "end_of_results"
-            break
-        if _is_exhausted(page, walk_seen) and page.throttled:
-            recovered = _reask_throttled_page(pace, row, f_tpr_value, start, walk_seen, get, sleep)
-            if recovered is None:
+        if page.throttled:  # an empty 200 right after a refusal
+            refusals += 1
+            distrust = True
+            if refusals >= cfg.refused_pages_to_defer:
                 stop_reason = "throttled_empty"
                 break
-            page = recovered
-            if page.end:
-                stop_reason = "end_of_results"
-                break
-        if _is_exhausted(page, walk_seen):
+            continue  # same `start`
+        refusals = 0
+        distrust = False
+        pages += 1  # only responses that were not refusals count
+        if page.end or _is_exhausted(page, walk_seen):
             stop_reason = "end_of_results"
             break
 

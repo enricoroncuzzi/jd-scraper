@@ -5,7 +5,6 @@ import pytest
 
 
 from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
-from src.linkedin.search import RETRY_WAITS
 from src.linkedin.walk import WalkResult, claim_due_slice, finish_walk, walk_slice
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
 
@@ -107,32 +106,49 @@ def test_a_400_after_the_first_page_keeps_what_was_fetched(store_conn):
     assert result.stop_reason == "end_of_results" and _count(store_conn) == 10
 
 
-def test_a_throttled_empty_page_is_asked_again_three_times_then_the_walk_is_unfinished(store_conn):
-    get = ScriptedGet(
-        response(200, page_html(*ids(0, 10))),
-        response(429), response(200, page_html()),                 # page 2: 429 then empty
-        response(200, page_html()), response(200, page_html()), response(200, page_html()))
-    result, sleeps = _walk(store_conn, get)
-    assert result.stop_reason == "throttled_empty" and not result.finished
-    assert result.next_start == 10 and _count(store_conn) == 10
-    assert sleeps[-3:] == list(RETRY_WAITS)
+def test_three_refusals_in_a_row_defer_the_slice_and_keep_the_resume_point(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(429), response(429))
+    pace = FakePace()
+    row = _seed_slice(store_conn)
+    result = walk_slice(store_conn, pace, row, _cfg(), NOW, get=get, sleep=lambda _s: None)
+    assert (result.stop_reason, result.pages, result.next_start, result.finished) == ("rate_limited", 1, 10, False)
+    assert [c["start"] for c in get.calls] == [0, 10, 10, 10]
+    assert pace.events == [("search", "clean")] + [("search", "throttled")] * 3
 
 
-def test_a_throttled_empty_page_that_recovers_continues_the_walk(store_conn):
-    get = ScriptedGet(
-        response(200, page_html(*ids(0, 10))),
-        response(429), response(200, page_html()),
-        response(200, page_html(*ids(10, 5))),                     # the re-ask succeeds
-        response(200, page_html()))
+def test_a_refusal_then_a_clean_page_carries_on_at_the_same_offset(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429),
+                      response(200, page_html(*ids(10, 4))), response(200, page_html()))
     result, _ = _walk(store_conn, get)
-    assert result.stop_reason == "end_of_results" and result.cards_seen == 15
+    assert result.stop_reason == "end_of_results" and result.cards_seen == 14
+    assert [c["start"] for c in get.calls] == [0, 10, 10, 14]
 
 
-def test_exhausted_retries_make_the_walk_unfinished_and_keep_earlier_pages(store_conn):
-    get = ScriptedGet(response(200, page_html(*ids(0, 10))), *[response(429) for _ in range(4)])
+def test_refusals_that_are_not_consecutive_do_not_defer(store_conn):
+    # The last refusal before the final empty page is followed by a clean page first, so the
+    # empty page is trusted (D-h) and ends the walk normally.
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(429),
+                      response(200, page_html(*ids(10, 10))), response(429), response(429),
+                      response(200, page_html(*ids(20, 5))), response(200, page_html()))
     result, _ = _walk(store_conn, get)
-    assert result.stop_reason == "rate_limited" and result.next_start == 10
-    assert _count(store_conn) == 10
+    assert result.finished and result.stop_reason == "end_of_results"
+    assert [c["start"] for c in get.calls] == [0, 10, 10, 10, 20, 20, 20, 25]
+    assert (result.pages, result.cards_seen) == (4, 25)
+
+
+def test_an_empty_page_right_after_a_refusal_is_asked_again(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(200, page_html()),
+                      response(200, page_html(*ids(10, 3))), response(200, page_html()))
+    result, _ = _walk(store_conn, get)
+    assert result.stop_reason == "end_of_results" and result.cards_seen == 13
+
+
+def test_a_refusal_then_two_empty_pages_is_an_unfinished_throttled_empty_walk(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429),
+                      response(200, page_html()), response(200, page_html()))
+    result, _ = _walk(store_conn, get)
+    assert (result.stop_reason, result.finished, result.next_start) == ("throttled_empty", False, 10)
+    assert result.pages == 1  # refused responses are not pages
 
 
 def test_an_unfinished_slice_resumes_where_it_stopped(store_conn):

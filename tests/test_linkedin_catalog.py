@@ -139,3 +139,7 @@ def test_a_slice_the_adaptive_cadence_shortened_keeps_its_shorter_interval(store
     with store_conn.cursor() as cur:
         cur.execute("SELECT base_interval_seconds, interval_seconds FROM slices")
         assert cur.fetchone() == (24 * 3600, 3 * 3600)
+
+
+def test_the_shipped_collector_config_defers_after_three_refusals():
+    assert load_collector_config().refused_pages_to_defer == 3

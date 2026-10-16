@@ -7,6 +7,7 @@
   },
   "max_pages_per_slice": 90,
   "known_pages_to_stop": 3,
+  "refused_pages_to_defer": 3,
   "window_margin_hours": 2,
   "legacy_lock_path": "/home/enrico/.jd-scraper.lock",
   "area_due_hours": {

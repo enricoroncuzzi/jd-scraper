@@ -93,7 +93,7 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
             # The schedule gate closed (quiet hours, daily cap, breaker rest) between
             # requests. Leave the job exactly as it is; the next tick retries it.
             return "deferred"
-        elif result.status == "refused":
+        elif result.status in ("refused", "throttled"):
             cur.execute(
                 "UPDATE jobs SET description_status = 'rate_limited', "
                 "first_refused_at = COALESCE(first_refused_at, %s) WHERE id = %s", (now, job.id))
