@@ -17,10 +17,10 @@ The hard problem here isn't collecting jobs, it's making an LLM produce text a h
 The production path is no longer a once-a-day cron run. It is long-running services around a PostgreSQL job store on the server. Services never call each other; the store is their only shared state. The install, switch-over and rollback procedure, including the systemd units in `deploy/systemd/`, lives in [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md).
 
 - **LinkedIn collector** (`jds-collect-linkedin`, `src/linkedin/collector.py`) - walks "slices", one per role and area, built from the four tier configs by `src/linkedin/catalog.py` into the `slices` table, and records every card as a sighting. It never fetches a description and never judges a job.
-- **Daily source collectors** (`jds-collect-freehire`, `jds-collect-himalayas`, `src/sources/`) - one oneshot pull a day each (03:00 and 04:00 server time) from freehire.me and Himalayas, whose public JSON APIs return full descriptions inline. Configured in `config/sources.json`.
+- **Daily source collectors** (`jds-collect-freehire`, `jds-collect-himalayas`, `src/sources/`) - one oneshot pull a day each (03:00 and 04:00 server time) from freehire.me and Himalayas, whose public JSON APIs return full descriptions inline, plus `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` every 30 minutes to finish an interrupted walk. Configured in `config/sources.json`.
 - **Processor** (`jds-process`, `src/processor/runner.py`) - the stage machine: expire stale jobs, cheap no-network checks (tier assignment, cross-source merge, title pre-filter), deterministic remote rules, the LLM remote check (off for tier 2, which accepts any work mode), LLM scoring, then LinkedIn description fetches through the shared pace, with the language check applied as soon as a job has a description. Batch sizes, backoff and tick limits are in `config/processor.json`; the score cutoff, keywords and candidate profile come from the tier configs.
 - **Delivery** (`jds-deliver`, `src/delivery/`) - immediate Telegram alerts for jobs at or above the cutoff, the daily delivery at 08:00 Europe/Rome (one digest per tier plus a day summary with collection, budget and service health), auto-tailoring of above-cutoff jobs (a package per job; the Telegram notice stays off while `autoapply.dry_run` is true, as shipped), and the periodic Neon archive copy. Each day also lands in `OUTPUT_PATH/<date>/tier<N>/` as one note per job, a ranked `digest.md`, and a `rejected.md` audit trail of what the remote check screened out and why. Timing and expectations are in `config/deliver.json`.
-- **Watchdog** (`jds-watchdog.timer`, `src/services/watchdog.py`) - every ten minutes, messages Telegram when a service has been silent for over an hour, a daily source collector has missed its run by more than three hours (or ended in error), nothing has been collected for six hours (not counted while the LinkedIn schedule gate is closed), or the job store is unreachable.
+- **Watchdog** (`jds-watchdog.timer`, `src/services/watchdog.py`) - every ten minutes, messages Telegram when a service has been silent for over an hour, a daily source collector has missed its run by more than three hours (or ended in error), no LinkedIn request has succeeded for 24 h of open time (at most one alert a day), or the job store is unreachable.
 - **Nightly backup** (`jds-backup.timer`, `deploy/backup-jobstore.sh`) - a `pg_dump` of the job store, keeping the seven newest dumps.
 
 `LinkedIn slices -> sightings -> cheap checks -> description -> language -> remote check -> score -> delivery (digest + alerts) -> [tailor] -> OpenRouter generation + validation gate -> PDF -> Neon archive`
@@ -33,10 +33,12 @@ Every LinkedIn request the collector, the processor and the packaging stage make
 
 - quiet hours 00:00-06:00 Europe/Rome;
 - a shared daily budget of 1,400 requests on weekdays and 800 at weekends, on the Rome calendar day;
-- a circuit breaker that rests LinkedIn for 2h, then 6h, then 24h after repeated refusals;
-- a weekend taper that skips slices whose base cadence is a day or longer.
+- a steady, slow pace that starts at 75 s weekday / 110 s weekend, jittered +/-20 %, never below the cap-derived floor (46 s / 81 s), tightened after three calm days and loosened after a bad one;
+- a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown, and refusals crowding an hour nudge the spacing up (at most 3x);
+- searches first, descriptions second, with a 24 h guard so a backlog cannot wait out the four-day window;
+- every area walked at least every 48 h.
 
-The rate adapts: a throttle doubles the spacing (up to 100x) and starts a cooldown, and calm periods and clean streaks bring it back down. Slices carry their own cadence (`config/collector.json`, plus per-area overrides), so a slow area is walked less often than a fast one. The live gate, budget and pace are in `python -m src.services.status`.
+Slices carry their own cadence (`config/collector.json`, `due_hours` 12/24/48/24 plus per-area overrides, bounded by `min_interval_hours`/`max_interval_hours`). The ten large tier-3 countries are walked at most 20 pages per walk. freehire and Himalayas use the same patient approach: jittered 1-2 s / 2-5 s spacing and a bounded 429 wait, with the 30-minute resume timers for an unfinished walk. The live gate, budget and pace are in `python -m src.services.status`, and `deploy/RUNBOOK.md` carries the config tables and the deploy order.
 
 ## LLM stages and caps
 
@@ -56,9 +58,9 @@ The delivery service runs the same engine automatically for above-cutoff jobs: i
 
 - **Test-driven throughout**: `.venv/bin/python -m pytest tests/`, every module built red to green. Count them with `pytest tests/ --collect-only -q`; the number moves.
 - **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and tailoring, no string-parsed output.
-- **No silent loss**: every stage transition is one `UPDATE` in the caller's transaction, and each stage commits per job or per batch, so a crash leaves a job exactly where it was and the next tick picks it up. A description LinkedIn refuses keeps its place and doubles its wait (30 minutes up to 12 hours); a job expires after seven days of refusals or when the posting is over 30 days old.
+- **No silent loss**: every stage transition is one `UPDATE` in the caller's transaction, and each stage commits per job or per batch, so a crash leaves a job exactly where it was and the next tick picks it up. A host throttle (429/999) returns a description to the queue with no per-job penalty; a job-specific refusal (401/403/503/504) or unreadable markup keeps its 30 minutes to 12 h backoff; a job expires after seven days of host refusals or when the posting is over 30 days old.
 - **Resilience by design**: batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying. A quota day stops the LLM stages and leaves jobs waiting, not lost.
-- **Shared LinkedIn pace**: the quiet window, the shared daily budget, the circuit breaker and the adaptive spacing all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
+- **Shared LinkedIn pace**: the quiet window, the shared daily budget, the steady jittered spacing, the refusal waits and the search-first turns all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
 - **Anti-hallucination in code, not just the prompt**: the CV is checked at runtime against the canonical source, not left to an instruction the model can ignore. The cover letter is checked for banned phrases, length, and a concrete bridge. Hook claims are listed in `CLAIMS_REVIEW.txt` for a person to confirm.
 
 ## By the numbers
@@ -68,6 +70,7 @@ The delivery service runs the same engine automatically for above-cutoff jobs: i
 | Geographic tiers | **4** | `config/config_tier{1..4}.json` |
 | LinkedIn search slices | **127** (role x area) | built from the tier configs and `config/collector.json` |
 | Max pages per slice | **90** | `config/collector.json` |
+| Per-area page cap | **20 for the ten largest tier-3 countries** | `config/collector.json` |
 | Shared daily LinkedIn budget | **1,400 weekday / 800 weekend** requests | `config/schedule.json` |
 | Score cutoff | **8** | `scoring.threshold` in each tier config |
 | Manual steps in the daily run | **0** | systemd services |
