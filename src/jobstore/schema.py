@@ -4,7 +4,18 @@ init_store() can run at every service start (same pattern as src/storage.py).
 Table names and columns here are the contract the collector, processor and
 delivery services share. Change them only together with the plans in
 data/jdscraper-pipeline-redesign/plans/.
+
+init_store() records a fingerprint of DDL in kv_state and, when the store already
+matches it, skips the DDL entirely. That matters because the additive ALTER
+TABLE ... ADD COLUMN IF NOT EXISTS statements still take an AccessExclusiveLock
+on the table even when the column is present, and a service start taking that
+lock while a running service holds an ordinary read lock on jobs deadlocks (the
+2026-10-16 incident). A fingerprint, not a hand-bumped version, because it
+changes exactly when DDL changes: a new column cannot be added without
+invalidating it, so an edited DDL list can never be silently skipped.
 """
+import hashlib
+import json
 
 STAGES = ("seen", "described", "filtered_out", "scored", "delivered", "expired")
 DESCRIPTION_STATUSES = ("ok", "pending", "rate_limited", "failed")
@@ -254,9 +265,49 @@ TABLES = (
 )
 
 
+def schema_fingerprint() -> str:
+    """A stable hash of the DDL. Changes exactly when the schema definition does."""
+    return hashlib.sha256("\n\n".join(DDL).encode("utf-8")).hexdigest()
+
+
+SCHEMA_VERSION_KEY = "schema_version"
+
+
+def _stored_schema_fingerprint(conn) -> str | None:
+    """The fingerprint recorded in the store, or None when it predates the key.
+
+    Plain reads only: `to_regclass` checks for kv_state (a fresh store has none)
+    without raising, and neither it nor the SELECT takes a lock on any other
+    table, so this never contends with a running service."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('kv_state')")
+        if cur.fetchone()[0] is None:
+            return None
+        cur.execute("SELECT value FROM kv_state WHERE key = %s", (SCHEMA_VERSION_KEY,))
+        row = cur.fetchone()
+    if row is None or not isinstance(row[0], str):
+        return None
+    return row[0]
+
+
 def init_store(conn) -> None:
-    """Create every table and index if missing. Safe to call on every start."""
+    """Create every table and index if missing. Safe to call on every start.
+
+    Current schema: a plain read of the stored fingerprint, then return. No DDL,
+    so no AccessExclusiveLock and no deadlock with a running service.
+    Stale or absent schema (a real migration): run the idempotent DDL, then
+    record the fingerprint.
+    """
+    fingerprint = schema_fingerprint()
+    if _stored_schema_fingerprint(conn) == fingerprint:
+        conn.commit()
+        return
     with conn.cursor() as cur:
         for statement in DDL:
             cur.execute(statement)
+        cur.execute(
+            "INSERT INTO kv_state (key, value, updated_at) VALUES (%s, %s::jsonb, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+            (SCHEMA_VERSION_KEY, json.dumps(fingerprint)),
+        )
     conn.commit()
