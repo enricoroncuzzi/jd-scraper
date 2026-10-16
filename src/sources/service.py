@@ -65,8 +65,9 @@ def collect_due_slices(conn, name: str, cfg: SourceConfig, client: JsonClient, *
     The daily timer starts the collector once; a single `collect_source_once` would walk
     only the first due slice, so a oneshot run drains them all before exiting. It leaves a
     heartbeat the watchdog reads between runs, marked error if any slice failed. A resume
-    run (`unfinished_only`) writes no heartbeat at all, so its 30-minute slots cannot mask a
-    missed daily run."""
+    run (`unfinished_only`) never touches `beat_at` and only flips an `error` beat to `ok`
+    when it recovered slices and no active slice of that source is still in error, so its
+    30-minute slots cannot mask a missed daily run."""
     service = f"collect-{name}"
     if not unfinished_only:
         heartbeat.start(conn, service, now=now_fn())
@@ -94,11 +95,17 @@ def collect_due_slices(conn, name: str, cfg: SourceConfig, client: JsonClient, *
             conn.commit()
         raise
     if unfinished_only:
-        # A resume run writes no heartbeat of its own (D-k), but when it recovers a slice it
-        # re-beats ok so the watchdog's "last run ended in error" alert can clear.
+        # A resume run never beats (D-k): it only clears an error beat when it actually
+        # recovered slices and no active slice of this source is still in error, and it
+        # leaves beat_at alone so a missed daily run is still reported.
         if any(t.detail.get("stop_reason") not in RESUMABLE_STOPS for t in ticks):
-            heartbeat.beat(conn, service, "ok", {"slices": len(ticks), "recovered": True},
-                           now=now_fn())
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE service_heartbeats SET state = 'ok', "
+                    "detail = detail || '{\"recovered\": true}'::jsonb "
+                    "WHERE service = %s AND state = 'error' AND NOT detail ? 'crashed' AND NOT EXISTS ("
+                    "SELECT 1 FROM slices WHERE source = %s AND active AND stop_reason = 'error')",
+                    (service, name))
             conn.commit()
         return ticks
     if not ticks:

@@ -252,7 +252,7 @@ def test_a_walk_finished_by_a_resume_run_is_due_at_the_next_daily_run(store_conn
     assert row is not None and row.id == resumed_id
 
 
-def test_a_resume_run_that_recovers_a_walk_re_beats_ok(store_conn):
+def test_a_resume_run_that_recovers_a_walk_clears_the_error_beat_without_touching_beat_at(store_conn):
     cfg = _cfg(page_size=5)
     sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
     with store_conn.cursor() as cur:
@@ -266,4 +266,66 @@ def test_a_resume_run_that_recovers_a_walk_re_beats_ok(store_conn):
     service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
                                now_fn=lambda: NOW, unfinished_only=True)
     beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
-    assert beats["collect-freehire"].state == "ok"
+    assert beats["collect-freehire"].state == "ok" and beats["collect-freehire"].beat_at == NOW
+
+
+def test_a_late_resume_recovery_does_not_hide_a_missed_daily_run(store_conn):
+    from datetime import time
+    from zoneinfo import ZoneInfo
+    from src.delivery.health import service_issues
+    from src.delivery.settings import DeliverySettings
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+        cur.execute("UPDATE slices SET stop_reason = 'rate_limited', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)", (NOW,))
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "ok", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    pages = Pages(_body(_hits(0, 1)))
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
+                               now_fn=lambda: NOW + timedelta(hours=22, minutes=30),
+                               unfinished_only=True)
+    settings = DeliverySettings(output_path="o", delivery_time=time(8), timezone=ZoneInfo("Europe/Rome"),
+                                expected_services=("collect-freehire",))
+    issues = service_issues(store_conn, settings, NOW + timedelta(hours=28),
+                            {"collect-freehire": timedelta(hours=27)})
+    assert [i.key for i in issues] == ["service:collect-freehire"]
+
+
+def test_recovering_one_slice_does_not_clear_another_slices_error(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+        cur.execute("UPDATE slices SET stop_reason = 'error', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)", (NOW,))
+        cur.execute("UPDATE slices SET stop_reason = 'error', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id OFFSET 1 LIMIT 1)", (NOW,))
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    # The resume run recovers the first slice; the second answers 404 and stays in error.
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages(_body(_hits(0, 1)), 404)),
+                               now_fn=lambda: NOW, unfinished_only=True)
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "error"
+
+
+def test_a_resume_run_that_leaves_a_slice_unfinished_changes_nothing_in_the_heartbeat_row(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+        cur.execute("UPDATE slices SET stop_reason = 'error', due_at = %s WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)", (NOW,))
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "error", {"slices": 8},
+                   now=NOW - timedelta(minutes=5))
+    store_conn.commit()
+    before = {b.service: b for b in heartbeat.read_all(store_conn)}["collect-freehire"]
+    service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages(404)),
+                               now_fn=lambda: NOW, unfinished_only=True)
+    after = {b.service: b for b in heartbeat.read_all(store_conn)}["collect-freehire"]
+    assert (after.state, after.beat_at, after.detail) == (before.state, before.beat_at, before.detail)
