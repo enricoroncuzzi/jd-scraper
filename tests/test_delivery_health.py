@@ -1,12 +1,13 @@
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import json
 import pytest
 
 from src.delivery.health import (
-    collection_issue, evaluate_health, health_lines, run_health_check, service_issues,
+    evaluate_health, health_lines, linkedin_blocked_issue, run_health_check, service_issues,
 )
-from src.delivery.settings import DeliverySettings
+from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore import heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
 
@@ -25,6 +26,13 @@ def _all_alive(conn, at=NOW):
         heartbeat.beat(conn, name, "running", now=at)
     record_sighting(conn, CardInput(source="linkedin", source_job_id="1", source_url="https://l/1",
                                     title="t", company="c"), at)
+    conn.commit()
+
+
+def _last_clean(conn, at):
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, last_clean_at) "
+                    "VALUES ('linkedin.com', %s, %s)", (at, at))
     conn.commit()
 
 
@@ -56,43 +64,58 @@ def test_a_service_that_never_reported_is_an_issue(store_conn, settings):
         "service:collect-linkedin", "service:process", "service:deliver"}
 
 
-def test_nothing_collected_for_six_hours_is_an_issue_and_five_is_not(store_conn, settings):
-    _all_alive(store_conn, NOW - timedelta(hours=7))
-    assert collection_issue(store_conn, NOW).message == "Nothing has been collected for 7h00m"
-    assert collection_issue(store_conn, NOW - timedelta(hours=2)) is None
+# -- the 24 h-of-open-time LinkedIn alert ------------------------------------------------
+
+def test_no_linkedin_success_for_24_open_hours_alerts(store_conn, settings):
+    _last_clean(store_conn, datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc))  # Wed 08:00 Rome
+    thu_14 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)                # Thu 14:00 Rome
+    issue = linkedin_blocked_issue(store_conn, settings, thu_14)
+    assert issue.key == "linkedin_blocked" and "24h00m of open time" in issue.message
+    assert linkedin_blocked_issue(store_conn, settings, thu_14 - timedelta(minutes=1)) is None
 
 
-def test_an_empty_store_reports_that_nothing_was_ever_collected(store_conn):
-    assert collection_issue(store_conn, NOW).message == "Nothing has been collected ever"
+def test_the_night_window_does_not_count_toward_the_block(store_conn, settings):
+    _last_clean(store_conn, datetime(2026, 10, 14, 21, 0, tzinfo=timezone.utc))  # Wed 23:00 Rome
+    # 24.5 h of wall clock, but only 18.5 h open (Wed 23-24 and Thu 06-23:30): counting the
+    # night would alert here, so this fails if the night window is counted.
+    thu_2330 = datetime(2026, 10, 15, 21, 30, tzinfo=timezone.utc)               # Thu 23:30 Rome
+    assert linkedin_blocked_issue(store_conn, settings, thu_2330) is None
 
 
-def _beat_all(conn, at):
-    for name in ("collect-linkedin", "process", "deliver"):
-        heartbeat.beat(conn, name, "running", now=at)
-    conn.commit()
+def test_the_block_alert_is_sent_at_most_once_a_day(store_conn, settings):
+    _last_clean(store_conn, NOW - timedelta(days=3))
+    for at, expected in ((NOW, True), (NOW + timedelta(hours=6), False),
+                         (NOW + timedelta(hours=23), False), (NOW + timedelta(hours=24), True)):
+        _all_alive(store_conn, at)
+        sent = run_health_check(store_conn, settings, Outbox(), at)
+        assert bool([m for m in sent if "LinkedIn" in m]) is expected, at
 
 
-def test_a_gate_suppressed_collection_alert_is_not_falsely_cleared(store_conn, settings):
-    # Open gate, silent collector: the alert goes out and is written to the ledger.
-    _beat_all(store_conn, NOW)
-    record_sighting(store_conn, CardInput(source="linkedin", source_job_id="1", source_url="https://l/1",
-                                          title="t", company="c"), NOW - timedelta(hours=7))
+def test_the_shipped_deliver_config_alerts_after_24_open_hours_and_repeats_daily():
+    settings = load_settings()
+    assert (settings.linkedin_blocked_after_open_hours, settings.linkedin_blocked_repeat_hours) == (24, 24)
+
+
+def test_a_store_that_never_reached_linkedin_does_not_alert(store_conn, settings):
+    assert linkedin_blocked_issue(store_conn, settings, NOW) is None
+
+
+def test_stale_sightings_alone_no_longer_alert(store_conn, settings):
+    _all_alive(store_conn)
+    _last_clean(store_conn, NOW - timedelta(hours=1))
+    assert evaluate_health(store_conn, settings, NOW) == []
+
+
+def test_the_old_collection_alert_is_cleared_once_after_deploy(store_conn, settings):
+    _all_alive(store_conn)
     with store_conn.cursor() as cur:
-        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
-                    "VALUES ('linkedin.com', %s, 1, %s)", (NOW, NOW.date()))
+        cur.execute("INSERT INTO kv_state (key, value) VALUES ('health:collection', %s::jsonb)",
+                    (json.dumps({"sent_at": (NOW - timedelta(days=1)).isoformat()}),))
     store_conn.commit()
-    assert run_health_check(store_conn, settings, Outbox(), NOW) == \
-        ["ALERT: Nothing has been collected for 7h00m"]
-
-    # The quiet window closes while the collector is still silent. That is unknown, not
-    # healthy: nothing is sent and the ledger row survives, so the alert is not retracted
-    # and re-fired after reopening.
-    night = datetime(2026, 10, 14, 23, 30, tzinfo=timezone.utc)  # 01:30 Rome, closed
-    _beat_all(store_conn, night)
-    assert run_health_check(store_conn, settings, Outbox(), night) == []
+    assert run_health_check(store_conn, settings, Outbox(), NOW) == ["OK again: collection is healthy"]
     with store_conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM kv_state WHERE key = 'health:collection'")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 0
 
 
 def _refresh(conn, at, skip=()):

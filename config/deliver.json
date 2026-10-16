@@ -3,5 +3,7 @@
   "timezone": "Europe/Rome",
   "archive_every_minutes": 30,
   "alert_poll_seconds": 60,
+  "linkedin_blocked_after_open_hours": 24,
+  "linkedin_blocked_repeat_hours": 24,
   "expected_services": ["collect-linkedin", "process", "deliver"]
 }

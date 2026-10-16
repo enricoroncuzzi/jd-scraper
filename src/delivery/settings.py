@@ -16,6 +16,8 @@ class DeliverySettings:
     archive_every_minutes: int = 30
     alert_poll_seconds: int = 60
     expected_services: tuple[str, ...] = ("collect-linkedin", "process", "deliver")
+    linkedin_blocked_after_open_hours: int = 24
+    linkedin_blocked_repeat_hours: int = 24
     telegram_token: str = ""
     telegram_chat_id: str = ""
     neon_url: str | None = None
@@ -41,6 +43,8 @@ def load_settings(path: str = DELIVER_CONFIG_PATH, env=os.environ) -> DeliverySe
         archive_every_minutes=int(data["archive_every_minutes"]),
         alert_poll_seconds=int(data["alert_poll_seconds"]),
         expected_services=tuple(data["expected_services"]),
+        linkedin_blocked_after_open_hours=int(data.get("linkedin_blocked_after_open_hours", 24)),
+        linkedin_blocked_repeat_hours=int(data.get("linkedin_blocked_repeat_hours", 24)),
         telegram_token=env.get("TELEGRAM_TOKEN", ""),
         telegram_chat_id=env.get("TELEGRAM_CHAT_ID", ""),
         neon_url=env.get("DATABASE_URL"),
