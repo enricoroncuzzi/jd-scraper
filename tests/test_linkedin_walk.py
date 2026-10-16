@@ -5,7 +5,6 @@ import pytest
 
 
 from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
-from src.linkedin.search import RETRY_WAITS
 from src.linkedin.walk import WalkResult, claim_due_slice, finish_walk, walk_slice
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
 
@@ -14,15 +13,15 @@ H = 3600
 
 
 def _cfg(**overrides):
-    values = dict(due_hours={1: 4}, max_pages_per_slice=90, known_pages_to_stop=3,
+    values = dict(due_hours={1: 12}, max_pages_per_slice=90, known_pages_to_stop=3,
                   window_margin_hours=2)
     values.update(overrides)
     return CollectorConfig(**values)
 
 
-def _seed_slice(conn, **overrides):
+def _seed_slice(conn, base=12 * H, **overrides):
     """A real `slices` row (sightings reference it) as the SliceRow a walk receives."""
-    sync_slices(conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 4 * H)], NOW)
+    sync_slices(conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, base)], NOW)
     conn.commit()
     return replace(claim_due_slice(conn, NOW), **overrides)
 
@@ -107,32 +106,49 @@ def test_a_400_after_the_first_page_keeps_what_was_fetched(store_conn):
     assert result.stop_reason == "end_of_results" and _count(store_conn) == 10
 
 
-def test_a_throttled_empty_page_is_asked_again_three_times_then_the_walk_is_unfinished(store_conn):
-    get = ScriptedGet(
-        response(200, page_html(*ids(0, 10))),
-        response(429), response(200, page_html()),                 # page 2: 429 then empty
-        response(200, page_html()), response(200, page_html()), response(200, page_html()))
-    result, sleeps = _walk(store_conn, get)
-    assert result.stop_reason == "throttled_empty" and not result.finished
-    assert result.next_start == 10 and _count(store_conn) == 10
-    assert sleeps[-3:] == list(RETRY_WAITS)
+def test_three_refusals_in_a_row_defer_the_slice_and_keep_the_resume_point(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(429), response(429))
+    pace = FakePace()
+    row = _seed_slice(store_conn)
+    result = walk_slice(store_conn, pace, row, _cfg(), NOW, get=get, sleep=lambda _s: None)
+    assert (result.stop_reason, result.pages, result.next_start, result.finished) == ("rate_limited", 1, 10, False)
+    assert [c["start"] for c in get.calls] == [0, 10, 10, 10]
+    assert pace.events == [("search", "clean")] + [("search", "throttled")] * 3
 
 
-def test_a_throttled_empty_page_that_recovers_continues_the_walk(store_conn):
-    get = ScriptedGet(
-        response(200, page_html(*ids(0, 10))),
-        response(429), response(200, page_html()),
-        response(200, page_html(*ids(10, 5))),                     # the re-ask succeeds
-        response(200, page_html()))
+def test_a_refusal_then_a_clean_page_carries_on_at_the_same_offset(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429),
+                      response(200, page_html(*ids(10, 4))), response(200, page_html()))
     result, _ = _walk(store_conn, get)
-    assert result.stop_reason == "end_of_results" and result.cards_seen == 15
+    assert result.stop_reason == "end_of_results" and result.cards_seen == 14
+    assert [c["start"] for c in get.calls] == [0, 10, 10, 14]
 
 
-def test_exhausted_retries_make_the_walk_unfinished_and_keep_earlier_pages(store_conn):
-    get = ScriptedGet(response(200, page_html(*ids(0, 10))), *[response(429) for _ in range(4)])
+def test_refusals_that_are_not_consecutive_do_not_defer(store_conn):
+    # The last refusal before the final empty page is followed by a clean page first, so the
+    # empty page is trusted (D-h) and ends the walk normally.
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(429),
+                      response(200, page_html(*ids(10, 10))), response(429), response(429),
+                      response(200, page_html(*ids(20, 5))), response(200, page_html()))
     result, _ = _walk(store_conn, get)
-    assert result.stop_reason == "rate_limited" and result.next_start == 10
-    assert _count(store_conn) == 10
+    assert result.finished and result.stop_reason == "end_of_results"
+    assert [c["start"] for c in get.calls] == [0, 10, 10, 10, 20, 20, 20, 25]
+    assert (result.pages, result.cards_seen) == (4, 25)
+
+
+def test_an_empty_page_right_after_a_refusal_is_asked_again(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(200, page_html()),
+                      response(200, page_html(*ids(10, 3))), response(200, page_html()))
+    result, _ = _walk(store_conn, get)
+    assert result.stop_reason == "end_of_results" and result.cards_seen == 13
+
+
+def test_a_refusal_then_two_empty_pages_is_an_unfinished_throttled_empty_walk(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429),
+                      response(200, page_html()), response(200, page_html()))
+    result, _ = _walk(store_conn, get)
+    assert (result.stop_reason, result.finished, result.next_start) == ("throttled_empty", False, 10)
+    assert result.pages == 1  # refused responses are not pages
 
 
 def test_an_unfinished_slice_resumes_where_it_stopped(store_conn):
@@ -180,27 +196,58 @@ def test_finishing_a_walk_schedules_the_next_one(store_conn):
     row = _seed_slice(store_conn)
     result = WalkResult(pages=3, cards_seen=23, new_jobs=23, stop_reason="end_of_results",
                         window=86400, next_start=23)
-    finish_walk(store_conn, row, result, NOW, NOW + timedelta(minutes=2))
+    finish_walk(store_conn, row, result, NOW, NOW + timedelta(minutes=2), _cfg())
     last_walked, reason, interval, empty, resume, due, pages = _slice_state(store_conn)
     assert last_walked == NOW and reason == "end_of_results" and pages == 3
-    assert (interval, empty, resume) == (4 * H, 0, 0)
-    assert due == NOW + timedelta(minutes=2, seconds=4 * H)
+    assert (interval, empty, resume) == (12 * H, 0, 0)
+    assert due == NOW + timedelta(seconds=12 * H)
 
 
-def test_cap_hit_halves_the_interval_so_the_next_window_is_smaller(store_conn):
+def test_the_next_walk_is_measured_from_the_walk_start_not_the_finish(store_conn):
+    row = _seed_slice(store_conn, base=48 * H)
+    result = WalkResult(20, 200, 0, "area_cap", 86400, 200)
+    finish_walk(store_conn, row, result, NOW, NOW + timedelta(minutes=25),
+                _cfg(area_max_pages={"Italy": 20}))
+    last_walked, _r, _i, _e, _resume, due, _p = _slice_state(store_conn)
+    assert last_walked == NOW and due == NOW + timedelta(hours=48)
+
+
+def test_cap_hit_never_takes_a_slice_below_the_12_hour_floor(store_conn):
     row = _seed_slice(store_conn)
     result = WalkResult(90, 900, 800, "cap_hit", 86400, 900)
-    finish_walk(store_conn, row, result, NOW, NOW)
-    assert _slice_state(store_conn)[2] == 2 * H
+    finish_walk(store_conn, row, result, NOW, NOW, _cfg())
+    assert _slice_state(store_conn)[2] == 12 * H
 
 
 def test_an_unfinished_walk_keeps_last_walked_at_and_returns_in_30_minutes(store_conn):
     row = _seed_slice(store_conn)
     result = WalkResult(5, 50, 50, "rate_limited", 86400, 50)
-    finish_walk(store_conn, row, result, NOW, NOW)
+    finish_walk(store_conn, row, result, NOW, NOW, _cfg())
     last_walked, reason, interval, _empty, resume, due, _pages = _slice_state(store_conn)
     assert last_walked is None and resume == 50 and reason == "rate_limited"
-    assert interval == 4 * H and due == NOW + timedelta(minutes=30)
+    assert interval == 12 * H and due == NOW + timedelta(minutes=30)
+
+
+def test_the_page_cap_can_be_set_per_area(store_conn):
+    get = ScriptedGet(*[response(200, page_html(*ids(n * 10, 10))) for n in range(3)])
+    result, _ = _walk(store_conn, get, cfg=_cfg(area_max_pages={"Italy": 2}))
+    assert (result.pages, result.stop_reason, result.finished) == (2, "area_cap", True)
+    assert len(get.queue) == 1  # the third page was never requested
+
+
+def test_an_area_cap_with_a_short_last_page_is_the_end_of_results(store_conn):
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(200, page_html(*ids(10, 4))))
+    result, _ = _walk(store_conn, get, cfg=_cfg(area_max_pages={"Italy": 2}))
+    assert result.stop_reason == "end_of_results"
+
+
+def test_an_area_capped_walk_keeps_its_base_cadence(store_conn):
+    row = _seed_slice(store_conn, base=48 * H)
+    finish_walk(store_conn, row, WalkResult(20, 200, 150, "area_cap", 86400, 200), NOW, NOW,
+                _cfg(area_max_pages={"Italy": 20}))
+    last_walked, reason, interval, _empty, resume, due, _pages = _slice_state(store_conn)
+    assert (reason, interval, resume, last_walked) == ("area_cap", 48 * H, 0, NOW)
+    assert due == NOW + timedelta(hours=48)
 
 
 def test_three_empty_walks_in_a_row_move_the_slice_to_daily(store_conn):
@@ -243,3 +290,11 @@ def test_every_walk_is_logged_with_its_requests_hits_and_new_jobs(store_conn):
                     "FROM slice_walks WHERE slice_id = %s ORDER BY walked_at", (row.id,))
         assert cur.fetchall() == [(NOW, 3, 23, 20, "end_of_results", 86400),
                                   (NOW + timedelta(hours=4), 2, 12, 0, "rate_limited", 86400)]
+
+
+def test_a_long_deferred_walk_rests_30_minutes_after_it_stopped(store_conn):
+    row = _seed_slice(store_conn)
+    result = WalkResult(5, 50, 50, "rate_limited", 86400, 50)
+    finish_walk(store_conn, row, result, NOW, NOW + timedelta(minutes=40), _cfg())
+    _last_walked, _reason, _interval, _empty, resume, due, _pages = _slice_state(store_conn)
+    assert resume == 50 and due == NOW + timedelta(minutes=70)

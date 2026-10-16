@@ -174,6 +174,17 @@ DDL: list[str] = [
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS refusal_times TIMESTAMPTZ[] NOT NULL DEFAULT '{}'",
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS rest_until TIMESTAMPTZ",
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS rest_level INTEGER NOT NULL DEFAULT 0",
+    # Always-on pace state (design 2026-10-16). factor, clean_streak, calm_since,
+    # rest_until and rest_level are no longer read.
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS refusals_today INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS refusal_streak INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS request_times TIMESTAMPTZ[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS nudge DOUBLE PRECISION NOT NULL DEFAULT 1.0",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS nudged_at TIMESTAMPTZ",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS weekday_spacing_seconds DOUBLE PRECISION",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS weekend_spacing_seconds DOUBLE PRECISION",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS calm_days INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS last_clean_at TIMESTAMPTZ",
     """
     CREATE TABLE IF NOT EXISTS pace_events (
         id             BIGSERIAL PRIMARY KEY,
@@ -187,6 +198,8 @@ DDL: list[str] = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS pace_events_at_idx ON pace_events (at)",
+    "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS spacing_seconds DOUBLE PRECISION",
+    "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS wait_seconds DOUBLE PRECISION",
     """
     CREATE TABLE IF NOT EXISTS slice_walks (
         id             BIGSERIAL PRIMARY KEY,

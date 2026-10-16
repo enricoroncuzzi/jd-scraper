@@ -16,7 +16,7 @@ from src.delivery.settings import DeliverySettings
 from src.linkedin.pace import Gate, PaceGateClosed
 from src.processor.config import load_processor_config
 from tests.delivery_helpers import NOW, scored_job
-from tests.linkedin_fakes import FakePace
+from tests.linkedin_fakes import BusyPace, FakePace
 
 DAY = date(2026, 10, 14)
 
@@ -184,15 +184,33 @@ def test_a_closed_gate_defers_the_linkedin_candidate_and_packages_the_rest(store
     assert linkedin in {job.id for job in candidates(store_conn, cfg, NOW)}
 
 
+def test_a_busy_pace_is_asked_once_per_packaging_pass(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    first, second = _delivered(store_conn, 1, score=10), _delivered(store_conn, 2, score=9)
+    external = scored_job(store_conn, 3, 8, stage="delivered", note_day=DAY,
+                          canonical_url="https://boards.greenhouse.io/acme/3")
+    store_conn.commit()
+    pace = BusyPace()
+    results = run_packaging(store_conn, cfg, settings, pkg, pace, now=NOW, tailor_run=Tailor(tmp_path),
+                            classify=lambda link: "external_ats")
+    assert pace.attempts == 1                               # the second LinkedIn candidate never asked
+    assert [r["job_id"] for r in results] == [external]
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM kv_state WHERE key LIKE 'package_fail:%%'")
+        assert cur.fetchone()[0] == 0                       # deferred, not failed
+    assert {first, second} <= {job.id for job in candidates(store_conn, cfg, NOW)}
+
+
 def test_build_service_gives_the_shared_pace_the_deliver_name_and_schedule(monkeypatch, cfg):
     import src.delivery.service as service_module
+    import src.linkedin.pace as pace_module
     captured = {}
 
     class RecordingPace:
         def __init__(self, connect, **options):
             captured.update(options)
 
-    monkeypatch.setattr(service_module, "ManagedPace", RecordingPace)
+    monkeypatch.setattr(pace_module, "ManagedPace", RecordingPace)
     monkeypatch.setattr(service_module, "load_processor_config",
                         lambda: replace(cfg, policies={t: replace(p, autoapply_enabled=False)
                                                        for t, p in cfg.policies.items()}))
@@ -202,3 +220,4 @@ def test_build_service_gives_the_shared_pace_the_deliver_name_and_schedule(monke
     service_module.build_service()
     assert captured["service"] == "deliver"
     assert captured["schedule"].timezone == "Europe/Rome"
+    assert captured["give_up_after"] == cfg.description_seconds_per_tick

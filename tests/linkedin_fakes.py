@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 
-from src.linkedin.pace import Gate, Slot
+from src.linkedin.pace import Gate, PaceBusy, Slot
 
 
 def card_html(job_id: str, location: str = "Milan, Italy") -> str:
@@ -24,10 +24,11 @@ def ids(first: int, count: int) -> list[str]:
     return [str(3900000000 + first + offset) for offset in range(count)]
 
 
-def response(status: int, text: str = ""):
+def response(status: int, text: str = "", headers=None):
     resp = MagicMock()
     resp.status_code = status
     resp.text = text
+    resp.headers = headers or {}
     return resp
 
 
@@ -51,6 +52,8 @@ class FakePace:
 
     def __init__(self, wait: float = 0.0, gate: Gate | None = None):
         self.events = []
+        self.retry_afters = []
+        self.overdue_flags = []
         self.wait = wait
         self._gate = gate or Gate(open=True, reason="open", requests_today=0, cap=1400, window="weekday")
 
@@ -61,7 +64,24 @@ class FakePace:
         return self.wait
 
     @contextmanager
-    def slot(self, kind):
+    def slot(self, kind, *, overdue=False):
+        self.overdue_flags.append(overdue)
         slot = Slot()
         yield slot
         self.events.append((kind, slot.outcome))
+        if slot.outcome == "throttled":
+            self.retry_afters.append(slot.retry_after)
+
+
+class BusyPace(FakePace):
+    """A pace that never grants a turn: the caller must defer without a request."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.attempts = 0
+
+    @contextmanager
+    def slot(self, kind, *, overdue=False):
+        self.attempts += 1
+        raise PaceBusy("no turn")
+        yield

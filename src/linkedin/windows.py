@@ -1,15 +1,21 @@
-"""Time windows and walk cadence for LinkedIn slices (spec section 4.1).
+"""Time windows and walk cadence for LinkedIn slices (spec section 4.4).
 
 LinkedIn's guest search only has a lower time bound (f_TPR=r<seconds>), so a
 window always reaches back from now. Walking a slice again sooner is the only
 way to look at a smaller span, which is what halving does.
+
+The adaptive cadence is bounded: no search area may go longer than 48 h between
+walks, and no interval is ever shortened below 12 h. A walk stopped by its
+area's page cap keeps the base cadence (it doubles back toward the base, never
+halves), so the ten capped countries are not walked four times more often.
 """
 from datetime import datetime, timedelta
 
 MARGIN_SECONDS = 2 * 3600
 FIRST_WALK_WINDOW_SECONDS = 24 * 3600
 MAX_WINDOW_SECONDS = 7 * 24 * 3600
-MIN_INTERVAL_SECONDS = 3600
+DEFAULT_MIN_INTERVAL = 12 * 3600
+DEFAULT_MAX_INTERVAL = 48 * 3600
 EMPTY_SLICE_INTERVAL_SECONDS = 24 * 3600
 EMPTY_STREAK_FOR_DAILY = 3
 RETRY_SOON_SECONDS = 30 * 60
@@ -33,22 +39,25 @@ def f_tpr(seconds: int) -> str:
     return f"r{seconds}"
 
 
-def next_interval(*, base: int, current: int, stop_reason: str, consecutive_empty: int) -> int:
+def next_interval(*, base: int, current: int, stop_reason: str, consecutive_empty: int,
+                  min_interval: int = DEFAULT_MIN_INTERVAL,
+                  max_interval: int = DEFAULT_MAX_INTERVAL) -> int:
     """How long to wait before the next walk.
 
-    A walk that hit the page cap halves the interval (down to an hour) so the
-    next window is smaller; any other finished walk doubles it back toward the
-    tier's base. A slice that keeps coming back empty is walked at most daily.
+    A walk that hit the full page cap halves the interval so the next window is
+    smaller; an area cap doubles it back toward the base like any finished walk.
+    A slice that keeps coming back empty is walked at most daily. The result is
+    always inside [min_interval, max_interval].
     """
     if stop_reason == "cap_hit":
-        interval = max(current // 2, MIN_INTERVAL_SECONDS)
+        interval = max(current // 2, min_interval)
     elif stop_reason in _RETRY_SOON_REASONS:
         interval = current
     else:
         interval = min(current * 2, base)
     if consecutive_empty >= EMPTY_STREAK_FOR_DAILY:
         interval = max(interval, EMPTY_SLICE_INTERVAL_SECONDS)
-    return interval
+    return max(min_interval, min(interval, max_interval))
 
 
 def next_due(now: datetime, interval: int, stop_reason: str) -> datetime:

@@ -36,6 +36,7 @@ class ProcessorConfig:
     flush_after_minutes: int = 30
     descriptions_per_tick: int = 20
     description_seconds_per_tick: int = 120
+    description_deadline_hours: int = 24
     cheap_checks_per_tick: int = 200
     refusal_expiry_days: int = 7
     posting_max_age_days: int = 30
@@ -82,6 +83,7 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         flush_after_minutes=int(data["flush_after_minutes"]),
         descriptions_per_tick=int(data["descriptions_per_tick"]),
         description_seconds_per_tick=int(data.get("description_seconds_per_tick", 120)),
+        description_deadline_hours=int(data.get("description_deadline_hours", 24)),
         cheap_checks_per_tick=int(data["cheap_checks_per_tick"]),
         refusal_expiry_days=int(data["refusal_expiry_days"]),
         posting_max_age_days=int(data["posting_max_age_days"]),

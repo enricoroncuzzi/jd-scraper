@@ -2,29 +2,36 @@
 
 This replaces the full /jobs/view/{id} page: the fragment is a few KB, carries
 the same div.show-more-less-html__markup description, and avoids the HTTP 999
-that the full page returns to logged-out clients. A refusal (429, 999, 503, 504,
-401, 403) is never turned into text: the caller keeps the job and tries later.
+that the full page returns to logged-out clients. A refusal is never turned into
+text: the caller keeps the job and tries later.
+
+A 429/999 is one refusal and returns at once as `"throttled"`: the host-level
+wait in the pace applies before the next request, and the caller gives the job no
+per-job penalty. The 5/15/45 s ladder is for the job-specific refusals (401, 403,
+503, 504) and network errors, which end as `"refused"`.
 """
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
 
-from src.linkedin.pace import PaceGateClosed
-from src.linkedin.search import HEADERS, RETRY_WAITS
+from src.http_session import retry_after_seconds
+from src.linkedin.pace import PaceBusy, PaceGateClosed
+from src.linkedin.search import HEADERS, RETRY_WAITS, THROTTLE_STATUSES
 from src.services.pulse import pulse
 
 DESCRIPTION_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 REQUEST_TIMEOUT = 15
-THROTTLE_STATUSES = frozenset({429, 999})
+JOB_REFUSED_STATUSES = frozenset({401, 403, 503, 504})
 REFUSED_STATUSES = frozenset({401, 403, 429, 503, 504, 999})
 GONE_STATUSES = frozenset({404, 410})
 
 
 @dataclass(frozen=True)
 class FragmentResult:
-    status: str  # ok | refused | gone | failed | deferred
+    status: str  # ok | throttled | refused | gone | failed | deferred
     text: str = ""
     posted_text: str = ""
 
@@ -44,17 +51,19 @@ def extract_posted_text(html: str) -> str:
     return element.get_text(strip=True) if element else ""
 
 
-def fetch_description(pace, job_id: str, *, get=requests.get, sleep=time.sleep) -> FragmentResult:
+def fetch_description(pace, job_id: str, *, overdue: bool = False,
+                      get=requests.get, sleep=time.sleep) -> FragmentResult:
     url = DESCRIPTION_URL.format(job_id=job_id)
-    saw_throttle = False
+    last_problem = "no attempt"
     for attempt in range(len(RETRY_WAITS) + 1):
         pulse({"description": job_id, "attempt": attempt + 1})
         try:
-            with pace.slot("description") as slot:
+            with pace.slot("description", overdue=overdue) as slot:
                 try:
                     response = get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-                except requests.RequestException:
+                except requests.RequestException as exc:
                     slot.neutral()
+                    last_problem = f"network error: {exc}"
                     response = None
                 if response is not None:
                     status = response.status_code
@@ -67,16 +76,19 @@ def fetch_description(pace, job_id: str, *, get=requests.get, sleep=time.sleep) 
                         slot.neutral(status)
                         return FragmentResult("gone")
                     if status in THROTTLE_STATUSES:
-                        slot.throttled_again(status) if saw_throttle else slot.throttled(status)
-                        saw_throttle = True
-                    elif status in REFUSED_STATUSES:
+                        retry_after = retry_after_seconds(
+                            response.headers.get("Retry-After"), datetime.now(timezone.utc))
+                        slot.throttled(status, retry_after=retry_after)
+                        return FragmentResult("throttled")
+                    if status in JOB_REFUSED_STATUSES:
                         slot.neutral(status)
+                        last_problem = f"HTTP {status}"
                     else:
                         slot.neutral(status)
                         return FragmentResult("failed")
-        except PaceGateClosed:
-            # The schedule gate (quiet hours, daily cap, breaker rest) closed between
-            # requests: hand the job back untouched, the caller retries next tick.
+        except (PaceGateClosed, PaceBusy):
+            # The schedule gate closed (quiet hours, the daily cap), or no turn was
+            # granted in time: hand the job back untouched, the caller retries next tick.
             return FragmentResult("deferred")
         if attempt < len(RETRY_WAITS):
             sleep(RETRY_WAITS[attempt])

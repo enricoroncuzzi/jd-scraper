@@ -1,9 +1,11 @@
 """Stage 2: get the description (spec section 5, step 2).
 
 Sources that return text inline never reach this stage. For LinkedIn jobs the
-guest fragment is fetched through the shared pace. A refusal keeps the job's
-place and doubles its wait (30 minutes up to 12 hours); the job expires after 7
-days of refusals, or when the posting is over 30 days old. The title+company
+guest fragment is fetched through the shared pace. A host throttle (429/999)
+returns the job to the queue unchanged except for its `rate_limited` mark, with no
+per-job penalty; job-specific refusals (401/403/503/504) and the unreadable-markup
+path keep the 30 minutes doubling to 12 hours backoff. The job expires after 7
+days of host refusals, or when the posting is over 30 days old. The title+company
 fallback is never used as a description.
 """
 import time
@@ -24,6 +26,22 @@ def refusal_delay(attempts: int, cfg: ProcessorConfig) -> timedelta:
     """Wait after the `attempts`-th refusal: 30 min, 1 h, 2 h ... capped at 12 h."""
     minutes = min(cfg.backoff_first_minutes * 2 ** max(attempts - 1, 0), cfg.backoff_cap_hours * 60)
     return timedelta(minutes=minutes)
+
+
+def oldest_waiting_description(cur, now: datetime) -> datetime | None:
+    """The `first_seen_at` of the oldest job fetchable for a description right now
+    (the same predicate as `_next_job`), or None when none is waiting."""
+    cur.execute(
+        "SELECT min(first_seen_at) FROM jobs WHERE stage = 'seen' AND tier IS NOT NULL "
+        "AND description_status IN ('pending', 'rate_limited') AND next_attempt_at <= %s", (now,))
+    return cur.fetchone()[0]
+
+
+def description_overdue(cur, cfg: ProcessorConfig, now: datetime) -> bool:
+    """True when the oldest waiting job was first seen more than
+    `description_deadline_hours` ago: descriptions take every second turn."""
+    oldest = oldest_waiting_description(cur, now)
+    return oldest is not None and now - oldest > timedelta(hours=cfg.description_deadline_hours)
 
 
 def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
@@ -68,17 +86,18 @@ def _linkedin_id(cur, job_id) -> str | None:
 def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
                   get=requests.get, sleep=time.sleep) -> str | None:
     """Fetch one description. Returns None when no job is waiting for one, else one
-    of 'described', 'refused', 'gone' or 'unreadable'."""
+    of 'described', 'throttled', 'refused', 'gone' or 'unreadable'."""
     with conn.cursor() as cur:
         job = _next_job(cur, now)
         if job is None:
             return None
+        overdue = description_overdue(cur, cfg, now)
         linkedin_id = _linkedin_id(cur, job.id)
         if linkedin_id is None:
             set_stage(cur, job.id, "expired", "no_description_source", now)
             conn.commit()
             return "gone"
-    result = fetch_description(pace, linkedin_id, get=get, sleep=sleep)
+    result = fetch_description(pace, linkedin_id, overdue=overdue, get=get, sleep=sleep)
     with conn.cursor() as cur:
         if result.status == "ok":
             cur.execute(
@@ -90,9 +109,16 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
             finish_with_description(cur, job, now)
             outcome = "described"
         elif result.status == "deferred":
-            # The schedule gate closed (quiet hours, daily cap, breaker rest) between
+            # The schedule gate closed (quiet hours or the daily cap) between
             # requests. Leave the job exactly as it is; the next tick retries it.
             return "deferred"
+        elif result.status == "throttled":
+            # A host refusal (429/999): back to the queue with no per-job penalty. The
+            # 7-day expiry still applies; attempts and next_attempt_at are untouched.
+            cur.execute(
+                "UPDATE jobs SET description_status = 'rate_limited', "
+                "first_refused_at = COALESCE(first_refused_at, %s) WHERE id = %s", (now, job.id))
+            outcome = "throttled"
         elif result.status == "refused":
             cur.execute(
                 "UPDATE jobs SET description_status = 'rate_limited', "
@@ -128,7 +154,7 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     next LinkedIn turn is further away than that many seconds, do not queue for it.
 
     The schedule gate is checked first: when LinkedIn is closed (quiet hours, the shared
-    daily cap, a breaker rest) the whole stage is skipped, so the rest of the tick's cheap
+    daily cap) the whole stage is skipped, so the rest of the tick's cheap
     checks, verification and scoring still run."""
     if not pace.gate().open:
         return 0
@@ -144,6 +170,6 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
         if outcome is None:
             break
         done += 1
-        if outcome in ("refused", "deferred"):
+        if outcome in ("throttled", "refused", "deferred"):
             break
     return done

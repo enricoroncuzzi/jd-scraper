@@ -1,10 +1,11 @@
 """The watchdog: a oneshot run by a systemd timer every ten minutes.
 
 It lives outside the services it watches, so it can report a dead `deliver`. It sends
-Telegram alerts when a service has been silent for over an hour or nothing was
-collected for six hours (src/delivery/health.py), and when the job store itself
-cannot be reached, which it can only remember in a local file because the database
-that normally holds its ledger is the thing that is down.
+Telegram alerts when a service has been silent for over an hour, a daily source has
+missed its run or ended in error, or no LinkedIn request has succeeded for 24 h of
+open time (src/delivery/health.py), and when the job store itself cannot be reached,
+which it can only remember in a local file because the database that normally holds
+its ledger is the thing that is down.
 """
 import json
 import os

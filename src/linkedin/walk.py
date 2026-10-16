@@ -8,14 +8,17 @@ import requests
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.catalog import CollectorConfig, SOURCE
 from src.linkedin.pace import PaceGateClosed
-from src.linkedin.search import (
-    RETRY_WAITS, Page, SearchFailed, SearchThrottled, fetch_page,
+from src.linkedin.search import Page, SearchFailed, SearchThrottled, fetch_page
+from src.linkedin.windows import (
+    DEFAULT_MAX_INTERVAL, DEFAULT_MIN_INTERVAL, f_tpr, next_due, next_interval,
+    window_seconds,
 )
-from src.linkedin.windows import f_tpr, next_due, next_interval, window_seconds
 from src.services.pulse import pulse
 
 # Stop reasons that leave the slice unfinished: it resumes from `next_start`.
 UNFINISHED = frozenset({"throttled_empty", "rate_limited", "error"})
+# The same set, for the resume timers that walk only unfinished slices.
+RESUMABLE_STOPS = ("rate_limited", "error", "throttled_empty")
 
 
 @dataclass(frozen=True)
@@ -46,20 +49,18 @@ class WalkResult:
 
 
 def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
-                    taper_below_seconds: int | None = None) -> SliceRow | None:
+                    unfinished_only: bool = False) -> SliceRow | None:
     """The next due slice of `source`: tier 1 first, oldest due first. One collector per
-    source, so no row lock.
-
-    `taper_below_seconds` is the weekend taper: when set, a slice whose *base* cadence is
-    that long or longer is skipped (its window simply grows, nothing is lost)."""
+    source, so no row lock. With `unfinished_only`, only slices whose last walk ended
+    unfinished (the resume timers) are considered."""
     query = (
         "SELECT id, role, area, tier, base_interval_seconds, interval_seconds, last_walked_at, "
         "consecutive_empty, resume_start FROM slices "
         "WHERE active AND source = %s AND due_at <= %s")
     params: list = [source, now]
-    if taper_below_seconds is not None:
-        query += " AND base_interval_seconds < %s"
-        params.append(taper_below_seconds)
+    if unfinished_only:
+        query += " AND stop_reason = ANY(%s)"
+        params.append(list(RESUMABLE_STOPS))
     query += " ORDER BY tier, due_at LIMIT 1"
     with conn.cursor() as cur:
         cur.execute(query, params)
@@ -70,24 +71,6 @@ def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
 def _is_exhausted(page: Page, walk_seen: set[str]) -> bool:
     """No cards, or only cards this walk already saw (LinkedIn repeats the last page)."""
     return not page.cards or all(card.job_id in walk_seen for card in page.cards)
-
-
-def _reask_throttled_page(pace, row: SliceRow, f_tpr_value: str, start: int, walk_seen: set[str],
-                          get, sleep) -> Page | None:
-    """An empty page that arrived on a request that saw a throttle is not trusted
-    as the end of the results. Ask for the same offset up to three more times."""
-    for wait in RETRY_WAITS:
-        sleep(wait)
-        try:
-            page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
-                              start=start, get=get, sleep=sleep)
-        except PaceGateClosed:
-            return None
-        except (SearchThrottled, SearchFailed):
-            continue
-        if not _is_exhausted(page, walk_seen) or (page.end and not page.throttled):
-            return page
-    return None
 
 
 def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *,
@@ -101,32 +84,38 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
     pages = cards_seen = new_jobs = 0
     stop_reason = "cap_hit"
     last_page_full = False
+    refusals = 0        # consecutive refusals in this walk
+    distrust = False    # True right after a refusal: an empty 200 is not trusted
 
-    for _ in range(cfg.max_pages_per_slice):
+    while pages < cfg.max_pages_for(row.area):
         pulse({"slice": f"{row.role} / {row.area}", "pages": pages, "new_jobs": new_jobs})
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
-                              start=start, get=get, sleep=sleep)
-        except (SearchThrottled, PaceGateClosed):
-            stop_reason = "rate_limited"
+                              start=start, distrust_empty=distrust, get=get, sleep=sleep)
+        except PaceGateClosed:
+            stop_reason = "rate_limited"  # unfinished, resumes at `start`
             break
+        except SearchThrottled:
+            refusals += 1
+            distrust = True
+            if refusals >= cfg.refused_pages_to_defer:
+                stop_reason = "rate_limited"
+                break
+            continue  # same `start`; the pace applies the host wait
         except SearchFailed:
             stop_reason = "error"
             break
-        pages += 1
-        if page.end:
-            stop_reason = "end_of_results"
-            break
-        if _is_exhausted(page, walk_seen) and page.throttled:
-            recovered = _reask_throttled_page(pace, row, f_tpr_value, start, walk_seen, get, sleep)
-            if recovered is None:
+        if page.throttled:  # an empty 200 right after a refusal
+            refusals += 1
+            distrust = True
+            if refusals >= cfg.refused_pages_to_defer:
                 stop_reason = "throttled_empty"
                 break
-            page = recovered
-            if page.end:
-                stop_reason = "end_of_results"
-                break
-        if _is_exhausted(page, walk_seen):
+            continue  # same `start`
+        refusals = 0
+        distrust = False
+        pages += 1  # only responses that were not refusals count
+        if page.end or _is_exhausted(page, walk_seen):
             stop_reason = "end_of_results"
             break
 
@@ -156,24 +145,36 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
             stop_reason = "known_page"
             break
     else:
-        stop_reason = "cap_hit" if last_page_full else "end_of_results"
+        if not last_page_full:
+            stop_reason = "end_of_results"
+        elif cfg.max_pages_for(row.area) < cfg.max_pages_per_slice:
+            stop_reason = "area_cap"
+        else:
+            stop_reason = "cap_hit"
 
     return WalkResult(pages, cards_seen, new_jobs, stop_reason, window, start)
 
 
 def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
-                finished_at: datetime) -> None:
+                finished_at: datetime, cfg: CollectorConfig | None = None) -> None:
     """Persist the walk on the slice and schedule the next one. The caller commits.
 
     A walk that did not finish keeps last_walked_at, so the next window still
     reaches back to the last complete walk, and resumes at result.next_start.
+    A finished walk is scheduled from its start (so its own duration does not drift
+    the cadence) and an unfinished one from its finish (so a long deferred walk rests
+    before it is retried). The 12-48 h bounds come from the collector config when one
+    is given.
     """
     empty = result.finished and result.cards_seen == 0
     consecutive_empty = row.consecutive_empty + 1 if empty else (
         0 if result.cards_seen else row.consecutive_empty)
     interval = next_interval(
         base=row.base_interval_seconds, current=row.interval_seconds,
-        stop_reason=result.stop_reason, consecutive_empty=consecutive_empty)
+        stop_reason=result.stop_reason, consecutive_empty=consecutive_empty,
+        min_interval=(cfg.min_interval_hours * 3600 if cfg else DEFAULT_MIN_INTERVAL),
+        max_interval=(cfg.max_interval_hours * 3600 if cfg else DEFAULT_MAX_INTERVAL))
+    due_from = started_at if result.finished else finished_at
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO slice_walks (slice_id, walked_at, pages, cards_seen, new_jobs, stop_reason, "
@@ -188,6 +189,6 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
                 started_at if result.finished else row.last_walked_at,
                 result.window, result.pages, result.cards_seen, result.stop_reason,
                 consecutive_empty, interval, 0 if result.finished else result.next_start,
-                next_due(finished_at, interval, result.stop_reason), row.id,
+                next_due(due_from, interval, result.stop_reason), row.id,
             ),
         )

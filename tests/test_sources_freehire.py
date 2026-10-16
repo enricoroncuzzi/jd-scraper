@@ -6,7 +6,7 @@ import pytest
 
 from src.linkedin.catalog import sync_slices
 from src.linkedin.walk import claim_due_slice
-from src.sources.base import JsonClient, SourceConfig, SourceError
+from src.sources.base import JsonClient, SourceConfig, SourceError, ThrottlePolicy
 from src.sources.freehire import (
     SLICE_AREAS, build_slices, clean_text, freehire_country, item_to_card, posted_window_days, walk_slice,
 )
@@ -38,7 +38,8 @@ def _cfg(**options):
     base = {"categories": ["ai_engineering", "data_science"], "page_size": 2, "first_pull_days": 30,
             "known_pages_to_stop": 2, "exclude_sources": ["whatjobs-it"], "skip_reality": ["likely-evergreen"]}
     base.update(options)
-    return SourceConfig(True, "https://freehire.me/api/v1", "owner/project/1.0", 0.0, 24, base)
+    return SourceConfig(True, "https://freehire.me/api/v1", "owner/project/1.0", (1.0, 2.0), 24,
+                        ThrottlePolicy(3, 60.0, 300.0, 1700.0), base)
 
 
 class Pages:

@@ -17,8 +17,9 @@ import requests
 from dotenv import load_dotenv
 
 from src import telemetry
+from src.http_session import new_session
 from src.jobstore.db import connect, store_url, utcnow
-from src.linkedin.pace import ManagedPace
+from src.linkedin.pace import linkedin_pace
 from src.linkedin.schedule import load_schedule_config
 from src.processor.cheap import run_cheap_checks
 from src.processor.combined import run_combined_batches
@@ -63,6 +64,17 @@ def process_once(conn, pace, cfg: ProcessorConfig, keys: LlmKeys, *, now: dateti
     return Tick(any((cheap, settled, fetched, checked, scored)), detail)
 
 
+def make_tick(pace, cfg: ProcessorConfig, keys: LlmKeys, *, get=None):
+    """Build the processor's tick, reusing one LinkedIn HTTP session for every request
+    in every tick, so no connection is reopened per description."""
+    if get is None:
+        get = new_session().get
+
+    def tick(conn) -> Tick:
+        return process_once(conn, pace, cfg, keys, get=get)
+    return tick
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Processor service")
     parser.add_argument("--once", action="store_true")
@@ -71,15 +83,13 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_processor_config()
     keys = LlmKeys.from_env()
     telemetry.set_llm_sink(StoreLlmSink(lambda: connect(store_url()), SERVICE))
-    pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=load_schedule_config())
-
-    def tick(conn) -> Tick:
-        return process_once(conn, pace, cfg, keys)
+    pace = linkedin_pace(SERVICE, load_schedule_config(), cfg.description_seconds_per_tick)
+    tick = make_tick(pace, cfg, keys)
 
     if args.once:
         conn = connect(store_url())
         try:
-            print(process_once(conn, pace, cfg, keys).detail)
+            print(tick(conn).detail)
         finally:
             conn.close()
         return 0

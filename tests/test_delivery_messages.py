@@ -108,3 +108,10 @@ def test_long_summaries_are_split_for_telegram(store_conn, cfg, settings):
     deliveries = {t: deliver_tier(store_conn, cfg, settings, t, DAY, NOW) for t in (1, 2, 3, 4)}
     messages = render_day_summary(store_conn, cfg, settings, deliveries, NOW, DAY)
     assert all(len(m) <= 4096 for m in messages)
+
+
+def test_the_day_summary_carries_the_linkedin_block(store_conn, cfg, settings):
+    scored_job(store_conn, 1, 9)
+    deliveries = {t: deliver_tier(store_conn, cfg, settings, t, DAY, NOW) for t in (1, 2, 3, 4)}
+    messages = render_day_summary(store_conn, cfg, settings, deliveries, NOW, DAY)
+    assert any("LinkedIn (last 24 hours)" in message for message in messages)

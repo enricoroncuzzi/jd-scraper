@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 from src.jobstore.sightings import record_sighting
 from src.linkedin.catalog import SliceSpec, sync_slices
 from src.linkedin.walk import claim_due_slice
-from src.sources.base import JsonClient, SourceConfig
+from src.sources.base import JsonClient, SourceConfig, ThrottlePolicy
 from src.sources.himalayas import (
     PAGE_SIZE, build_slices, html_to_text, italy_eligibility, item_to_card, parse_time, walk_slice,
 )
@@ -37,7 +37,8 @@ US_ONLY = {**WORLDWIDE, "title": "US Data Scientist", "locationRestrictions": ["
 def _cfg(**options):
     base = {"roles": ["AI Engineer", "ML Engineer"], "country": "IT", "known_pages_to_stop": 2, "max_pages": 4}
     base.update(options)
-    return SourceConfig(True, "https://himalayas.app/jobs/api", "owner/project/1.0", 0.0, 24, base)
+    return SourceConfig(True, "https://himalayas.app/jobs/api", "owner/project/1.0", (2.0, 5.0), 24,
+                        ThrottlePolicy(1, 60.0, 300.0, 1700.0), base)
 
 
 def test_epoch_iso_and_garbage_times():

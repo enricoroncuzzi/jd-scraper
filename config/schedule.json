@@ -5,10 +5,23 @@
     "weekday": 1400,
     "weekend": 800
   },
-  "breaker": {
-    "refusals": 3,
-    "window_minutes": 30,
-    "rest_ladder_hours": [2, 6, 24]
+  "pace": {
+    "start_spacing_seconds": {"weekday": 75, "weekend": 110},
+    "jitter": 0.2,
+    "max_spacing_factor": 2.0,
+    "tighten": {
+      "calm_days": 3,
+      "calm_refusal_rate": 0.02,
+      "loosen_refusal_rate": 0.1,
+      "step": 0.1,
+      "min_day_requests": 100
+    }
   },
-  "weekend_taper_min_interval_hours": 24
+  "refusals": {
+    "first_wait_seconds": 60,
+    "max_wait_seconds": 1800,
+    "hour_refusal_rate": 0.1,
+    "hour_multiplier": 1.5,
+    "hour_max_multiplier": 3.0
+  }
 }

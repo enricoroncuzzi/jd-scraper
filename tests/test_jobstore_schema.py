@@ -48,6 +48,13 @@ def test_pace_events_has_the_columns_the_schedule_study_needs(store_conn):
         <= _columns(store_conn, "pace_budgets")
 
 
+def test_the_always_on_pace_columns_exist(store_conn):
+    assert {"refusals_today", "refusal_streak", "request_times", "nudge", "nudged_at",
+            "weekday_spacing_seconds", "weekend_spacing_seconds", "calm_days", "last_clean_at"} \
+        <= _columns(store_conn, "pace_budgets")
+    assert {"spacing_seconds", "wait_seconds"} <= _columns(store_conn, "pace_events")
+
+
 def test_sightings_and_slices_have_the_spec_columns(store_conn):
     assert {"job_id", "source", "source_job_id", "source_url", "seen_at", "slice_id"} \
         <= _columns(store_conn, "sightings")

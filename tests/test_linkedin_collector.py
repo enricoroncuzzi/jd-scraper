@@ -1,12 +1,16 @@
 from datetime import datetime, timedelta, timezone
 
-from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
-from src.linkedin.collector import collect_once, make_tick
+from src.linkedin.catalog import (
+    CollectorConfig, SliceSpec, build_slices, load_collector_config, load_tier_configs, sync_slices,
+)
+from src.linkedin.collector import collect_once, make_tick, sync_and_clamp
 from src.linkedin.pace import Gate
+from src.linkedin.walk import claim_due_slice
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 SAT = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+H = 3600
 CFG = CollectorConfig(due_hours={1: 4, 3: 12}, legacy_lock_path=None)
 
 
@@ -76,13 +80,84 @@ def test_a_closed_schedule_gate_makes_the_tick_idle_without_a_request(store_conn
     assert get.calls == []
 
 
-def test_the_weekend_taper_skips_slices_at_twentyfour_hours_or_longer(store_conn):
-    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 172800),
-            SliceSpec("linkedin", "AI Engineer", "Germany", 3, 14400))
-    for now, expected in ((NOW, "AI Engineer / Italy"), (SAT, "AI Engineer / Germany")):
-        with store_conn.cursor() as cur:
-            cur.execute("UPDATE slices SET due_at = %s", (NOW - timedelta(days=1),))
-        store_conn.commit()
-        tick = collect_once(store_conn, FakePace(), CFG, now=now,
-                            get=ScriptedGet(response(200, page_html())), sleep=lambda _s: None)
-        assert tick.detail["slice"] == expected, now
+def test_the_weekend_walks_a_due_daily_slice(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Switzerland", 2, 24 * 3600))
+    get = ScriptedGet(response(200, page_html(*ids(0, 2))), response(200, page_html()))
+    tick = collect_once(store_conn, FakePace(), CFG, now=SAT, get=get, sleep=lambda _s: None)
+    assert tick.did_work and tick.detail["slice"] == "AI Engineer / Switzerland"
+
+
+def test_startup_sync_also_clamps_the_cadence(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H)], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET interval_seconds = 3600")
+    store_conn.commit()
+    counts = sync_and_clamp(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H)], CFG)
+    store_conn.commit()
+    assert counts["clamped"] == 1
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT interval_seconds FROM slices")
+        assert cur.fetchone() == (12 * H,)
+
+
+def test_a_collector_tick_reuses_one_session(monkeypatch, store_conn):
+    from types import SimpleNamespace
+    made = []
+    monkeypatch.setattr("src.linkedin.collector.new_session",
+                        lambda: made.append(1) or SimpleNamespace(get=ScriptedGet()))
+    tick = make_tick(FakePace(), CFG)
+    tick(store_conn)
+    tick(store_conn)
+    assert len(made) == 1
+
+
+def test_a_former_72_hour_slice_is_pulled_into_48_hours_through_sync(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Malta", 3, 72 * H)], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET last_walked_at = %s, due_at = %s + interval '72 hours'",
+                    (NOW - timedelta(hours=1), NOW - timedelta(hours=1)))
+    store_conn.commit()
+    cfg = load_collector_config()
+    specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices,
+                         cfg.area_max_pages)
+    sync_and_clamp(store_conn, specs, cfg)
+    store_conn.commit()
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT interval_seconds, due_at <= last_walked_at + interval '48 hours' "
+                    "FROM slices WHERE role = 'AI Engineer' AND area = 'Malta'")
+        interval, within = cur.fetchone()
+    assert interval == 48 * H and within is True
+
+
+def test_collect_once_passes_the_configured_cadence_bounds(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H))
+    cfg = CollectorConfig(due_hours={1: 12}, legacy_lock_path=None, min_interval_hours=36,
+                          max_interval_hours=48)
+    get = ScriptedGet(response(200, page_html()))
+    collect_once(store_conn, FakePace(), cfg, now=NOW, get=get, sleep=lambda _s: None)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT interval_seconds FROM slices")
+        assert cur.fetchone()[0] == 36 * H
+
+
+def test_the_collector_moves_to_the_next_due_slice_after_a_long_deferred_walk(store_conn, monkeypatch):
+    import src.linkedin.collector as collector_module
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
+            SliceSpec("linkedin", "AI Engineer", "Germany", 3, 48 * H))
+    clock = iter([NOW, NOW + timedelta(minutes=40)])
+    monkeypatch.setattr(collector_module, "utcnow", lambda: next(clock))
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(429), response(429))
+    tick = collect_once(store_conn, FakePace(), CFG, get=get, sleep=lambda _s: None)
+    assert tick.detail["stop_reason"] == "rate_limited"
+    assert claim_due_slice(store_conn, NOW + timedelta(minutes=40)).area == "Germany"
+
+
+def test_sync_and_clamp_keeps_every_unfinished_stop_reason_deferred(store_conn):
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Greece", 3, 24 * H))
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'error', last_walked_at = %s, due_at = %s",
+                    (NOW - timedelta(hours=30), NOW + timedelta(minutes=30)))
+    store_conn.commit()
+    cfg = CollectorConfig(due_hours={3: 24}, legacy_lock_path=None)
+    specs = [SliceSpec("linkedin", "AI Engineer", "Greece", 3, 24 * H)]
+    assert sync_and_clamp(store_conn, specs, cfg)["clamped"] == 0

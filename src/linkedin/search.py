@@ -1,13 +1,21 @@
-"""One LinkedIn guest search request, with the spec's throttle handling.
+"""One LinkedIn guest search request, with the spec's refusal handling.
 
 The endpoint honours only keywords, location, f_TPR and start. f_WT, f_E, f_JT
 and sortBy are silently ignored, so none of them is ever sent.
+
+A 429/999 is one refusal and returns at once: the host-level wait in the pace
+applies before the next request. The 5/15/45 s ladder is for neutral failures
+only. A 200 with no cards while `distrust_empty` is set (a page asked right
+after a refusal) is counted as a refusal too and not trusted as the end of the
+results.
 """
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import requests
 
+from src.http_session import retry_after_seconds
 from src.linkedin.cards import Card, parse_cards
 from src.services.pulse import pulse
 
@@ -27,7 +35,7 @@ TRANSIENT_STATUSES = frozenset({503, 504})
 
 
 class SearchThrottled(RuntimeError):
-    """LinkedIn kept answering 429/999 through every retry."""
+    """LinkedIn answered 429/999, or an empty page right after a refusal."""
 
 
 class SearchFailed(RuntimeError):
@@ -37,17 +45,17 @@ class SearchFailed(RuntimeError):
 @dataclass(frozen=True)
 class Page:
     cards: list[Card]
-    throttled: bool  # a throttle status was seen while getting this page
+    throttled: bool  # this response was counted as a refusal
     end: bool = False  # HTTP 400: a start offset past the end of the results
 
 
 def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
-               get=requests.get, sleep=time.sleep) -> Page:
+               distrust_empty: bool = False, get=requests.get, sleep=time.sleep) -> Page:
     params = {"keywords": role, "location": area, "f_TPR": f_tpr_value, "start": start}
-    saw_throttle = False
     last_problem = "no attempt"
     for attempt in range(len(RETRY_WAITS) + 1):
         pulse({"search": f"{role} / {area}", "start": start, "attempt": attempt + 1})
+        outcome = None
         with pace.slot("search") as slot:
             try:
                 response = get(SEARCH_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
@@ -58,23 +66,33 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
             if response is not None:
                 status = response.status_code
                 if status == 200:
-                    slot.clean(status)
-                    return Page(parse_cards(response.text), saw_throttle)
-                if status == 400:
+                    cards = parse_cards(response.text)
+                    if distrust_empty and not cards:
+                        slot.throttled(status)
+                        outcome = ("return", Page([], throttled=True))
+                    else:
+                        slot.clean(status)
+                        outcome = ("return", Page(cards, throttled=False))
+                elif status == 400:
                     slot.neutral(status)
-                    return Page([], saw_throttle, end=True)
-                if status in THROTTLE_STATUSES:
-                    slot.throttled_again(status) if saw_throttle else slot.throttled(status)
-                    saw_throttle = True
+                    outcome = ("return", Page([], throttled=False, end=True))
+                elif status in THROTTLE_STATUSES:
+                    retry_after = retry_after_seconds(
+                        response.headers.get("Retry-After"), datetime.now(timezone.utc))
+                    slot.throttled(status, retry_after=retry_after)
                     last_problem = f"HTTP {status}"
+                    outcome = ("raise", SearchThrottled(last_problem))
                 elif status in TRANSIENT_STATUSES:
                     slot.neutral(status)
                     last_problem = f"HTTP {status}"
                 else:
                     slot.neutral(status)
-                    raise SearchFailed(f"LinkedIn search returned HTTP {status}")
+                    outcome = ("raise", SearchFailed(f"LinkedIn search returned HTTP {status}"))
+        if outcome is not None:
+            action, value = outcome
+            if action == "return":
+                return value
+            raise value
         if attempt < len(RETRY_WAITS):
             sleep(RETRY_WAITS[attempt])
-    if saw_throttle:
-        raise SearchThrottled(last_problem)
     raise SearchFailed(last_problem)

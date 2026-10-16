@@ -176,11 +176,13 @@ loses nothing.
 ## 6. Daily operation
 
 - Health: the day summary carries each service's state; the watchdog messages Telegram if a
-  service is silent for over an hour, nothing was collected for six hours, or Postgres is down.
-- Logs: `journalctl -u jds-process --since today`. LinkedIn throttling shows up as
-  `spacing x` above 1.00 in `status`. A request that is refused and retried counts as one throttle
-  (one doubling, capped at x100). The spacing halves for every 30 minutes without a refusal and also
-  falls 10 percent per 50 clean responses, so it clears by itself.
+  service is silent for over an hour, a daily source has missed its run or ended in error, no
+  LinkedIn request has succeeded for 24 h of open time, or Postgres is down.
+- Logs: `journalctl -u jds-process --since today`. A refusal shows up as a
+  `[pace] LinkedIn refused a ... request ... waiting Ns (refusal K in a row)` line, and the
+  `status` pace line shows the hour nudge, the refusals in a row and any wait (`waiting until
+  ... Rome`). There is no global rest state: a refusal is a short capped wait the pace applies
+  before the next request, so the system never shuts itself off for hours.
 - Language-model use: the day summary shows OpenRouter requests against 1,000. It turns
   `HIGH` from 800. A budget that prioritises tier 1 is built only if usage exceeds 800 a day
   on three days in a fortnight (spec section 6.5).
@@ -189,10 +191,10 @@ loses nothing.
   it healthy; then the next). A restart sends SIGTERM and the service stops between jobs, so it
   waits at most `TimeoutStopSec` (5 minutes) and then systemd kills it; killing mid-job is safe
   because every stage commits per job or per batch. Database changes are additive and applied
-  by `init_store` when a service starts.
-- Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process`.
+  by `init_store` when a service starts. The pacing change has its own order below.
+- Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
 
-### The LinkedIn schedule gate (schedule C)
+### The LinkedIn pace and schedule gate
 
 The collector, the processor and the packaging stage of `jds-deliver` (which classifies a
 LinkedIn offer link) share one request budget on `linkedin.com`, enforced in
@@ -204,19 +206,56 @@ configured in `config/schedule.json`:
 | `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
 | `closed_hours` | `[0, 6]` | no LinkedIn request 00:00-06:00 Rome |
 | `daily_caps.weekday` / `.weekend` | `1400` / `800` | shared cap on search + description requests per Rome day |
-| `breaker.refusals` / `.window_minutes` | `3` / `30` | refusals that trip the breaker |
-| `breaker.rest_ladder_hours` | `[2, 6, 24]` | rest after the first trip, then after each refused probe |
-| `weekend_taper_min_interval_hours` | `24` | on Sat/Sun, slices whose base cadence is this long or longer are skipped |
+| `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | where the steady base spacing starts, in seconds |
+| `pace.jitter` | `0.2` | every sleep is jittered +/-20 % |
+| `pace.max_spacing_factor` | `2.0` | the daily verdict never loosens past twice the start |
+| `pace.tighten.calm_days` | `3` | consecutive calm days that tighten the spacing |
+| `pace.tighten.calm_refusal_rate` | `0.02` | a calm day is under 2 % refusals |
+| `pace.tighten.loosen_refusal_rate` | `0.10` | a bad day is over 10 % refusals |
+| `pace.tighten.step` | `0.10` | one 10 % step per verdict, down or up |
+| `pace.tighten.min_day_requests` | `100` | a quieter Rome day gives no verdict |
+| `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
+| `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
+| `refusals.hour_refusal_rate` | `0.10` | over 10 % of the last hour refused |
+| `refusals.hour_multiplier` | `1.5` | nudges the spacing up by 1.5x |
+| `refusals.hour_max_multiplier` | `3.0` | the nudge is capped at 3x the base |
 
-When the gate is closed the collector returns an idle tick, the processor skips only its
-LinkedIn description stage, and `jds-deliver` leaves each LinkedIn packaging candidate for the
-next pass; cheap checks, remote verification and scoring keep running, and every service keeps
-heartbeating. Every request is appended to the `pace_events` table (timestamp, service, kind
-`search`/`description`, outcome, HTTP status), and the description fetch stores the "posted N ago"
-text in `jobs.posted_text`.
+`config/collector.json` sets the per-slice cadence and the page caps:
 
-`config/schedule.json` is read once when a service starts, so a change to a cap, the window, the
-breaker or the taper needs the three LinkedIn users restarted:
+| Setting | Shipped value | Meaning |
+|---|---|---|
+| `due_hours` | `12/24/48/24` | tier 1 / tier 2 / tier 3 / tier 4 base cadence, in hours |
+| `min_interval_hours` / `max_interval_hours` | `12` / `48` | hard bounds on any adaptive interval |
+| `cadence_tolerance_hours` | `6` | a slice counts as past its cadence only beyond its interval plus this tolerance |
+| `area_max_pages` | ten countries at `20` | the page cap for the ten large tier-3 countries, a walk that reaches it ends as `area_cap` |
+| `refused_pages_to_defer` | `3` | refusals in a row before a walk defers its slice |
+
+Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
+point where descriptions start taking every second turn), `config/deliver.json`
+`linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
+repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2]` freehire,
+`[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
+`max_wait_seconds` 300, `run_budget_seconds` 1700).
+
+The steady pace has a floor derived from the cap and the 18 open hours: 18 h / 1400 = 46 s
+weekday, 18 h / 800 = 81 s weekend. The base starts at 75 s / 110 s and never goes below the
+floor. After three consecutive open days under 2 % refusals it tightens 10 %; any day over
+10 % loosens it 10 % (to at most twice the start), and a day under 100 requests gives no
+verdict. A refusal honours `Retry-After` or waits 60 s, doubling each consecutive refusal to a
+30 min cap, and the first clean response resets it. When refusals pass 10 % of the last hour
+the spacing is nudged up 1.5x, at most 3x. Searches go first; a description takes the turn when
+no search is waiting, and once the oldest waiting job is over `description_deadline_hours` old
+descriptions take every second turn. If a walk is refused three times in a row it stops, keeps
+its resume point, and the collector moves to the next due slice. The gate now closes only for
+the night window and the daily cap.
+
+The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
+`*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
+and at least 60 min clear of the 03:00 and 04:00 daily starts, so a resume run can never hold a
+source's lock when its daily run starts.
+
+`config/schedule.json` is read once when a service starts, so a change to a cap, the window or
+the pace needs the three LinkedIn users restarted:
 
 ```bash
 sudo systemctl restart jds-collect-linkedin jds-process jds-deliver
@@ -226,22 +265,31 @@ Do that restart back to back, not one service per hour: the shared counter start
 restart on the new code, so a service still on the old code issues requests that are neither
 gated nor counted.
 
-Read the gate with `python -m src.services.status`. The line is one of:
+Read the gate and the pace with `python -m src.services.status`. The gate line is one of:
 
 ```
 LinkedIn gate: 342/1400 requests today (weekday), window open
-LinkedIn gate: 342/1400 requests today (weekday), window open, probe pending
 LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome
 LinkedIn gate: 1400/1400 requests today (weekday), daily cap reached
-LinkedIn gate: 17/1400 requests today (weekday), breaker rest until 2026-10-16 12:00 UTC
 ```
 
-The `probe pending` suffix means a breaker rest has ended but LinkedIn has not yet answered the
-single probe request that would reset the ladder: the next request decides whether the ladder
-resets or the next rest begins. After a breaker rest ends the next request is the probe: if
-LinkedIn answers it cleanly the ladder resets, if it refuses the rest grows (2 h, 6 h, 24 h, then
-24 h on repeat). A timeout or a 503 proves nothing and leaves the ladder where it is, so the next
-request is another probe. The daily counter resets by itself at Rome midnight.
+The pace line shows the base spacing for both windows, the hour nudge, the refusals in a row
+and the last success, and adds any wait in Rome time:
+
+```
+LinkedIn pace: base 75s weekday / 110s weekend, hour nudge x1.0, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome
+LinkedIn pace: base 68s weekday / 110s weekend, hour nudge x1.5, 2 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, waiting until 12:04:00 Rome
+```
+
+To restart the base spacing from config (for example after a mistake):
+
+```bash
+psql jds -c "UPDATE pace_budgets SET weekday_spacing_seconds = NULL, weekend_spacing_seconds = NULL, \
+  calm_days = 0 WHERE host = 'linkedin.com';"
+```
+
+That takes effect on the next request; no restart is needed. To reset today's request counter as
+well, add `, requests_today = 0, day = NULL` to the same `SET` list.
 
 The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
 its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,
@@ -249,16 +297,100 @@ VP, Director) plus `10+ years`, `8+ years`, `7+ years`, `C++`, `Rust`, `Java` an
 Senior, Lead and Head of are deliberately not in it. Java, Rust and C++ titles are therefore
 filtered too.
 
-To reset the breaker by hand (for example after confirming the IP is healthy, or to undo a
-mistake):
+### Deploying this change
 
-```bash
-psql jds -c "UPDATE pace_budgets SET rest_until = NULL, rest_level = 0, refusal_times = '{}' \
-  WHERE host = 'linkedin.com';"
+The general "restart one unit at a time" rule above does not apply here. Stop all three LinkedIn
+users before the code moves: the old code spaces requests 2-4 s and writes `next_slot_at` after
+each one, so a rolling restart could leave an old processor or deliver setting a 2-4 s slot the
+new collector would honour, a short burst in the first minutes. With all three stopped, only new
+code writes the row again. `SERVICE_DOWN_AFTER` is 1 h, so the short stop raises no service alert.
+The collector's stop normally waits the full `TimeoutStopSec=300` and is then killed; at 75 s per
+page a walk outlasts it, which is safe because `resume_start` is committed per page, and it is not
+a hang.
+
+1. `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
+2. `git pull --ff-only` and `.venv/bin/pip install -r requirements.txt`.
+3. `.venv/bin/python -m src.linkedin.collector --sync-slices`: runs `init_store` (adding the new
+   columns), applies the new cadences and the 12-48 h clamp through `sync_and_clamp`, prints
+   `slices: {... 'clamped': N}` and exits. It makes no LinkedIn request.
+4. `psql jds -c "UPDATE pace_budgets SET refusal_times = '{}', refusals_today = (SELECT count(*) FROM pace_events WHERE outcome = 'refused' AND at >= date_trunc('day', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') WHERE host = 'linkedin.com';"`.
+   The new code reads `refusal_times` as the last hour's refusals while the new `request_times`
+   starts empty, so a refusal from the hour before the deploy would count as 100 % of the hour and
+   nudge the spacing x1.5 for the first hour. The `refusals_today` part makes the deploy day's
+   verdict count its pre-deploy refusals. This needs no new code (`refusal_times` already exists).
+5. Copy the four `jds-resume-*` units to `/etc/systemd/system/`;
+   `sudo systemd-analyze calendar --iterations=40 '*-*-* 00..01,05..06,11..23:00/30:00'` must list
+   only :00 and :30 starts, none from 02:00 to 04:59 (the daily runs at 03:00 and 04:00 plus or
+   minus an hour) and none from 07:00 to 10:59; `sudo systemctl daemon-reload`;
+   `sudo systemctl enable --now jds-resume-freehire.timer jds-resume-himalayas.timer`.
+6. `sudo systemctl start jds-collect-linkedin jds-process jds-deliver`. Each runs `init_store`
+   again (idempotent). Check `python -m src.services.status`: the gate open, `LinkedIn pace: base
+   75s weekday / 110s weekend, hour nudge x1.0`. Expect one "OK again: collection is healthy"
+   Telegram note on the first watchdog run (the old `health:collection` ledger row clears once).
+   LinkedIn jobs penalised by old 429s keep their `next_attempt_at` (up to 12 h) once after
+   deploy, so the first day's description lag is not misread as a new bug.
+
+### Week one review (design 4.6 C and section 8)
+
+After 1 h, 1 day and 7 days, run these against the job store. Each is a single `psql jds -c`
+statement.
+
+Requests per Rome day by kind and outcome:
+
+```sql
+SELECT (at AT TIME ZONE 'Europe/Rome')::date AS day, kind, outcome, count(*)
+FROM pace_events GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 ```
 
-To reset today's request counter as well, add `, requests_today = 0, day = NULL` to the same
-`SET` list. Both take effect on the next tick; no restart is needed.
+The longest open-hours gap between consecutive requests (partitioned by Rome day, so the
+night gap is not counted):
+
+```sql
+SELECT max(gap) FROM (
+  SELECT at - lag(at) OVER (PARTITION BY (at AT TIME ZONE 'Europe/Rome')::date ORDER BY at) AS gap
+  FROM pace_events WHERE spacing_seconds IS NOT NULL) g;
+```
+
+Pages per walk by area, with the caps hit next to each other:
+
+```sql
+SELECT s.area, count(*) AS walks,
+       count(*) FILTER (WHERE w.stop_reason = 'area_cap') AS area_caps,
+       count(*) FILTER (WHERE w.stop_reason = 'cap_hit') AS full_caps,
+       avg(w.pages)::numeric(6,1) AS avg_pages
+FROM slice_walks w JOIN slices s ON s.id = w.slice_id
+WHERE s.source = 'linkedin' AND s.active AND w.walked_at > now() - interval '7 days'
+  AND w.walked_at >= (SELECT min(at) FROM pace_events WHERE spacing_seconds IS NOT NULL)
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Active slices whose last walk is older than 48 h plus the 6 h cadence tolerance:
+
+```sql
+SELECT role, area, last_walked_at FROM slices
+WHERE active AND source = 'linkedin'
+  AND (last_walked_at IS NULL OR last_walked_at < now() - (interval '48 hours' + interval '6 hours'))
+ORDER BY last_walked_at NULLS FIRST;
+```
+
+Description lag, sampled from jobs still in `described` (the stage changes when they are scored):
+
+```sql
+SELECT percentile_cont(ARRAY[0.5, 0.9, 0.95]) WITHIN GROUP (ORDER BY stage_changed_at - first_seen_at)
+FROM jobs WHERE stage = 'described';
+```
+
+Share of delivered LinkedIn jobs that reached the digest within 4 days of posting:
+
+```sql
+SELECT avg((j.delivered_at - coalesce(j.posted_at, j.first_seen_at) <= interval '4 days')::int)::numeric(4,3)
+FROM jobs j
+WHERE j.delivered_at IS NOT NULL
+  AND j.first_seen_at >= (SELECT min(at) FROM pace_events WHERE spacing_seconds IS NOT NULL)
+  AND EXISTS (SELECT 1 FROM sightings s WHERE s.job_id = j.id AND s.source = 'linkedin');
+```
+
+The captain then decides on option B (narrowing LinkedIn in Europe). It is not built.
 
 ## 7. Backups (captain decision)
 

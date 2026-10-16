@@ -1,11 +1,12 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from src.linkedin.schedule import (
-    ScheduleConfig, daily_cap, in_closed_window, is_weekend, load_schedule_config, local_day,
-    requests_today_for, window_name,
+    ScheduleConfig, daily_cap, floor_spacing_seconds, in_closed_window, is_weekend,
+    load_schedule_config, local_day, open_hours_per_day, open_seconds_between, requests_today_for,
+    start_spacing_seconds, window_name,
 )
 
 # 2026-10-14 is a Wednesday; the 17th and 18th are Saturday and Sunday.
@@ -19,9 +20,55 @@ def test_the_shipped_schedule_loads():
     assert cfg.timezone == "Europe/Rome"
     assert cfg.closed_hours == (0, 6)
     assert (cfg.weekday_cap, cfg.weekend_cap) == (1400, 800)
-    assert (cfg.breaker_refusals, cfg.breaker_window_minutes) == (3, 30)
-    assert cfg.rest_ladder_hours == (2, 6, 24)
-    assert cfg.weekend_taper_min_interval_hours == 24
+
+
+def test_a_leftover_breaker_block_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="removed"):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS,
+                                               "breaker": {"refusals": 3, "window_minutes": 30}}))
+
+
+def test_a_leftover_taper_key_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="removed"):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS, "weekend_taper_min_interval_hours": 24}))
+
+
+def test_the_shipped_schedule_carries_the_pace_and_refusal_numbers():
+    cfg = load_schedule_config()
+    p, r = cfg.pace, cfg.refusals
+    assert (p.start_weekday_seconds, p.start_weekend_seconds, p.jitter) == (75, 110, 0.2)
+    assert (p.calm_days_to_tighten, p.calm_refusal_rate, p.loosen_refusal_rate, p.step) == (3, 0.02, 0.10, 0.10)
+    assert (p.min_day_requests, p.max_spacing_factor) == (100, 2.0)
+    assert (r.first_wait_seconds, r.max_wait_seconds) == (60, 1800)
+    assert (r.hour_refusal_rate, r.hour_multiplier, r.hour_max_multiplier) == (0.10, 1.5, 3.0)
+
+
+def test_the_floor_is_the_open_hours_over_the_cap():
+    cfg = load_schedule_config()
+    assert open_hours_per_day(cfg) == 18
+    assert floor_spacing_seconds(cfg, "weekday") == pytest.approx(18 * 3600 / 1400)  # 46.29 s
+    assert floor_spacing_seconds(cfg, "weekend") == pytest.approx(81.0)
+
+
+def test_open_time_skips_the_quiet_window():
+    cfg = ScheduleConfig()
+    # Wed 22:00 Rome (CEST, UTC+2) to Thu 08:00 Rome: 2 h before midnight + 2 h after 06:00
+    start = datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc)
+    assert open_seconds_between(cfg, start, start + timedelta(hours=10)) == 4 * 3600
+    assert open_seconds_between(cfg, start, start) == 0
+
+
+def test_open_time_is_dst_correct():
+    cfg = ScheduleConfig()
+    # Sat 24 Oct 06:00 Rome (UTC+2) to Mon 26 Oct 06:00 Rome (UTC+1): the extra hour is at 03:00, inside the window
+    start = datetime(2026, 10, 24, 4, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)
+    assert open_seconds_between(cfg, start, end) == 36 * 3600
+
+
+def test_start_spacing_seconds_returns_the_window_start():
+    cfg = ScheduleConfig()
+    assert start_spacing_seconds(cfg, "weekday") == 75 and start_spacing_seconds(cfg, "weekend") == 110
 
 
 def test_the_weekday_and_the_weekend_get_their_own_caps():
@@ -89,9 +136,22 @@ DEFAULTS = {
     "timezone": "Europe/Rome",
     "closed_hours": [0, 6],
     "daily_caps": {"weekday": 1400, "weekend": 800},
-    "breaker": {"refusals": 3, "window_minutes": 30, "rest_ladder_hours": [2, 6, 24]},
-    "weekend_taper_min_interval_hours": 24,
+    "pace": {
+        "start_spacing_seconds": {"weekday": 75, "weekend": 110},
+        "jitter": 0.2,
+        "max_spacing_factor": 2.0,
+        "tighten": {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.10,
+                    "step": 0.10, "min_day_requests": 100},
+    },
+    "refusals": {
+        "first_wait_seconds": 60,
+        "max_wait_seconds": 1800,
+        "hour_refusal_rate": 0.10,
+        "hour_multiplier": 1.5,
+        "hour_max_multiplier": 3.0,
+    },
 }
+PACE, TIGHTEN, REFUSALS = DEFAULTS["pace"], DEFAULTS["pace"]["tighten"], DEFAULTS["refusals"]
 
 
 @pytest.mark.parametrize("override", [
@@ -103,10 +163,13 @@ DEFAULTS = {
     {"closed_hours": [0, 24]},
     {"daily_caps": {"weekday": 0, "weekend": 800}},
     {"daily_caps": {"weekday": 1400}},
-    {"breaker": {"refusals": 0, "window_minutes": 30, "rest_ladder_hours": [2]}},
-    {"breaker": {"refusals": 3, "window_minutes": 0, "rest_ladder_hours": [2]}},
-    {"breaker": {"refusals": 3, "window_minutes": 30, "rest_ladder_hours": []}},
-    {"weekend_taper_min_interval_hours": 0},
+    {"pace": {**PACE, "jitter": 0.6}},
+    {"pace": {**PACE, "tighten": {**TIGHTEN, "step": 0}}},
+    {"pace": {**PACE, "tighten": {**TIGHTEN, "calm_refusal_rate": 1.5}}},
+    {"pace": {**PACE, "start_spacing_seconds": {"weekday": 0, "weekend": 110}}},
+    {"refusals": {**REFUSALS, "max_wait_seconds": 30}},
+    {"refusals": {**REFUSALS, "hour_multiplier": 0.9}},
+    {"pace": {**PACE, "max_spacing_factor": 0.5}},
 ])
 def test_a_malformed_schedule_raises(tmp_path, override):
     with pytest.raises(ValueError):
