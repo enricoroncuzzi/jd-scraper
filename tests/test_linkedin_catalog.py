@@ -195,3 +195,15 @@ def test_the_shipped_collector_config_defers_after_three_refusals():
 
 def test_the_shipped_collector_config_has_a_six_hour_cadence_tolerance():
     assert load_collector_config().cadence_tolerance_hours == 6
+
+def test_the_clamp_does_not_pull_in_a_deferred_slice(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Greece", 3, 24 * H)], NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'rate_limited', last_walked_at = %s, "
+                    "due_at = %s WHERE area = 'Greece'",
+                    (NOW - timedelta(hours=30), NOW + timedelta(minutes=30)))
+    store_conn.commit()
+    assert clamp_cadence(store_conn, "linkedin", 12 * H, 48 * H) == 0
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT due_at > %s FROM slices WHERE area = 'Greece'", (NOW,))
+        assert cur.fetchone() == (True,)
