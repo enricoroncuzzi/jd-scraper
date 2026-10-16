@@ -182,3 +182,47 @@ def test_provenance_groups_hits_by_origin_and_flags_aggregators(store_conn):
     report = format_report(list(rows.values()), italian_sample(store_conn, 3))
     assert "jobgether: 6, 0, 0, 0   <-- looks like an aggregator" in report
     assert "Italian hits to read by hand:" in report and "greenhouse" in report
+
+
+def test_a_resume_run_walks_only_unfinished_slices(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+        cur.execute("UPDATE slices SET stop_reason = 'rate_limited' WHERE id = "
+                    "(SELECT id FROM slices ORDER BY id LIMIT 1)")
+    store_conn.commit()
+    pages = Pages(_body(_hits(0, 1)))
+    ticks = service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, pages),
+                                       now_fn=lambda: NOW, unfinished_only=True)
+    assert len(ticks) == 1 and ticks[0].did_work
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM slices WHERE stop_reason = 'known_page'")
+        assert cur.fetchone()[0] == 7
+
+
+def test_a_resume_run_with_nothing_to_resume_leaves_the_heartbeat_alone(store_conn):
+    cfg = _cfg(page_size=5)
+    sync_slices(store_conn, build_slices(cfg), NOW, "freehire")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'known_page'")
+    heartbeat.start(store_conn, "collect-freehire", now=NOW)
+    heartbeat.beat(store_conn, "collect-freehire", "ok", {"slices": 8}, now=NOW)
+    store_conn.commit()
+    ticks = service.collect_due_slices(store_conn, "freehire", cfg, _client(cfg, Pages()),
+                                       now_fn=lambda: NOW, unfinished_only=True)
+    assert ticks == []
+    beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
+    assert beats["collect-freehire"].state == "ok" and beats["collect-freehire"].detail == {"slices": 8}
+
+
+def test_a_second_run_of_the_same_source_exits_without_a_request(store_conn, store_conn_factory):
+    from src.services.runner import acquire_single_instance
+    cfg = _cfg(page_size=5)
+    holder = store_conn_factory(store_conn)
+    holder.autocommit = True
+    assert acquire_single_instance(holder, "collect-freehire")
+    get = Pages()
+    assert service.run_oneshot(store_conn, "freehire", cfg, _client(cfg, get), resume=False) == 0
+    assert get.calls == []
+    holder.close()

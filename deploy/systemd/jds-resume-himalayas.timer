@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the jd-scraper himalayas resume walk every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* 00..01,05..06,11..23:00/30:00
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

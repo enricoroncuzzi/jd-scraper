@@ -207,3 +207,40 @@ def test_the_run_budget_ends_before_the_unit_timeout(source):
     budget = json.load(open("config/sources.json"))[source]["throttle"]["run_budget_seconds"]
     timeout = int(_read(f"deploy/systemd/jds-collect-{source}.service")["Service"]["TimeoutStartSec"])
     assert budget < timeout
+
+
+RESUME_TIMERS = sorted(glob.glob("deploy/systemd/jds-resume-*.timer"))
+
+
+def _expand_hours(spec):
+    """'00..01,05..06,11..23' -> {0, 1, 5, 6, 11, 12, ..., 23}"""
+    hours = set()
+    for part in spec.split(","):
+        first, _, last = part.partition("..")
+        hours.update(range(int(first), int(last or first) + 1))
+    return hours
+
+
+def _resume_slots(timer):
+    """Every start of a resume timer, in minutes after midnight."""
+    hours_spec, minutes = _read(timer)["Timer"]["OnCalendar"].split()[1].split(":")[:2]
+    assert minutes == "00/30", f"{timer}: a resume run must fire every 30 minutes"
+    return {hour * 60 + minute for hour in _expand_hours(hours_spec) for minute in (0, 30)}
+
+
+def test_resume_runs_are_oneshot_every_half_hour_outside_the_delivery_window():
+    assert {os.path.basename(t) for t in RESUME_TIMERS} == {"jds-resume-freehire.timer", "jds-resume-himalayas.timer"}
+    delivery = _delivery_minutes()
+    daily_starts = [_daily_start_minutes(t) for t in COLLECTOR_TIMERS]
+    for timer in RESUME_TIMERS:
+        slots = _resume_slots(timer)
+        assert not [s for s in slots if delivery - 60 <= s < delivery + 180], "07:00-10:59 must stay clear"
+        for start in daily_starts:
+            # A resume run holding the per-source lock at a daily start would make the daily
+            # run exit without walking that day's slices (review change 2).
+            clash = sorted(s for s in slots if start - 60 <= s < start + 60)
+            assert not clash, f"{timer} fires within an hour of the daily run at {start}: {clash}"
+        service_path = timer[: -len(".timer")] + ".service"
+        service = _read(service_path)["Service"]
+        assert service["Type"] == "oneshot" and "--resume" in service["ExecStart"]
+        assert int(service["TimeoutStartSec"]) <= 1800 and "Install" not in _read(service_path)
