@@ -161,7 +161,10 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
 
     A walk that did not finish keeps last_walked_at, so the next window still
     reaches back to the last complete walk, and resumes at result.next_start.
-    The 12-48 h bounds come from the collector config when one is given.
+    A finished walk is scheduled from its start (so its own duration does not drift
+    the cadence) and an unfinished one from its finish (so a long deferred walk rests
+    before it is retried). The 12-48 h bounds come from the collector config when one
+    is given.
     """
     empty = result.finished and result.cards_seen == 0
     consecutive_empty = row.consecutive_empty + 1 if empty else (
@@ -171,6 +174,7 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
         stop_reason=result.stop_reason, consecutive_empty=consecutive_empty,
         min_interval=(cfg.min_interval_hours * 3600 if cfg else DEFAULT_MIN_INTERVAL),
         max_interval=(cfg.max_interval_hours * 3600 if cfg else DEFAULT_MAX_INTERVAL))
+    due_from = started_at if result.finished else finished_at
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO slice_walks (slice_id, walked_at, pages, cards_seen, new_jobs, stop_reason, "
@@ -185,6 +189,6 @@ def finish_walk(conn, row: SliceRow, result: WalkResult, started_at: datetime,
                 started_at if result.finished else row.last_walked_at,
                 result.window, result.pages, result.cards_seen, result.stop_reason,
                 consecutive_empty, interval, 0 if result.finished else result.next_start,
-                next_due(started_at, interval, result.stop_reason), row.id,
+                next_due(due_from, interval, result.stop_reason), row.id,
             ),
         )

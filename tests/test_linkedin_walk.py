@@ -290,3 +290,11 @@ def test_every_walk_is_logged_with_its_requests_hits_and_new_jobs(store_conn):
                     "FROM slice_walks WHERE slice_id = %s ORDER BY walked_at", (row.id,))
         assert cur.fetchall() == [(NOW, 3, 23, 20, "end_of_results", 86400),
                                   (NOW + timedelta(hours=4), 2, 12, 0, "rate_limited", 86400)]
+
+
+def test_a_long_deferred_walk_rests_30_minutes_after_it_stopped(store_conn):
+    row = _seed_slice(store_conn)
+    result = WalkResult(5, 50, 50, "rate_limited", 86400, 50)
+    finish_walk(store_conn, row, result, NOW, NOW + timedelta(minutes=40), _cfg())
+    _last_walked, _reason, _interval, _empty, resume, due, _pages = _slice_state(store_conn)
+    assert resume == 50 and due == NOW + timedelta(minutes=70)

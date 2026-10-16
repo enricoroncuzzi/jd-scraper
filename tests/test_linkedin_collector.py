@@ -5,6 +5,7 @@ from src.linkedin.catalog import (
 )
 from src.linkedin.collector import collect_once, make_tick, sync_and_clamp
 from src.linkedin.pace import Gate
+from src.linkedin.walk import claim_due_slice
 from tests.linkedin_fakes import FakePace, ScriptedGet, ids, page_html, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -137,3 +138,15 @@ def test_collect_once_passes_the_configured_cadence_bounds(store_conn):
     with store_conn.cursor() as cur:
         cur.execute("SELECT interval_seconds FROM slices")
         assert cur.fetchone()[0] == 36 * H
+
+
+def test_the_collector_moves_to_the_next_due_slice_after_a_long_deferred_walk(store_conn, monkeypatch):
+    import src.linkedin.collector as collector_module
+    _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
+            SliceSpec("linkedin", "AI Engineer", "Germany", 3, 48 * H))
+    clock = iter([NOW, NOW + timedelta(minutes=40)])
+    monkeypatch.setattr(collector_module, "utcnow", lambda: next(clock))
+    get = ScriptedGet(response(200, page_html(*ids(0, 10))), response(429), response(429), response(429))
+    tick = collect_once(store_conn, FakePace(), CFG, get=get, sleep=lambda _s: None)
+    assert tick.detail["stop_reason"] == "rate_limited"
+    assert claim_due_slice(store_conn, NOW + timedelta(minutes=40)).area == "Germany"
