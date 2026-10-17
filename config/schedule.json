@@ -22,6 +22,7 @@
     "max_wait_seconds": 1800,
     "hour_refusal_rate": 0.1,
     "hour_multiplier": 1.5,
-    "hour_max_multiplier": 3.0
+    "hour_max_multiplier": 3.0,
+    "hour_min_requests": 10
   }
 }

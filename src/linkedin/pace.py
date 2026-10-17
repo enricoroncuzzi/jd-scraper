@@ -153,9 +153,33 @@ def refusal_wait_seconds(streak: int, retry_after: float | None, policy: Refusal
     return min(base * uniform(1 - jitter, 1 + jitter), policy.max_wait_seconds)
 
 
-def update_nudge(state: PaceState, now: datetime, policy: RefusalPolicy) -> None:
-    """Roll the trailing-hour window and nudge the spacing up when the last hour's
-    refusals passed `hour_refusal_rate` (at most once an hour, capped)."""
+def _reopened_since(schedule: ScheduleConfig, since: datetime | None, now: datetime) -> bool:
+    """True when the daily closed window ended between `since` and `now`, so the current
+    open session started after the last nudge change and must begin with a clean slate."""
+    if since is None or since >= now:
+        return False
+    zone = schedule.zone
+    _, closed_end = schedule.closed_hours
+    local_now = now.astimezone(zone)
+    day = since.astimezone(zone).date()
+    while day <= local_now.date():
+        reopen = datetime(day.year, day.month, day.day, tzinfo=zone) + timedelta(hours=closed_end)
+        if since < reopen <= now:
+            return True
+        day += timedelta(days=1)
+    return False
+
+
+def update_nudge(state: PaceState, now: datetime, schedule: ScheduleConfig) -> None:
+    """Move the spacing nudge at most once an hour from the trailing hour's refusals: up
+    when they pass `hour_refusal_rate`, down a step when a judged hour is at or below it,
+    and all the way to base when the hour has no refusals. An hour with fewer than
+    `hour_min_requests` requests is too small a sample to judge and changes nothing. A nudge
+    from before the night pause never carries into the morning."""
+    policy = schedule.refusals
+    if _reopened_since(schedule, state.nudged_at, now):
+        state.nudge = 1.0
+        state.nudged_at = None
     cutoff = now - timedelta(hours=1)
     state.request_times = [t for t in state.request_times if t > cutoff]
     state.refusal_times = [t for t in state.refusal_times if t > cutoff]
@@ -163,10 +187,17 @@ def update_nudge(state: PaceState, now: datetime, policy: RefusalPolicy) -> None
         state.nudge = 1.0
         state.nudged_at = None
         return
-    rate = len(state.refusal_times) / max(len(state.request_times), 1)
+    if len(state.request_times) < policy.hour_min_requests:
+        return
     due = state.nudged_at is None or now - state.nudged_at >= timedelta(hours=1)
-    if rate > policy.hour_refusal_rate and due:
+    if not due:
+        return
+    rate = len(state.refusal_times) / len(state.request_times)
+    if rate > policy.hour_refusal_rate:
         state.nudge = min(state.nudge * policy.hour_multiplier, policy.hour_max_multiplier)
+        state.nudged_at = now
+    elif state.nudge > 1.0:
+        state.nudge = max(1.0, state.nudge / policy.hour_multiplier)
         state.nudged_at = now
 
 
@@ -381,7 +412,7 @@ class PaceBudget:
             state.wait_until = now + timedelta(seconds=wait)
             print(f"[pace] LinkedIn refused a {kind} request ({slot.status}): waiting "
                   f"{wait:.0f}s (refusal {state.refusal_streak} in a row)")
-        update_nudge(state, now, self.schedule.refusals)
+        update_nudge(state, now, self.schedule)
         state.last_kind = kind
         spacing = next_spacing(state, self.schedule, now, self.uniform)
         state.next_slot_at = now + timedelta(seconds=spacing)

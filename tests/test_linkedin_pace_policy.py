@@ -10,6 +10,8 @@ from src.linkedin.schedule import RefusalPolicy, ScheduleConfig, floor_spacing_s
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
 SAT_NOON = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)
+FRI_2359 = datetime(2026, 10, 16, 21, 59, tzinfo=timezone.utc)   # 23:59 Rome, Friday
+SAT_0600 = datetime(2026, 10, 17, 4, 0, tzinfo=timezone.utc)     # 06:00 Rome, Saturday
 NOW_TS = WED_NOON.timestamp()
 MID = lambda a, b: (a + b) / 2  # noqa: E731 - no jitter
 
@@ -58,14 +60,14 @@ def test_retry_after_wins_but_is_capped_at_thirty_minutes():
 def test_more_than_ten_percent_refused_in_the_last_hour_slows_the_spacing_by_half():
     state = PaceState(WED_NOON, request_times=[WED_NOON - timedelta(minutes=m) for m in range(20)],
                       refusal_times=[WED_NOON - timedelta(minutes=m) for m in (1, 5, 9)])
-    update_nudge(state, WED_NOON, RefusalPolicy())
+    update_nudge(state, WED_NOON, ScheduleConfig())
     assert state.nudge == 1.5 and state.nudged_at == WED_NOON
 
 
 def test_exactly_ten_percent_does_not_nudge():
     state = PaceState(WED_NOON, request_times=[WED_NOON - timedelta(minutes=m) for m in range(20)],
                       refusal_times=[WED_NOON - timedelta(minutes=m) for m in (1, 5)])
-    update_nudge(state, WED_NOON, RefusalPolicy())
+    update_nudge(state, WED_NOON, ScheduleConfig())
     assert state.nudge == 1.0 and state.nudged_at is None
 
 
@@ -75,7 +77,7 @@ def test_the_nudge_rises_at_most_once_an_hour_and_stops_at_three():
         now = WED_NOON + timedelta(minutes=minutes)
         state.request_times = [now - timedelta(minutes=m) for m in range(20)]
         state.refusal_times = [now - timedelta(minutes=m) for m in (1, 5, 9)]
-        update_nudge(state, now, RefusalPolicy())
+        update_nudge(state, now, ScheduleConfig())
         seen.append(state.nudge)
     assert seen == [1.5, 1.5, 2.25, 3.0, 3.0]
 
@@ -83,22 +85,68 @@ def test_the_nudge_rises_at_most_once_an_hour_and_stops_at_three():
 def test_an_hour_without_refusals_returns_the_nudge_to_base():
     state = PaceState(WED_NOON, nudge=2.25, nudged_at=WED_NOON - timedelta(minutes=90),
                       refusal_times=[WED_NOON - timedelta(minutes=61)])
-    update_nudge(state, WED_NOON, RefusalPolicy())
+    update_nudge(state, WED_NOON, ScheduleConfig())
     assert state.nudge == 1.0 and state.refusal_times == []
 
 
 def test_a_fresh_burst_after_the_reset_nudges_without_waiting_out_the_old_hour():
+    # The hour_min_requests guard is off here: this test is about the nudged_at reset, so
+    # the small burst below is deliberately judged.
+    schedule = ScheduleConfig(refusals=RefusalPolicy(hour_min_requests=1))
     first = WED_NOON - timedelta(minutes=70)  # one refusal, then the nudge 55 min later
     state = PaceState(first, request_times=[first + timedelta(minutes=m) for m in range(0, 55, 10)],
                       refusal_times=[first])
-    update_nudge(state, first + timedelta(minutes=55), RefusalPolicy())
+    update_nudge(state, first + timedelta(minutes=55), schedule)
     assert state.nudge == 1.5
-    update_nudge(state, first + timedelta(minutes=61), RefusalPolicy())
+    update_nudge(state, first + timedelta(minutes=61), schedule)
     assert state.nudge == 1.0
     state.request_times = [WED_NOON - timedelta(minutes=m) for m in range(4)]
     state.refusal_times = [WED_NOON - timedelta(minutes=m) for m in (0, 1, 2)]
-    update_nudge(state, WED_NOON, RefusalPolicy())
+    update_nudge(state, WED_NOON, schedule)
     assert state.nudge == 1.5 and state.nudged_at == WED_NOON
+
+
+def test_the_morning_after_the_night_pause_starts_from_base_and_does_not_jump_to_the_cap():
+    # The 2026-10-17 06:00 case: x2.25 at 23:59, the night pause, then the very first request
+    # of the morning is refused. The old code read 1 refusal in 1 request as a 100 % hour and
+    # pinned the nudge at its 3x cap for the rest of the day.
+    state = PaceState(FRI_2359, nudge=2.25, nudged_at=FRI_2359,
+                      request_times=[FRI_2359 - timedelta(minutes=m) for m in range(20)],
+                      refusal_times=[FRI_2359 - timedelta(minutes=m) for m in (1, 5, 9)])
+    state.request_times.append(SAT_0600)
+    state.refusal_times.append(SAT_0600)
+    update_nudge(state, SAT_0600, ScheduleConfig())
+    assert state.nudge == 1.0
+    assert state.nudged_at is None
+    assert state.request_times == [SAT_0600] and state.refusal_times == [SAT_0600]
+
+
+def test_the_hour_nudge_needs_the_minimum_sample_before_it_can_rise():
+    state = PaceState(WED_NOON, request_times=[WED_NOON - timedelta(minutes=m) for m in range(9)],
+                      refusal_times=[WED_NOON - timedelta(minutes=m) for m in (0, 1, 2)])
+    update_nudge(state, WED_NOON, ScheduleConfig())
+    assert state.nudge == 1.0 and state.nudged_at is None
+    state.request_times = [WED_NOON - timedelta(minutes=m) for m in range(10)]
+    update_nudge(state, WED_NOON, ScheduleConfig())
+    assert state.nudge == 1.5 and state.nudged_at == WED_NOON
+
+
+def test_a_calm_hour_steps_the_nudge_back_down_at_most_once_an_hour():
+    state = PaceState(WED_NOON, nudge=2.25, nudged_at=WED_NOON - timedelta(minutes=90),
+                      request_times=[WED_NOON - timedelta(minutes=m) for m in range(12)],
+                      refusal_times=[WED_NOON - timedelta(minutes=2)])
+    update_nudge(state, WED_NOON, ScheduleConfig())
+    assert state.nudge == 1.5 and state.nudged_at == WED_NOON
+    update_nudge(state, WED_NOON + timedelta(minutes=30), ScheduleConfig())
+    assert state.nudge == 1.5
+
+
+def test_the_decay_never_goes_below_base():
+    state = PaceState(WED_NOON, nudge=1.5, nudged_at=WED_NOON - timedelta(minutes=90),
+                      request_times=[WED_NOON - timedelta(minutes=m) for m in range(12)],
+                      refusal_times=[WED_NOON - timedelta(minutes=2)])
+    update_nudge(state, WED_NOON, ScheduleConfig())
+    assert state.nudge == 1.0
 
 
 def _day(state, day, requests, refused, calm_days=None):
