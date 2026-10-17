@@ -34,7 +34,7 @@ Every LinkedIn request the collector, the processor and the packaging stage make
 - quiet hours 00:00-06:00 Europe/Rome;
 - a shared daily budget of 1,400 requests on weekdays and 800 at weekends, on the Rome calendar day;
 - a steady, slow pace that starts at 75 s weekday / 110 s weekend, jittered +/-20 %, never below the cap-derived floor (46 s / 81 s), tightened after three calm days and loosened after a bad one;
-- a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown, and refusals crowding an hour nudge the spacing up (at most 3x);
+- a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown, and an hour with at least 10 requests and more than 10 % refusals nudges the spacing up (at most 3x), decaying back to base on a calm hour and resetting after the night window;
 - searches first, descriptions second, with a 24 h guard so a backlog cannot wait out the four-day window;
 - every area walked within its cadence, with a 6 h tolerance on the 48 h bound.
 

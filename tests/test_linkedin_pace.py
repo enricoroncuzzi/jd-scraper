@@ -5,7 +5,7 @@ from psycopg2.extras import Json
 
 from src.linkedin import pace as pace_module
 from src.linkedin.pace import ManagedPace, PaceBudget, PaceBusy, PaceGateClosed
-from src.linkedin.schedule import ScheduleConfig
+from src.linkedin.schedule import RefusalPolicy, ScheduleConfig
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
 
@@ -28,12 +28,15 @@ class FakeTime:
 
 @pytest.fixture
 def make_budget(store_conn, store_conn_factory):
-    def make(fake: FakeTime, **options) -> PaceBudget:
+    def make(fake: FakeTime, schedule: ScheduleConfig | None = None, **options) -> PaceBudget:
         conn = store_conn_factory(store_conn)
         conn.autocommit = True
         return PaceBudget(conn, clock=fake.clock, sleep=fake.sleep, uniform=lambda a, b: (a + b) / 2,
-                          schedule=ScheduleConfig(), **options)
+                          schedule=schedule or ScheduleConfig(), **options)
     return make
+
+
+NO_MIN_SAMPLE = ScheduleConfig(refusals=RefusalPolicy(hour_min_requests=1))
 
 
 def _row(budget, *columns):
@@ -135,7 +138,7 @@ def test_the_day_counts_requests_and_refusals(make_budget):
 
 def test_every_request_logs_its_spacing_and_its_refusal_wait(make_budget):
     fake = FakeTime()
-    budget = make_budget(fake)
+    budget = make_budget(fake, NO_MIN_SAMPLE)
     with budget.slot("search") as slot:
         slot.clean(200)
     with budget.slot("search") as slot:
@@ -363,7 +366,7 @@ def test_giving_up_writes_only_the_markers_so_another_services_refusal_survives(
     The processor loaded the row before the collector wrote it, so any save of its state on the way
     out would overwrite the refusal. The patched unlock puts the collector's request exactly there."""
     fake = FakeTime()
-    collector, processor = make_budget(fake), make_budget(fake, give_up_after=0.1)
+    collector, processor = make_budget(fake, NO_MIN_SAMPLE), make_budget(fake, give_up_after=0.1)
     collector.snapshot()
     collector._declare_wanting("search")       # so the processor yields its turn
     refused = []

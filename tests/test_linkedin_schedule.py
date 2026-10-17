@@ -41,6 +41,7 @@ def test_the_shipped_schedule_carries_the_pace_and_refusal_numbers():
     assert (p.min_day_requests, p.max_spacing_factor) == (100, 2.0)
     assert (r.first_wait_seconds, r.max_wait_seconds) == (60, 1800)
     assert (r.hour_refusal_rate, r.hour_multiplier, r.hour_max_multiplier) == (0.10, 1.5, 3.0)
+    assert r.hour_min_requests == 10
 
 
 def test_the_floor_is_the_open_hours_over_the_cap():
@@ -149,6 +150,7 @@ DEFAULTS = {
         "hour_refusal_rate": 0.10,
         "hour_multiplier": 1.5,
         "hour_max_multiplier": 3.0,
+        "hour_min_requests": 10,
     },
 }
 PACE, TIGHTEN, REFUSALS = DEFAULTS["pace"], DEFAULTS["pace"]["tighten"], DEFAULTS["refusals"]
@@ -169,6 +171,7 @@ PACE, TIGHTEN, REFUSALS = DEFAULTS["pace"], DEFAULTS["pace"]["tighten"], DEFAULT
     {"pace": {**PACE, "start_spacing_seconds": {"weekday": 0, "weekend": 110}}},
     {"refusals": {**REFUSALS, "max_wait_seconds": 30}},
     {"refusals": {**REFUSALS, "hour_multiplier": 0.9}},
+    {"refusals": {**REFUSALS, "hour_min_requests": 0}},
     {"pace": {**PACE, "max_spacing_factor": 0.5}},
 ])
 def test_a_malformed_schedule_raises(tmp_path, override):

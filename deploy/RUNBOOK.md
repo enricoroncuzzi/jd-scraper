@@ -219,6 +219,7 @@ configured in `config/schedule.json`:
 | `refusals.hour_refusal_rate` | `0.10` | over 10 % of the last hour refused |
 | `refusals.hour_multiplier` | `1.5` | nudges the spacing up by 1.5x |
 | `refusals.hour_max_multiplier` | `3.0` | the nudge is capped at 3x the base |
+| `refusals.hour_min_requests` | `10` | an hour needs this many requests before the nudge can move |
 
 `config/collector.json` sets the per-slice cadence and the page caps:
 
@@ -242,9 +243,12 @@ weekday, 18 h / 800 = 81 s weekend. The base starts at 75 s / 110 s and never go
 floor. After three consecutive open days under 2 % refusals it tightens 10 %; any day over
 10 % loosens it 10 % (to at most twice the start), and a day under 100 requests gives no
 verdict. A refusal honours `Retry-After` or waits 60 s, doubling each consecutive refusal to a
-30 min cap, and the first clean response resets it. When refusals pass 10 % of the last hour
-the spacing is nudged up 1.5x, at most 3x. Searches go first; a description takes the turn when
-no search is waiting, and once the oldest waiting job is over `description_deadline_hours` old
+30 min cap, and the first clean response resets it. When an hour holds at least 10 requests and
+more than 10 % of them were refused the spacing is nudged up 1.5x, at most 3x; a judged hour at
+or below 10 % steps it back down 1.5x (never under the base), and an hour with no refusals
+resets it to the base, at most one change an hour. The nudge resets to the base after the night
+window, so an evening nudge never carries into the morning. Searches go first; a description
+takes the turn when no search is waiting, and once the oldest waiting job is over `description_deadline_hours` old
 descriptions take every second turn. If a walk is refused three times in a row it stops, keeps
 its resume point, and the collector moves to the next due slice. The gate now closes only for
 the night window and the daily cap.
@@ -285,11 +289,12 @@ To restart the base spacing from config (for example after a mistake):
 
 ```bash
 psql jds -c "UPDATE pace_budgets SET weekday_spacing_seconds = NULL, weekend_spacing_seconds = NULL, \
-  calm_days = 0 WHERE host = 'linkedin.com';"
+  calm_days = 0, nudge = 1.0, nudged_at = NULL WHERE host = 'linkedin.com';"
 ```
 
-That takes effect on the next request; no restart is needed. To reset today's request counter as
-well, add `, requests_today = 0, day = NULL` to the same `SET` list.
+That takes effect on the next request; no restart is needed. It also clears a high hour nudge,
+which otherwise self-corrects at the next night window or the first judged calm hour. To reset
+today's request counter as well, add `, requests_today = 0, day = NULL` to the same `SET` list.
 
 The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
 its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,

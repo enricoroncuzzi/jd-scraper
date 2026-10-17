@@ -43,6 +43,7 @@ class RefusalPolicy:
     hour_refusal_rate: float = 0.10
     hour_multiplier: float = 1.5
     hour_max_multiplier: float = 3.0
+    hour_min_requests: int = 10
 
 
 @dataclass(frozen=True)
@@ -130,7 +131,8 @@ def _load_refusals(data: dict) -> RefusalPolicy:
     max_multiplier = _require_number(refusals, "hour_max_multiplier", "schedule.refusals", minimum=1.0)
     if multiplier > max_multiplier:
         raise ValueError("schedule.refusals.hour_multiplier must not exceed hour_max_multiplier")
-    return RefusalPolicy(first, maximum, rate, multiplier, max_multiplier)
+    min_requests = _require_int(refusals, "hour_min_requests", "schedule.refusals", minimum=1)
+    return RefusalPolicy(first, maximum, rate, multiplier, max_multiplier, min_requests)
 
 
 def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
