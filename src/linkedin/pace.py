@@ -180,9 +180,6 @@ def update_nudge(state: PaceState, now: datetime, schedule: ScheduleConfig) -> N
     if _reopened_since(schedule, state.nudged_at, now):
         state.nudge = 1.0
         state.nudged_at = None
-        state.request_times = []
-        state.refusal_times = []
-        return
     cutoff = now - timedelta(hours=1)
     state.request_times = [t for t in state.request_times if t > cutoff]
     state.refusal_times = [t for t in state.refusal_times if t > cutoff]

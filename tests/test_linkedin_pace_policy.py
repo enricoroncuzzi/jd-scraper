@@ -118,7 +118,7 @@ def test_the_morning_after_the_night_pause_starts_from_base_and_does_not_jump_to
     update_nudge(state, SAT_0600, ScheduleConfig())
     assert state.nudge == 1.0
     assert state.nudged_at is None
-    assert state.request_times == [] and state.refusal_times == []
+    assert state.request_times == [SAT_0600] and state.refusal_times == [SAT_0600]
 
 
 def test_the_hour_nudge_needs_the_minimum_sample_before_it_can_rise():
