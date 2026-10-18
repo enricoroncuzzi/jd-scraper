@@ -39,7 +39,8 @@ def oldest_waiting_description(cur, now: datetime) -> datetime | None:
 
 def description_overdue(cur, cfg: ProcessorConfig, now: datetime) -> bool:
     """True when the oldest waiting job was first seen more than
-    `description_deadline_hours` ago: descriptions take every second turn."""
+    `description_deadline_hours` ago: an overdue description may spend more than one
+    processor tick waiting for its turn."""
     oldest = oldest_waiting_description(cur, now)
     return oldest is not None and now - oldest > timedelta(hours=cfg.description_deadline_hours)
 

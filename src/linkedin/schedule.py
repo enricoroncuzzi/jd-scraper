@@ -19,31 +19,23 @@ HOURS_PER_DAY = 24
 
 @dataclass(frozen=True)
 class PacePolicy:
-    """The steady pace (design section 4.1): where it starts, how far it may
-    loosen, and how a finished day tightens or loosens it."""
+    """The fixed pace (2026-10-18 refusal study): a constant base spacing per
+    window, jittered every turn, with a share of the turns reserved for
+    descriptions when a search is also waiting."""
 
     start_weekday_seconds: float = 75.0
     start_weekend_seconds: float = 110.0
     jitter: float = 0.2
-    max_spacing_factor: float = 2.0
-    calm_days_to_tighten: int = 3
-    calm_refusal_rate: float = 0.02
-    loosen_refusal_rate: float = 0.10
-    step: float = 0.10
-    min_day_requests: int = 100
+    description_turn_share: float = 2.0 / 3.0
 
 
 @dataclass(frozen=True)
 class RefusalPolicy:
-    """What a refusal costs (design section 4.2): a capped, doubling wait and the
-    hour-level nudge when refusals crowd an hour."""
+    """What a refusal costs (design section 4.2): a capped, doubling wait. There is
+    no automatic slowing: the pace is the same before and after a refusal spell."""
 
     first_wait_seconds: float = 60.0
     max_wait_seconds: float = 1800.0
-    hour_refusal_rate: float = 0.10
-    hour_multiplier: float = 1.5
-    hour_max_multiplier: float = 3.0
-    hour_min_requests: int = 10
 
 
 @dataclass(frozen=True)
@@ -87,34 +79,31 @@ def _require_ratio(data: dict, key: str, where: str, *, minimum: float = 0.0,
     return value
 
 
+def _require_absent(data: dict, keys: tuple[str, ...], where: str, why: str) -> None:
+    for key in keys:
+        if key in data:
+            raise ValueError(f"{where}.{key} was removed ({why}); delete it")
+
+
 def _load_pace(data: dict) -> PacePolicy:
     pace = data.get("pace")
     if not isinstance(pace, dict):
         raise ValueError("schedule.pace must be an object")
+    _require_absent(pace, ("max_spacing_factor", "tighten"), "schedule.pace",
+                    "the pace is fixed, never widened or tightened")
     starts = pace.get("start_spacing_seconds")
     if not isinstance(starts, dict):
         raise ValueError("schedule.pace.start_spacing_seconds must be an object")
     weekday = _require_number(starts, "weekday", "schedule.pace.start_spacing_seconds", exclusive=True)
     weekend = _require_number(starts, "weekend", "schedule.pace.start_spacing_seconds", exclusive=True)
     jitter = _require_ratio(pace, "jitter", "schedule.pace", maximum=0.5, exclusive_max=True)
-    max_factor = _require_number(pace, "max_spacing_factor", "schedule.pace", minimum=1.0)
-    tighten = pace.get("tighten")
-    if not isinstance(tighten, dict):
-        raise ValueError("schedule.pace.tighten must be an object")
-    calm_rate = _require_ratio(tighten, "calm_refusal_rate", "schedule.pace.tighten", exclusive_min=True)
-    loosen_rate = _require_ratio(tighten, "loosen_refusal_rate", "schedule.pace.tighten", exclusive_min=True)
-    if calm_rate >= loosen_rate:
-        raise ValueError("schedule.pace.tighten.calm_refusal_rate must be below loosen_refusal_rate")
+    share = _require_ratio(pace, "description_turn_share", "schedule.pace", minimum=0.5,
+                           maximum=1.0, exclusive_max=True)
     return PacePolicy(
         start_weekday_seconds=weekday,
         start_weekend_seconds=weekend,
         jitter=jitter,
-        max_spacing_factor=max_factor,
-        calm_days_to_tighten=_require_int(tighten, "calm_days", "schedule.pace.tighten", minimum=1),
-        calm_refusal_rate=calm_rate,
-        loosen_refusal_rate=loosen_rate,
-        step=_require_ratio(tighten, "step", "schedule.pace.tighten", exclusive_min=True, exclusive_max=True),
-        min_day_requests=_require_int(tighten, "min_day_requests", "schedule.pace.tighten", minimum=1),
+        description_turn_share=share,
     )
 
 
@@ -122,17 +111,14 @@ def _load_refusals(data: dict) -> RefusalPolicy:
     refusals = data.get("refusals")
     if not isinstance(refusals, dict):
         raise ValueError("schedule.refusals must be an object")
+    _require_absent(refusals, ("hour_refusal_rate", "hour_multiplier", "hour_max_multiplier",
+                               "hour_min_requests"), "schedule.refusals",
+                    "the hour nudge was removed, the pace is fixed")
     first = _require_number(refusals, "first_wait_seconds", "schedule.refusals", exclusive=True)
     maximum = _require_number(refusals, "max_wait_seconds", "schedule.refusals", exclusive=True)
     if first > maximum:
         raise ValueError("schedule.refusals.max_wait_seconds must be at least first_wait_seconds")
-    rate = _require_ratio(refusals, "hour_refusal_rate", "schedule.refusals", exclusive_min=True)
-    multiplier = _require_number(refusals, "hour_multiplier", "schedule.refusals", minimum=1.0)
-    max_multiplier = _require_number(refusals, "hour_max_multiplier", "schedule.refusals", minimum=1.0)
-    if multiplier > max_multiplier:
-        raise ValueError("schedule.refusals.hour_multiplier must not exceed hour_max_multiplier")
-    min_requests = _require_int(refusals, "hour_min_requests", "schedule.refusals", minimum=1)
-    return RefusalPolicy(first, maximum, rate, multiplier, max_multiplier, min_requests)
+    return RefusalPolicy(first, maximum)
 
 
 def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:

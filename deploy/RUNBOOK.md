@@ -180,9 +180,9 @@ loses nothing.
   LinkedIn request has succeeded for 24 h of open time, or Postgres is down.
 - Logs: `journalctl -u jds-process --since today`. A refusal shows up as a
   `[pace] LinkedIn refused a ... request ... waiting Ns (refusal K in a row)` line, and the
-  `status` pace line shows the hour nudge, the refusals in a row and any wait (`waiting until
-  ... Rome`). There is no global rest state: a refusal is a short capped wait the pace applies
-  before the next request, so the system never shuts itself off for hours.
+  `status` pace line shows the refusals in a row and any wait (`waiting until ... Rome`).
+  There is no global rest state and no automatic slowing: a refusal is a short capped wait the
+  pace applies before the next request, so the system never shuts itself off for hours.
 - Language-model use: the day summary shows OpenRouter requests against 1,000. It turns
   `HIGH` from 800. A budget that prioritises tier 1 is built only if usage exceeds 800 a day
   on three days in a fortnight (spec section 6.5).
@@ -206,20 +206,11 @@ configured in `config/schedule.json`:
 | `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
 | `closed_hours` | `[0, 6]` | no LinkedIn request 00:00-06:00 Rome |
 | `daily_caps.weekday` / `.weekend` | `1400` / `800` | shared cap on search + description requests per Rome day |
-| `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | where the steady base spacing starts, in seconds |
+| `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | the fixed base spacing, in seconds |
 | `pace.jitter` | `0.2` | every sleep is jittered +/-20 % |
-| `pace.max_spacing_factor` | `2.0` | the daily verdict never loosens past twice the start |
-| `pace.tighten.calm_days` | `3` | consecutive calm days that tighten the spacing |
-| `pace.tighten.calm_refusal_rate` | `0.02` | a calm day is under 2 % refusals |
-| `pace.tighten.loosen_refusal_rate` | `0.10` | a bad day is over 10 % refusals |
-| `pace.tighten.step` | `0.10` | one 10 % step per verdict, down or up |
-| `pace.tighten.min_day_requests` | `100` | a quieter Rome day gives no verdict |
+| `pace.description_turn_share` | `0.6667` | descriptions get this share of the turns when a search also waits (realised as a run of `round(share/(1-share))` = 2) |
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
-| `refusals.hour_refusal_rate` | `0.10` | over 10 % of the last hour refused |
-| `refusals.hour_multiplier` | `1.5` | nudges the spacing up by 1.5x |
-| `refusals.hour_max_multiplier` | `3.0` | the nudge is capped at 3x the base |
-| `refusals.hour_min_requests` | `10` | an hour needs this many requests before the nudge can move |
 
 `config/collector.json` sets the per-slice cadence and the page caps:
 
@@ -232,26 +223,24 @@ configured in `config/schedule.json`:
 | `refused_pages_to_defer` | `3` | refusals in a row before a walk defers its slice |
 
 Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
-point where descriptions start taking every second turn), `config/deliver.json`
+point where an overdue description may spend more than one tick), `config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
 repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2]` freehire,
 `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
 `max_wait_seconds` 300, `run_budget_seconds` 1700).
 
-The steady pace has a floor derived from the cap and the 18 open hours: 18 h / 1400 = 46 s
-weekday, 18 h / 800 = 81 s weekend. The base starts at 75 s / 110 s and never goes below the
-floor. After three consecutive open days under 2 % refusals it tightens 10 %; any day over
-10 % loosens it 10 % (to at most twice the start), and a day under 100 requests gives no
-verdict. A refusal honours `Retry-After` or waits 60 s, doubling each consecutive refusal to a
-30 min cap, and the first clean response resets it. When an hour holds at least 10 requests and
-more than 10 % of them were refused the spacing is nudged up 1.5x, at most 3x; a judged hour at
-or below 10 % steps it back down 1.5x (never under the base), and an hour with no refusals
-resets it to the base, at most one change an hour. The nudge resets to the base after the night
-window, so an evening nudge never carries into the morning. Searches go first; a description
-takes the turn when no search is waiting, and once the oldest waiting job is over `description_deadline_hours` old
-descriptions take every second turn. If a walk is refused three times in a row it stops, keeps
-its resume point, and the collector moves to the next due slice. The gate now closes only for
-the night window and the daily cap.
+The fixed pace has a floor derived from the cap and the 18 open hours: 18 h / 1400 = 46 s
+weekday, 18 h / 800 = 81 s weekend. The base is a constant 75 s / 110 s, never below the
+floor and never widened or tightened: a finished day changes nothing (the 2026-10-18 refusal
+study removed the hour nudge and the day verdict, which only cut throughput). A refusal honours
+`Retry-After` or waits 60 s, doubling each consecutive refusal to a 30 min cap, and the first
+clean response resets it; the spacing around it does not move. When both a search and a
+description are waiting, descriptions take two of every three turns (`pace.description_turn_share`,
+realised as a run of two); a lone waiting kind always takes the turn. Once the oldest waiting
+job is over `description_deadline_hours` old, an overdue description that the share says takes
+the next turn may spend more than one processor tick waiting for it. If a walk is refused three
+times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
+The gate now closes only for the night window and the daily cap.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
 `*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
@@ -277,24 +266,54 @@ LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome
 LinkedIn gate: 1400/1400 requests today (weekday), daily cap reached
 ```
 
-The pace line shows the base spacing for both windows, the hour nudge, the refusals in a row
-and the last success, and adds any wait in Rome time:
+The pace line shows the fixed spacing for both windows, the day's refusals, the refusals in a
+row and the last success, and adds any wait in Rome time:
 
 ```
-LinkedIn pace: base 75s weekday / 110s weekend, hour nudge x1.0, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome
-LinkedIn pace: base 68s weekday / 110s weekend, hour nudge x1.5, 2 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, waiting until 12:04:00 Rome
+LinkedIn pace: fixed 75s weekday / 110s weekend, 0/342 refused today, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome
+LinkedIn pace: fixed 75s weekday / 110s weekend, 2/350 refused today, 2 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, waiting until 12:04:00 Rome
 ```
 
-To restart the base spacing from config (for example after a mistake):
+The stored `weekday_spacing_seconds`, `weekend_spacing_seconds` and `nudge` columns from the
+old adaptive pace are ignored by the fixed code, so the live row's 99 s / 133 s base and x3
+nudge cannot slow the deploy: it runs at 75 s / 110 s from the first request, no manual step
+needed. To clear a stuck turn share (give descriptions the next turn) or reset today's counter:
 
 ```bash
-psql jds -c "UPDATE pace_budgets SET weekday_spacing_seconds = NULL, weekend_spacing_seconds = NULL, \
-  calm_days = 0, nudge = 1.0, nudged_at = NULL WHERE host = 'linkedin.com';"
+psql jds -c "UPDATE pace_budgets SET description_run = 0, requests_today = 0, day = NULL \
+  WHERE host = 'linkedin.com';"
 ```
 
-That takes effect on the next request; no restart is needed. It also clears a high hour nudge,
-which otherwise self-corrects at the next night window or the first judged calm hour. To reset
-today's request counter as well, add `, requests_today = 0, day = NULL` to the same `SET` list.
+That takes effect on the next request; no restart is needed. The old `weekday_spacing_seconds`,
+`weekend_spacing_seconds`, `calm_days`, `nudge` and `nudged_at` columns may be left as they are.
+
+### The fixed-pace tripwire (2026-10-18 refusal study)
+
+The study found the refusal rate did not depend on the pace between 3 s and 390 s, so the pace is
+fixed at 75 s / 110 s and accepts the ~16 % refusal rate. The one thing the study could not see is
+a long run above the 29 requests/hour it observed, so watch the first days. Revert to the cautious
+91 s / 133 s if any of these happens:
+
+- the daily refusal rate goes above about 35 %;
+- LinkedIn returns a status code the pace does not already know;
+- a full day of consecutive refusals.
+
+Daily refusal rate, per Rome day:
+
+```sql
+SELECT (at AT TIME ZONE 'Europe/Rome')::date AS day,
+       count(*) FILTER (WHERE outcome = 'refused') AS refused, count(*) AS requests,
+       round(100.0 * count(*) FILTER (WHERE outcome = 'refused') / count(*), 1) AS pct
+FROM pace_events GROUP BY 1 ORDER BY 1 DESC;
+```
+
+The exact revert, on the VPS:
+
+1. Edit `config/schedule.json`: `pace.start_spacing_seconds` to `{"weekday": 91, "weekend": 133}`.
+2. `sudo systemctl restart jds-collect-linkedin jds-process jds-deliver` back to back.
+3. `python -m src.services.status` must show `LinkedIn pace: fixed 91s weekday / 133s weekend`.
+
+No database change and no code change is needed: the pace is read from config at service start.
 
 The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
 its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,
@@ -318,19 +337,18 @@ a hang.
 3. `.venv/bin/python -m src.linkedin.collector --sync-slices`: runs `init_store` (adding the new
    columns), applies the new cadences and the 12-48 h clamp through `sync_and_clamp`, prints
    `slices: {... 'clamped': N}` and exits. It makes no LinkedIn request.
-4. `psql jds -c "UPDATE pace_budgets SET refusal_times = '{}', refusals_today = (SELECT count(*) FROM pace_events WHERE outcome = 'refused' AND at >= date_trunc('day', now() AT TIME ZONE 'Europe/Rome') AT TIME ZONE 'Europe/Rome') WHERE host = 'linkedin.com';"`.
-   The new code reads `refusal_times` as the last hour's refusals while the new `request_times`
-   starts empty, so a refusal from the hour before the deploy would count as 100 % of the hour and
-   nudge the spacing x1.5 for the first hour. The `refusals_today` part makes the deploy day's
-   verdict count its pre-deploy refusals. This needs no new code (`refusal_times` already exists).
+4. No pace-state reset is needed: the fixed code reads the base spacing from
+   `config/schedule.json` and ignores the stored `weekday_spacing_seconds`,
+   `weekend_spacing_seconds` and `nudge`, so the live row's old base and nudge cannot slow it.
+   `init_store` adds `description_run`.
 5. Copy the four `jds-resume-*` units to `/etc/systemd/system/`;
    `sudo systemd-analyze calendar --iterations=40 '*-*-* 00..01,05..06,11..23:00/30:00'` must list
    only :00 and :30 starts, none from 02:00 to 04:59 (the daily runs at 03:00 and 04:00 plus or
    minus an hour) and none from 07:00 to 10:59; `sudo systemctl daemon-reload`;
    `sudo systemctl enable --now jds-resume-freehire.timer jds-resume-himalayas.timer`.
 6. `sudo systemctl start jds-collect-linkedin jds-process jds-deliver`. Each runs `init_store`
-   again (idempotent). Check `python -m src.services.status`: the gate open, `LinkedIn pace: base
-   75s weekday / 110s weekend, hour nudge x1.0`. Expect one "OK again: collection is healthy"
+   again (idempotent). Check `python -m src.services.status`: the gate open, `LinkedIn pace: fixed
+   75s weekday / 110s weekend`. Expect one "OK again: collection is healthy"
    Telegram note on the first watchdog run (the old `health:collection` ledger row clears once).
    LinkedIn jobs penalised by old 429s keep their `next_attempt_at` (up to 12 h) once after
    deploy, so the first day's description lag is not misread as a new bug.

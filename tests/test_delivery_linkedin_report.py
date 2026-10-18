@@ -34,13 +34,14 @@ def test_the_block_counts_requests_refusals_and_the_longest_wait(store_conn):
     assert lines[2] == "Longest refusal wait: 4m"
 
 
-def test_the_block_shows_the_current_and_floor_spacing(store_conn):
+def test_the_block_shows_the_fixed_and_floor_spacing(store_conn):
     with store_conn.cursor() as cur:
+        # The stored old base and nudge are inert: the line reads config only.
         cur.execute("INSERT INTO pace_budgets (host, next_slot_at, weekday_spacing_seconds, nudge) "
                     "VALUES ('linkedin.com', %s, 67.5, 1.5)", (NOW,))
     store_conn.commit()
     lines = _lines(store_conn)
-    assert lines[3] == "Base spacing: 68s weekday, 110s weekend (floor 46s/81s); hour nudge x1.5"
+    assert lines[3] == "Fixed spacing: 75s weekday, 110s weekend (floor 46s/81s)"
 
 
 def test_the_block_names_slices_past_48_hours(store_conn):
@@ -98,7 +99,7 @@ def test_an_empty_store_gives_a_calm_block(store_conn):
     lines = _lines(store_conn)
     assert lines[1] == "Requests: 0 (search 0, description 0); refused 0 (0.0%)"
     assert lines[2] == "Longest refusal wait: none"
-    assert lines[3] == "Base spacing: 75s weekday, 110s weekend (floor 46s/81s); hour nudge x1.0"
+    assert lines[3] == "Fixed spacing: 75s weekday, 110s weekend (floor 46s/81s)"
     assert lines[4] == "Slices behind cadence: 0 of 0; past 48h+6h: none"
     assert lines[5] == "Oldest job waiting for a description: none"
     assert lines[6] == "Page caps hit: area cap 0, full cap 0 (of 0 walks)"

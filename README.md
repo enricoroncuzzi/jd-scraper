@@ -33,9 +33,9 @@ Every LinkedIn request the collector, the processor and the packaging stage make
 
 - quiet hours 00:00-06:00 Europe/Rome;
 - a shared daily budget of 1,400 requests on weekdays and 800 at weekends, on the Rome calendar day;
-- a steady, slow pace that starts at 75 s weekday / 110 s weekend, jittered +/-20 %, never below the cap-derived floor (46 s / 81 s), tightened after three calm days and loosened after a bad one;
-- a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown, and an hour with at least 10 requests and more than 10 % refusals nudges the spacing up (at most 3x), decaying back to base on a calm hour and resetting after the night window;
-- searches first, descriptions second, with a 24 h guard so a backlog cannot wait out the four-day window;
+- a fixed pace of 75 s weekday / 110 s weekend, jittered +/-20 %, never below the cap-derived floor (46 s / 81 s): nothing slows it down (the 2026-10-18 refusal study found the refusal rate did not depend on the gap, while the old nudge and day verdict cut throughput to about a quarter);
+- a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown and never a change of pace;
+- descriptions take two of every three turns when a search is also waiting (`pace.description_turn_share`), with a 24 h guard that lets an overdue description spend more than one processor tick;
 - every area walked within its cadence, with a 6 h tolerance on the 48 h bound.
 
 Slices carry their own cadence (`config/collector.json`, `due_hours` 12/24/48/24 plus per-area overrides, bounded by `min_interval_hours`/`max_interval_hours`). The ten large tier-3 countries are walked at most 20 pages per walk. freehire and Himalayas use the same patient approach: jittered 1-2 s / 2-5 s spacing and a bounded 429 wait, with the 30-minute resume timers for an unfinished walk. The live gate, budget and pace are in `python -m src.services.status`, and `deploy/RUNBOOK.md` carries the config tables and the deploy order.
@@ -60,7 +60,7 @@ The delivery service runs the same engine automatically for above-cutoff jobs: i
 - **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and tailoring, no string-parsed output.
 - **No silent loss**: every stage transition is one `UPDATE` in the caller's transaction, and each stage commits per job or per batch, so a crash leaves a job exactly where it was and the next tick picks it up. A host throttle (429/999) returns a description to the queue with no per-job penalty; a job-specific refusal (401/403/503/504) or unreadable markup keeps its 30 minutes to 12 h backoff; a job expires after seven days of host refusals or when the posting is over 30 days old.
 - **Resilience by design**: batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying. A quota day stops the LLM stages and leaves jobs waiting, not lost.
-- **Shared LinkedIn pace**: the quiet window, the shared daily budget, the steady jittered spacing, the refusal waits and the search-first turns all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
+- **Shared LinkedIn pace**: the quiet window, the shared daily budget, the fixed jittered spacing, the refusal waits and the two-of-three description turns all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
 - **Anti-hallucination in code, not just the prompt**: the CV is checked at runtime against the canonical source, not left to an instruction the model can ignore. The cover letter is checked for banned phrases, length, and a concrete bridge. Hook claims are listed in `CLAIMS_REVIEW.txt` for a person to confirm.
 
 ## By the numbers

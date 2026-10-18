@@ -141,7 +141,7 @@ def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     store_conn.commit()
     text = status.render(store_conn, NOW)
     assert "tier -  seen" in text and "linkedin" in text
-    assert "LinkedIn pace: base 68s weekday / 110s weekend, hour nudge x1.0, 0 refusals in a row" in text
+    assert "LinkedIn pace: fixed 75s weekday / 110s weekend, 0/0 refused today, 0 refusals in a row" in text
     assert "linkedin   cadence: 4h x1" in text
     assert "openrouter today (UTC): 7 requests" in text and "process" in text
 
@@ -164,6 +164,19 @@ def test_status_shows_a_closed_quiet_window(store_conn):
     store_conn.commit()
     text = status.render(store_conn, night, schedule)
     assert "window closed until 06:00 Rome" in text
+
+
+def test_status_does_not_show_yesterdays_refusals_as_today(store_conn):
+    schedule = ScheduleConfig()
+    night = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
+    yesterday = local_day(schedule, night) - timedelta(days=1)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, refusals_today, day) "
+                    "VALUES ('linkedin.com', %s, 830, 120, %s)", (night, yesterday))
+    store_conn.commit()
+    text = status.render(store_conn, night, schedule)
+    assert "0/0 refused today" in text
+    assert "LinkedIn gate: 0/1400 requests today" in text
 
 
 

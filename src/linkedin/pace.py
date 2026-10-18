@@ -10,16 +10,17 @@ daily request budget (weekday/weekend cap, Rome calendar day). When the gate is
 closed `slot` raises PaceGateClosed instead of blocking a tick for hours; the
 services catch that and go idle. Every request is recorded in `pace_events`.
 
-The pace is steady, not AIMD: a base spacing per window (75 s weekday / 110 s
-weekend, never below the cap-derived floor) jittered +/-20 %, tightened after
-three calm days and loosened after a bad one. A refusal is waited out (60 s
-doubling to a 30 min cap, or `Retry-After`), never turned into a shutdown, and
-refusals crowding an hour nudge the spacing up (at most 3x). Searches go first: a
-description yields while a search is waiting unless it is overdue and the last
-turn was a search, when it takes every second turn. The advisory lock is held
-only for the request itself; waiters sleep unlocked in short chunks. A caller
-that passes `give_up_after` and cannot get a turn raises PaceBusy, and a caller
-that gives up writes only its own `wanting` markers.
+The pace is fixed (2026-10-18 refusal study): a constant base spacing per window
+(75 s weekday / 110 s weekend, never below the cap-derived floor) jittered +/-20 %.
+Nothing slows it down: the study found the refusal rate did not depend on the gap
+anywhere between 3 s and 390 s, while the old hour nudge and day verdict cut
+throughput to about a quarter. A refusal is waited out (60 s doubling to a 30 min
+cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
+description are waiting, descriptions take two of every three turns
+(`pace.description_turn_share`); a lone waiting kind always takes the turn. The
+advisory lock is held only for the request itself; waiters sleep unlocked in short
+chunks. A caller that passes `give_up_after` and cannot get a turn raises PaceBusy,
+and a caller that gives up writes only its own `wanting` markers.
 """
 import json
 import random
@@ -99,47 +100,25 @@ class PaceState:
     day: date | None = None
     wait_until: datetime | None = None
     refusal_streak: int = 0
-    request_times: list = field(default_factory=list)
-    refusal_times: list = field(default_factory=list)
-    nudge: float = 1.0
-    nudged_at: datetime | None = None
-    weekday_spacing: float | None = None
-    weekend_spacing: float | None = None
-    calm_days: int = 0
     last_clean_at: datetime | None = None
+    description_run: int = 0
 
 
-def _set_stored_spacing(state: PaceState, window: str, value: float) -> None:
-    if window == "weekend":
-        state.weekend_spacing = value
-    else:
-        state.weekday_spacing = value
+def description_run_cap(share: float) -> int:
+    """The most consecutive description turns the share allows when both kinds wait.
+    A share p means p:(1-p) descriptions to searches, so the run is p/(1-p),
+    rounded to the nearest whole turn and never below one."""
+    return max(1, round(share / (1.0 - share)))
 
 
-def stored_spacing(state: PaceState, schedule: ScheduleConfig, window: str) -> float:
-    """The current base spacing for one window, from its stored value or the config
-    start, clamped to [floor, start * max_spacing_factor]."""
-    raw = state.weekend_spacing if window == "weekend" else state.weekday_spacing
-    if raw is None:
-        raw = start_spacing_seconds(schedule, window)
-    floor = floor_spacing_seconds(schedule, window)
-    ceiling = start_spacing_seconds(schedule, window) * schedule.pace.max_spacing_factor
-    return max(floor, min(raw, ceiling))
-
-
-def base_spacing(state: PaceState, schedule: ScheduleConfig, now: datetime) -> float:
-    """The stored base spacing for `now`'s window."""
-    return stored_spacing(state, schedule, window_name(schedule, now))
-
-
-def next_spacing(state: PaceState, schedule: ScheduleConfig, now: datetime,
+def next_spacing(schedule: ScheduleConfig, now: datetime,
                  uniform=random.uniform) -> float:
-    """The next sleep: the base spacing, scaled by the hour nudge, jittered by
+    """The next sleep: the fixed base spacing for `now`'s window, jittered by
     +/-`pace.jitter`, never below the cap-derived floor."""
     window = window_name(schedule, now)
-    base = stored_spacing(state, schedule, window)
+    base = start_spacing_seconds(schedule, window)
     factor = uniform(1 - schedule.pace.jitter, 1 + schedule.pace.jitter)
-    return max(floor_spacing_seconds(schedule, window), base * state.nudge * factor)
+    return max(floor_spacing_seconds(schedule, window), base * factor)
 
 
 def refusal_wait_seconds(streak: int, retry_after: float | None, policy: RefusalPolicy,
@@ -153,86 +132,10 @@ def refusal_wait_seconds(streak: int, retry_after: float | None, policy: Refusal
     return min(base * uniform(1 - jitter, 1 + jitter), policy.max_wait_seconds)
 
 
-def _reopened_since(schedule: ScheduleConfig, since: datetime | None, now: datetime) -> bool:
-    """True when the daily closed window ended between `since` and `now`, so the current
-    open session started after the last nudge change and must begin with a clean slate."""
-    if since is None or since >= now:
-        return False
-    zone = schedule.zone
-    _, closed_end = schedule.closed_hours
-    local_now = now.astimezone(zone)
-    day = since.astimezone(zone).date()
-    while day <= local_now.date():
-        reopen = datetime(day.year, day.month, day.day, tzinfo=zone) + timedelta(hours=closed_end)
-        if since < reopen <= now:
-            return True
-        day += timedelta(days=1)
-    return False
-
-
-def update_nudge(state: PaceState, now: datetime, schedule: ScheduleConfig) -> None:
-    """Move the spacing nudge at most once an hour from the trailing hour's refusals: up
-    when they pass `hour_refusal_rate`, down a step when a judged hour is at or below it,
-    and all the way to base when the hour has no refusals. An hour with fewer than
-    `hour_min_requests` requests is too small a sample to judge and changes nothing. A nudge
-    from before the night pause never carries into the morning."""
-    policy = schedule.refusals
-    if _reopened_since(schedule, state.nudged_at, now):
-        state.nudge = 1.0
-        state.nudged_at = None
-    cutoff = now - timedelta(hours=1)
-    state.request_times = [t for t in state.request_times if t > cutoff]
-    state.refusal_times = [t for t in state.refusal_times if t > cutoff]
-    if not state.refusal_times:
-        state.nudge = 1.0
-        state.nudged_at = None
-        return
-    if len(state.request_times) < policy.hour_min_requests:
-        return
-    due = state.nudged_at is None or now - state.nudged_at >= timedelta(hours=1)
-    if not due:
-        return
-    rate = len(state.refusal_times) / len(state.request_times)
-    if rate > policy.hour_refusal_rate:
-        state.nudge = min(state.nudge * policy.hour_multiplier, policy.hour_max_multiplier)
-        state.nudged_at = now
-    elif state.nudge > 1.0:
-        state.nudge = max(1.0, state.nudge / policy.hour_multiplier)
-        state.nudged_at = now
-
-
-def judge_day(state: PaceState, schedule: ScheduleConfig) -> None:
-    """Feed one finished open day into the pace: three calm days tighten both bases,
-    a day over the high refusal rate loosens them, anything between breaks the calm
-    streak. A day with too few requests is no evidence and gives no verdict."""
-    if state.requests_today < schedule.pace.min_day_requests:
-        return
-    rate = state.refusals_today / state.requests_today
-    if rate < schedule.pace.calm_refusal_rate:
-        state.calm_days += 1
-        if state.calm_days >= schedule.pace.calm_days_to_tighten:
-            for window in ("weekday", "weekend"):
-                floor = floor_spacing_seconds(schedule, window)
-                current = stored_spacing(state, schedule, window)
-                _set_stored_spacing(state, window, max(floor, current * (1 - schedule.pace.step)))
-            state.calm_days = 0
-    elif rate > schedule.pace.loosen_refusal_rate:
-        for window in ("weekday", "weekend"):
-            current = stored_spacing(state, schedule, window)
-            ceiling = start_spacing_seconds(schedule, window) * schedule.pace.max_spacing_factor
-            _set_stored_spacing(state, window, min(ceiling, current * (1 + schedule.pace.step)))
-        state.calm_days = 0
-    else:
-        state.calm_days = 0
-
-
 def roll_day(state: PaceState, schedule: ScheduleConfig, now: datetime) -> PaceState:
-    """Judge the stored day once when the Rome calendar day has moved on, then set
-    the new day and zero the counters. A multi-day gap is judged once, never once
-    per missed day."""
+    """When the Rome calendar day has moved on, set the new day and zero the counters.
+    The pace itself is fixed, so a finished day changes nothing else."""
     day = local_day(schedule, now)
-    if state.day is not None and state.day != day:
-        judge_day(state, schedule)
     if state.day != day:
         state.day = day
         state.requests_today = 0
@@ -245,19 +148,17 @@ def _fresh(state: PaceState, marker: str, now_ts: float) -> bool:
     return stamp is not None and now_ts - stamp <= WANTING_FRESH_SECONDS
 
 
-def must_yield(state: PaceState, kind: str, overdue: bool, now_ts: float) -> bool:
-    """Searches first (design section 4.3): a description yields while a search is
-    waiting, unless it is overdue and the last turn was a search (then it takes
-    every second turn). A search yields only to a waiting, overdue description."""
+def must_yield(state: PaceState, kind: str, now_ts: float, *, run_cap: int) -> bool:
+    """When both a search and a description are waiting, descriptions take two of every
+    three turns: a description yields only once `run_cap` descriptions have gone in a
+    row, and a search yields while fewer than `run_cap` have. A lone waiting kind always
+    takes the turn."""
     search_waiting = _fresh(state, "search", now_ts)
     description_waiting = _fresh(state, "description", now_ts)
-    overdue_waiting = _fresh(state, "overdue", now_ts)
     if kind == "description":
-        if not search_waiting:
-            return False
-        return not (overdue and state.last_kind == "search")
+        return search_waiting and state.description_run >= run_cap
     if kind == "search":
-        return description_waiting and overdue_waiting and state.last_kind == "search"
+        return description_waiting and state.description_run < run_cap
     return False
 
 
@@ -312,6 +213,7 @@ class PaceBudget:
         self.service = service
         self.schedule = schedule or ScheduleConfig()
         self.give_up_after = give_up_after
+        self.run_cap = description_run_cap(self.schedule.pace.description_turn_share)
 
     # -- storage ---------------------------------------------------------
     def _load(self) -> PaceState:
@@ -321,16 +223,12 @@ class PaceBudget:
                 "ON CONFLICT (host) DO NOTHING", (self.host, self.clock()))
             cur.execute(
                 "SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, "
-                "refusals_today, day, refusal_streak, request_times, refusal_times, nudge, "
-                "nudged_at, weekday_spacing_seconds, weekend_spacing_seconds, calm_days, "
-                "last_clean_at FROM pace_budgets WHERE host = %s", (self.host,))
+                "refusals_today, day, refusal_streak, last_clean_at, description_run "
+                "FROM pace_budgets WHERE host = %s", (self.host,))
             (next_slot, wait_until, last_kind, wanting, requests_today, refusals_today, day,
-             refusal_streak, request_times, refusal_times, nudge, nudged_at, weekday_spacing,
-             weekend_spacing, calm_days, last_clean_at) = cur.fetchone()
+             refusal_streak, last_clean_at, description_run) = cur.fetchone()
         state = PaceState(next_slot, last_kind, dict(wanting or {}), requests_today, refusals_today,
-                          day, wait_until, refusal_streak, list(request_times or []),
-                          list(refusal_times or []), nudge, nudged_at, weekday_spacing,
-                          weekend_spacing, calm_days, last_clean_at)
+                          day, wait_until, refusal_streak, last_clean_at, description_run or 0)
         return roll_day(state, self.schedule, self.clock())
 
     def _save(self, state: PaceState, kinds: list[str]) -> None:
@@ -338,19 +236,13 @@ class PaceBudget:
             cur.execute(
                 "UPDATE pace_budgets SET next_slot_at = %s, cooldown_until = %s, last_kind = %s, "
                 "wanting = wanting - %s::text[], requests_today = %s, refusals_today = %s, day = %s, "
-                "refusal_streak = %s, request_times = %s, refusal_times = %s, nudge = %s, "
-                "nudged_at = %s, weekday_spacing_seconds = %s, weekend_spacing_seconds = %s, "
-                "calm_days = %s, last_clean_at = %s WHERE host = %s",
+                "refusal_streak = %s, last_clean_at = %s, description_run = %s WHERE host = %s",
                 (state.next_slot_at, state.wait_until, state.last_kind, kinds,
                  state.requests_today, state.refusals_today, state.day, state.refusal_streak,
-                 state.request_times, state.refusal_times, state.nudge, state.nudged_at,
-                 state.weekday_spacing, state.weekend_spacing, state.calm_days,
-                 state.last_clean_at, self.host))
+                 state.last_clean_at, state.description_run, self.host))
 
-    def _declare_wanting(self, kind: str, *, overdue: bool = False) -> None:
+    def _declare_wanting(self, kind: str) -> None:
         markers = {kind: self.clock().timestamp()}
-        if kind == "description" and overdue:
-            markers["overdue"] = self.clock().timestamp()
         with self.conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO pace_budgets (host, next_slot_at, wanting) VALUES (%s, %s, %s::jsonb) "
@@ -391,12 +283,11 @@ class PaceBudget:
 
     # -- the turn --------------------------------------------------------
     def _record(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> float:
-        """Count the request against the Rome day and feed the steady pace. The caller
+        """Count the request against the Rome day and advance the fixed pace. The caller
         saves the row first; the pace_events row is written afterwards, so a logging
         failure can never lose the count or the refusal state."""
         roll_day(state, self.schedule, now)
         state.requests_today += 1
-        state.request_times.append(now)
         if slot.outcome == "clean":
             state.refusal_streak = 0
             state.wait_until = None
@@ -404,7 +295,6 @@ class PaceBudget:
         elif slot.outcome == "throttled":
             state.refusal_streak += 1
             state.refusals_today += 1
-            state.refusal_times.append(now)
             wait = refusal_wait_seconds(state.refusal_streak, slot.retry_after,
                                         self.schedule.refusals, self.uniform,
                                         jitter=self.schedule.pace.jitter)
@@ -412,9 +302,9 @@ class PaceBudget:
             state.wait_until = now + timedelta(seconds=wait)
             print(f"[pace] LinkedIn refused a {kind} request ({slot.status}): waiting "
                   f"{wait:.0f}s (refusal {state.refusal_streak} in a row)")
-        update_nudge(state, now, self.schedule)
+        state.description_run = state.description_run + 1 if kind == "description" else 0
         state.last_kind = kind
-        spacing = next_spacing(state, self.schedule, now, self.uniform)
+        spacing = next_spacing(self.schedule, now, self.uniform)
         state.next_slot_at = now + timedelta(seconds=spacing)
         return spacing
 
@@ -425,10 +315,10 @@ class PaceBudget:
         try:
             with self.conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO pace_events (at, service, kind, outcome, status, factor, "
-                    "requests_today, spacing_seconds, wait_seconds) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "INSERT INTO pace_events (at, service, kind, outcome, status, "
+                    "requests_today, spacing_seconds, wait_seconds) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (now, self.service, kind, EVENT_OUTCOMES.get(slot.outcome, slot.outcome),
-                     slot.status, state.nudge, state.requests_today, spacing, slot.wait_seconds))
+                     slot.status, state.requests_today, spacing, slot.wait_seconds))
         except Exception as exc:  # noqa: BLE001 - telemetry must not raise into the pipeline
             print(f"[pace] could not record the {kind} request in pace_events: "
                   f"{type(exc).__name__}: {exc}")
@@ -439,9 +329,9 @@ class PaceBudget:
     @contextmanager
     def slot(self, kind: str, *, overdue: bool = False):
         started = self.clock()
-        kinds = [kind, "overdue"] if (kind == "description" and overdue) else [kind]
+        kinds = [kind]
         while True:
-            self._declare_wanting(kind, overdue=overdue)
+            self._declare_wanting(kind)
             if not self._try_lock():
                 self.sleep(LOCK_POLL_SECONDS)
                 continue
@@ -454,11 +344,14 @@ class PaceBudget:
                 raise PaceGateClosed(gate)
             ready = max(state.next_slot_at, state.wait_until or state.next_slot_at)
             wait = (ready - now).total_seconds()
-            if wait <= 0 and not must_yield(state, kind, overdue, now.timestamp()):
+            if wait <= 0 and not must_yield(state, kind, now.timestamp(), run_cap=self.run_cap):
                 break  # keep the lock: the request goes now
             self._unlock()
             pause = min(wait, WAIT_CHUNK_SECONDS) if wait > 0 else YIELD_SECONDS
-            next_in_line = overdue and state.last_kind == "search"
+            # An overdue description that the share says takes the next turn may spend
+            # more than the tick budget waiting, as long as one spacing fits in it; the
+            # guard compares the remaining wait, not the elapsed time.
+            next_in_line = overdue and state.description_run < self.run_cap
             if self.give_up_after is not None and (
                     wait > self.give_up_after if next_in_line
                     else (self.clock() - started).total_seconds() + pause > self.give_up_after):

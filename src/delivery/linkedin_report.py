@@ -9,8 +9,10 @@ from datetime import datetime, timedelta
 
 from src.delivery.health import age_text
 from src.linkedin.catalog import CollectorConfig, load_collector_config
-from src.linkedin.pace import PaceState, stored_spacing
-from src.linkedin.schedule import ScheduleConfig, floor_spacing_seconds, load_schedule_config
+from src.linkedin.pace import PaceState
+from src.linkedin.schedule import (
+    ScheduleConfig, floor_spacing_seconds, load_schedule_config, start_spacing_seconds,
+)
 
 WINDOW_HOURS = 24
 MAX_NAMES = 5
@@ -19,19 +21,15 @@ MAX_NAMES = 5
 def _pace_state(cur, now: datetime) -> PaceState:
     cur.execute(
         "SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, refusals_today, "
-        "day, refusal_streak, request_times, refusal_times, nudge, nudged_at, "
-        "weekday_spacing_seconds, weekend_spacing_seconds, calm_days, last_clean_at "
+        "day, refusal_streak, last_clean_at, description_run "
         "FROM pace_budgets WHERE host = 'linkedin.com'")
     row = cur.fetchone()
     if row is None:
         return PaceState(now)
     (next_slot, wait_until, last_kind, wanting, requests_today, refusals_today, day,
-     refusal_streak, request_times, refusal_times, nudge, nudged_at, weekday_spacing,
-     weekend_spacing, calm_days, last_clean_at) = row
+     refusal_streak, last_clean_at, description_run) = row
     return PaceState(next_slot, last_kind, dict(wanting or {}), requests_today, refusals_today,
-                     day, wait_until, refusal_streak, list(request_times or []),
-                     list(refusal_times or []), nudge, nudged_at, weekday_spacing,
-                     weekend_spacing, calm_days, last_clean_at)
+                     day, wait_until, refusal_streak, last_clean_at, description_run or 0)
 
 
 def _names(rows: list[tuple[str, str]]) -> str:
@@ -78,8 +76,8 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
             (since, now))
         area_cap, full_cap, walks = cur.fetchone()
 
-    wd = stored_spacing(state, schedule, "weekday")
-    we = stored_spacing(state, schedule, "weekend")
+    wd = start_spacing_seconds(schedule, "weekday")
+    we = start_spacing_seconds(schedule, "weekend")
     fwd = floor_spacing_seconds(schedule, "weekday")
     fwe = floor_spacing_seconds(schedule, "weekend")
     pct = 100.0 * refused / requests if requests else 0.0
@@ -93,8 +91,8 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         f"Requests: {requests} (search {search}, description {description}); "
         f"refused {refused} ({pct:.1f}%)",
         refusal_wait,
-        f"Base spacing: {wd:.0f}s weekday, {we:.0f}s weekend "
-        f"(floor {fwd:.0f}s/{fwe:.0f}s); hour nudge x{state.nudge:.1f}",
+        f"Fixed spacing: {wd:.0f}s weekday, {we:.0f}s weekend "
+        f"(floor {fwd:.0f}s/{fwe:.0f}s)",
         f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h"
         f"+{collector.cadence_tolerance_hours}h: {_names(past)}",
         oldest_line,
