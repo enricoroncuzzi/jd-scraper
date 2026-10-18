@@ -188,8 +188,8 @@ _OPEN_SCOPE = re.compile(
 _REMOTE_PAREN_COUNTRY = re.compile(r"remote\s*\(\s*([^)]{2,24})\)", re.IGNORECASE)
 
 # A residency or right-to-work condition. The country is taken from the match
-# window, not from the whole description, so a company HQ mention does not
-# produce an advice.
+# window, not from the whole description, and a bare "based in" / "located in"
+# is not a condition: it is usually the company HQ.
 _RESIDENCY = re.compile(
     "|".join([
         r"right\s+to\s+work",
@@ -197,8 +197,6 @@ _RESIDENCY = re.compile(
         r"eligible\s+to\s+work\s+in",
         r"must\s+(?:be\s+)?(?:live|reside|residing|located|based)\s+in",
         r"reside(?:nt)?s?\s+(?:in|of)",
-        r"based\s+in\s+(?:the\s+)?[a-z]",
-        r"located\s+in\s+(?:the\s+)?[a-z]",
         r"only\s+.{0,30}(?:uk|us|germany|france|spain|poland|netherlands)",
         r"security\s+clearance",
         r"citizenship",
@@ -235,6 +233,23 @@ def _first_confident(pattern: re.Pattern[str], text: str, *, suffix_guard: bool 
     return None
 
 
+def stated_restriction(text: str) -> str | None:
+    """The country a residency or right-to-work condition names, or a
+    "Remote (UK)" scope names, or None. The country is read next to the condition
+    (after it first, then before it), never from anywhere in the posting, so an
+    HQ, a client list or an "offices in Italy" line cannot stand in for it."""
+    for match in _RESIDENCY.finditer(text):
+        country = (country_in(text[match.start():match.end() + 60])
+                   or country_in(text[max(0, match.start() - 60):match.start()]))
+        if country:
+            return country
+    for match in _REMOTE_PAREN_COUNTRY.finditer(text):
+        country = country_in(match.group(1))
+        if country:
+            return country
+    return None
+
+
 @dataclass(frozen=True)
 class RuleVerdict:
     verdict: str
@@ -246,25 +261,13 @@ def _eligibility(text: str, location: str, *, require_italy_eligibility: bool) -
     """(verdict, advice) for a job already known to be fully remote."""
     if not require_italy_eligibility:
         return CONFIRMED, ""
-    scoped = _REMOTE_PAREN_COUNTRY.search(text)
-    if scoped:
-        country = country_in(scoped.group(1))
-        if country == "Italy":
-            return CONFIRMED, ""
-        if country:
-            return ADVISED, limited_to_advice(country)
-    # An explicit open scope wins over a residency-looking sentence, which is
-    # often only the company HQ ("our company is based in Berlin").
+    country = stated_restriction(text)
+    if country == "Italy":
+        return CONFIRMED, ""
+    if country:
+        return ADVISED, limited_to_advice(country)
     if _OPEN_SCOPE.search(text):
         return CONFIRMED, ""
-    residency = _RESIDENCY.search(text)
-    if residency:
-        window = text[max(0, residency.start() - 60):residency.end() + 60]
-        country = country_in(window)
-        if country == "Italy":
-            return CONFIRMED, ""
-        if country:
-            return ADVISED, limited_to_advice(country)
     return ADVISED, unrestricted_advice(location)
 
 def classify(

@@ -148,17 +148,29 @@ _COUNTRY_DISPLAY: tuple[tuple[str, str], ...] = (
 )
 
 
+_US_PATTERNS = (
+    r"(?<![A-Z]{2}\s)\bUS\b(?!\s+[A-Z]{2,}\b)",
+    r"(?i)\(\s*us\s*\)",
+    r"(?i)\b(?:in|within|inside)\s+the\s+us\b",
+    r"(?i)\bus-based\b",
+)
+
+
 def country_in(text: str) -> str | None:
     """The first known country named in `text`, as a short display name, or None.
 
-    Two-letter forms are checked separately: "us" is also an English pronoun and
-    "uk" appears inside words, so those only count uppercase, in parentheses, or
-    after a preposition. Nothing here is used to reject a job - only to word an
+    Two-letter forms are checked separately: "uk" appears inside words, so it only
+    counts uppercase, in parentheses, or after a preposition; "us" is also an
+    English pronoun ("of us", "ABOUT US"), so it only counts as an uppercase word
+    outside an all-caps phrase, "(US)", "in/within the US" or "US-based". Nothing here is used to reject a job - only to word an
     advice line - so a miss costs a vaguer line, never a lost posting.
     """
     lowered = text.lower()
     for needle, display in _COUNTRY_DISPLAY:
-        if needle in ("us", "uk"):
+        if needle == "us":
+            if any(re.search(pattern, text) for pattern in _US_PATTERNS):
+                return display
+        elif needle == "uk":
             if (re.search(rf"\b{needle.upper()}\b", text)
                     or re.search(rf"\(\s*{needle}\s*\)", text, re.IGNORECASE)
                     or re.search(rf"\b(?:in|within|of|to|from|inside)\s+(?:the\s+)?{needle}\b",

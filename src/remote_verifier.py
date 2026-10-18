@@ -51,6 +51,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 from src import telemetry
 from src.llm_limits import limit_for
 from src.models import JobOffer
+from src.remote_rules import stated_restriction
 from src.remote_verdicts import (
     ADVISED,
     CONFIRMED,
@@ -366,7 +367,8 @@ def _resolve_verdict(item: _AnswerItem, offer: JobOffer,
         return NOT_STATED, item.reason or "The description does not state the work mode.", ""
 
     quote = item.quote.strip()
-    found = _quote_found(quote, f"{offer.title}\n{offer.location}\n{offer.description}")
+    shown = f"{offer.title}\n{offer.location}\n{offer.description}"
+    found = _quote_found(quote, shown)
     if work_mode in ("hybrid", "onsite", "flexible"):
         if not found:
             return (NOT_STATED,
@@ -389,9 +391,9 @@ def _resolve_verdict(item: _AnswerItem, offer: JobOffer,
     if eligibility == "open":
         return CONFIRMED, reason, ""
     if eligibility == "restricted":
-        # The quote is the sentence that decided it ("Remote (UK)"), so read the
-        # country from there before falling back to the whole description.
-        country = country_in(quote) or country_in(offer.description)
+        # The quote is the sentence that decided it ("Remote (UK)"); otherwise
+        # only a residency or right-to-work sentence names the country.
+        country = country_in(quote) or stated_restriction(shown)
         if country == "Italy":
             return CONFIRMED, reason, ""
         if country:

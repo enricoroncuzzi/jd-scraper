@@ -150,6 +150,23 @@ def test_a_company_hq_sentence_does_not_override_an_open_scope():
     assert result.verdict == CONFIRMED and result.advice == ""
 
 
+@pytest.mark.parametrize("text,verdict,advice", [
+    ("This is a fully remote role. Candidates must reside in Germany and have the right to "
+     "work in Germany. We serve customers across Europe and comply with the EU AI Act.",
+     ADVISED, "remote, limited to Germany - check eligibility"),
+    ("ABOUT US: we build developer tools. This is a fully remote role. "
+     "Candidates must live in Spain.", ADVISED, "remote, limited to Spain - check eligibility"),
+    ("Many of us work in Poland. This is a fully remote role. Offices in Italy. "
+     "You must reside in Poland.", ADVISED, "remote, limited to Poland - check eligibility"),
+    ("This is a fully remote role for residents of Italy. Our HQ is in London.", CONFIRMED, ""),
+])
+def test_a_residency_condition_decides_eligibility_before_any_incidental_scope(
+        text, verdict, advice):
+    result = classify(text, title="AI Engineer", location="Berlin, Germany",
+                      require_italy_eligibility=True)
+    assert (result.verdict, result.advice) == (verdict, advice)
+
+
 def test_no_stated_restriction_in_tier_three_is_advised():
     result = classify("Fully remote.", title="AI Engineer", location="Berlin, Germany",
                       require_italy_eligibility=True)

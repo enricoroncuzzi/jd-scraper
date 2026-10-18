@@ -57,3 +57,12 @@ def test_country_detection_handles_short_and_ambiguous_forms():
     assert rv.country_in("contact us for details") is None  # "us", the pronoun
     assert rv.country_in("Remote from France") == "France"
     assert rv.country_in("Berlin, Germany") == "Germany"
+
+
+def test_the_english_pronoun_us_is_never_the_united_states():
+    for text in ("Many of us work remotely", "Talk to us", "Hear from us", "ABOUT US",
+                 "JOIN US TODAY"):
+        assert rv.country_in(text) is None, text
+    for text in ("Remote (US)", "must live in the US", "within the US", "US-based team",
+                 "Open to US residents"):
+        assert rv.country_in(text) == "the US", text
