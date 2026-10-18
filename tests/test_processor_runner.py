@@ -97,7 +97,7 @@ def test_a_closed_gate_skips_descriptions_but_keeps_the_other_stages(store_conn,
     waiting = record_sighting(store_conn, _linkedin_card("3900000001"), NOW).job_id
     record_sighting(store_conn, _linkedin_card("3900000009", location="Austin, Texas, United States"), NOW)
     store_conn.commit()
-    gate = Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
+    gate = Gate(open=False, reason="daily_cap", requests_today=0, cap=1400, window="weekday")
     get = ScriptedGet(response(200, FRAGMENT))
     tick = process_once(store_conn, FakePace(gate=gate), cfg, KEYS, now=NOW, get=get, sleep=lambda _s: None,
                         verify=FakeVerify(), score=FakeScore())

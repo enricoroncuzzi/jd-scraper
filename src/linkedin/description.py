@@ -87,7 +87,7 @@ def fetch_description(pace, job_id: str, *, overdue: bool = False,
                         slot.neutral(status)
                         return FragmentResult("failed")
         except (PaceGateClosed, PaceBusy):
-            # The schedule gate closed (quiet hours, the daily cap), or no turn was
+            # The schedule gate closed (a configured closed window, the daily cap), or no turn was
             # granted in time: hand the job back untouched, the caller retries next tick.
             return FragmentResult("deferred")
         if attempt < len(RETRY_WAITS):

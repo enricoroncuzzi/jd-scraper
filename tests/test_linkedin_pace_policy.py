@@ -25,9 +25,10 @@ def test_the_fixed_spacing_is_75s_weekday_and_110s_weekend():
 
 def test_each_spacing_is_jittered_twenty_percent_and_never_below_the_floor():
     cfg, low, high = ScheduleConfig(), (lambda a, b: a), (lambda a, b: b)
-    assert next_spacing(cfg, WED_NOON, low) == pytest.approx(60.0)
+    # With no closed window the cap-derived floor is 24 h / cap: 62 s weekday, 108 s weekend.
+    assert next_spacing(cfg, WED_NOON, low) == pytest.approx(24 * 3600 / 1400)
     assert next_spacing(cfg, WED_NOON, high) == pytest.approx(90.0)
-    assert next_spacing(cfg, SAT_NOON, low) == pytest.approx(88.0)
+    assert next_spacing(cfg, SAT_NOON, low) == pytest.approx(108.0)
     assert next_spacing(cfg, SAT_NOON, high) == pytest.approx(132.0)
     # A config that starts under the cap-derived floor still cannot outrun the cap.
     slow_cap = ScheduleConfig(pace=PacePolicy(start_weekday_seconds=1.0))
@@ -108,10 +109,16 @@ def test_a_stale_marker_is_ignored():
     assert must_yield(state, "description", NOW_TS, run_cap=2) is False
 
 
-def test_the_gate_has_only_the_night_window_and_the_daily_cap():
+def test_the_gate_closes_only_for_the_daily_cap_with_no_closed_window():
     cfg = ScheduleConfig()
     assert evaluate_gate(cfg, WED_NOON, requests_today=0).reason == "open"
     assert evaluate_gate(cfg, WED_NOON, requests_today=1400).reason == "daily_cap"
+    night = datetime(2026, 10, 14, 1, 0, tzinfo=timezone.utc)  # 03:00 Rome
+    assert evaluate_gate(cfg, night, requests_today=0).reason == "open"
+
+
+def test_a_restored_closed_window_still_closes_the_gate():
+    cfg = ScheduleConfig(closed_hours=(0, 6))
     night = datetime(2026, 10, 14, 1, 0, tzinfo=timezone.utc)  # 03:00 Rome
     assert evaluate_gate(cfg, night, requests_today=0).reason == "closed_hours"
 

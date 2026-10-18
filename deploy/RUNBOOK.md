@@ -204,7 +204,7 @@ configured in `config/schedule.json`:
 | Setting | Shipped value | Meaning |
 |---|---|---|
 | `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
-| `closed_hours` | `[0, 6]` | no LinkedIn request 00:00-06:00 Rome |
+| `closed_hours` | `null` | no closed window: LinkedIn runs around the clock (set `[0, 6]` to restore the 00:00-06:00 Rome pause) |
 | `daily_caps.weekday` / `.weekend` | `1400` / `800` | shared cap on search + description requests per Rome day |
 | `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | the fixed base spacing, in seconds |
 | `pace.jitter` | `0.2` | every sleep is jittered +/-20 % |
@@ -229,10 +229,12 @@ repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2
 `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
 `max_wait_seconds` 300, `run_budget_seconds` 1700).
 
-The fixed pace has a floor derived from the cap and the 18 open hours: 18 h / 1400 = 46 s
-weekday, 18 h / 800 = 81 s weekend. The base is a constant 75 s / 110 s, never below the
-floor and never widened or tightened: a finished day changes nothing (the 2026-10-18 refusal
-study removed the hour nudge and the day verdict, which only cut throughput). A refusal honours
+The fixed pace has a floor derived from the cap and the open hours: with no closed window that
+is 24 h / 1400 = 62 s weekday and 24 h / 800 = 108 s weekend (restore `closed_hours`: `[0, 6]`
+and it becomes 18 h / 1400 = 46 s and 18 h / 800 = 81 s). The base is a constant 75 s / 110 s,
+never below the floor and never widened or tightened: a finished day changes nothing (the
+2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut throughput).
+A refusal honours
 `Retry-After` or waits 60 s, doubling each consecutive refusal to a 30 min cap, and the first
 clean response resets it; the spacing around it does not move. When both a search and a
 description are waiting, descriptions take two of every three turns (`pace.description_turn_share`,
@@ -240,15 +242,21 @@ realised as a run of two); a lone waiting kind always takes the turn. Once the o
 job is over `description_deadline_hours` old, an overdue description that the share says takes
 the next turn may spend more than one processor tick waiting for it. If a walk is refused three
 times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
-The gate now closes only for the night window and the daily cap.
+The gate now closes only for the daily cap: there is no night window as shipped.
+
+A flat 110 s over 24 h would be about 785 requests. The 108 s floor clamps the low jitter draws
+(110 x 0.8 = 88 s becomes 108 s), so the realised mean spacing is about 114.5 s and the weekend
+does about 754 requests, comfortably under the 800 cap, so the cap is not reached early; only if
+every jitter draw bottomed out at the 108 s floor would the 800th request land exactly at Rome
+midnight, when the counter resets. The evening is never stopped by the cap.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
 `*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
 and at least 60 min clear of the 03:00 and 04:00 daily starts, so a resume run can never hold a
 source's lock when its daily run starts.
 
-`config/schedule.json` is read once when a service starts, so a change to a cap, the window or
-the pace needs the three LinkedIn users restarted:
+`config/schedule.json` is read once when a service starts, so a change to a cap, the closed
+window or the pace needs the three LinkedIn users restarted:
 
 ```bash
 sudo systemctl restart jds-collect-linkedin jds-process jds-deliver
@@ -262,9 +270,11 @@ Read the gate and the pace with `python -m src.services.status`. The gate line i
 
 ```
 LinkedIn gate: 342/1400 requests today (weekday), window open
-LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome
 LinkedIn gate: 1400/1400 requests today (weekday), daily cap reached
 ```
+
+With a restored `closed_hours` the open line also appears as
+`LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome` during the pause.
 
 The pace line shows the fixed spacing for both windows, the day's refusals, the refusals in a
 row and the last success, and adds any wait in Rome time:
@@ -307,13 +317,20 @@ SELECT (at AT TIME ZONE 'Europe/Rome')::date AS day,
 FROM pace_events GROUP BY 1 ORDER BY 1 DESC;
 ```
 
-The exact revert, on the VPS:
+The exact pace revert, on the VPS:
 
 1. Edit `config/schedule.json`: `pace.start_spacing_seconds` to `{"weekday": 91, "weekend": 133}`.
 2. `sudo systemctl restart jds-collect-linkedin jds-process jds-deliver` back to back.
 3. `python -m src.services.status` must show `LinkedIn pace: fixed 91s weekday / 133s weekend`.
 
-No database change and no code change is needed: the pace is read from config at service start.
+If the extra night requests are the problem, also restore the closed window in the same edit:
+
+1. Edit `config/schedule.json`: `closed_hours` to `[0, 6]` (no other change).
+2. `sudo systemctl restart jds-collect-linkedin jds-process jds-deliver` back to back.
+3. `python -m src.services.status` at night must show `window closed until 06:00 Rome`.
+
+No database change and no code change is needed: the pace and the closed window are read from
+config at service start.
 
 The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
 its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,
@@ -365,12 +382,11 @@ SELECT (at AT TIME ZONE 'Europe/Rome')::date AS day, kind, outcome, count(*)
 FROM pace_events GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 ```
 
-The longest open-hours gap between consecutive requests (partitioned by Rome day, so the
-night gap is not counted):
+The longest gap between consecutive requests, across midnight too (there is no nightly pause):
 
 ```sql
 SELECT max(gap) FROM (
-  SELECT at - lag(at) OVER (PARTITION BY (at AT TIME ZONE 'Europe/Rome')::date ORDER BY at) AS gap
+  SELECT at - lag(at) OVER (ORDER BY at) AS gap
   FROM pace_events WHERE spacing_seconds IS NOT NULL) g;
 ```
 

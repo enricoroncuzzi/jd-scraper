@@ -155,8 +155,8 @@ def test_status_shows_the_schedule_gate_count_and_window(store_conn):
     assert "LinkedIn gate: 5/1400 requests today (weekday), window open" in text
 
 
-def test_status_shows_a_closed_quiet_window(store_conn):
-    schedule = ScheduleConfig()
+def test_status_shows_a_restored_closed_quiet_window(store_conn):
+    schedule = ScheduleConfig(closed_hours=(0, 6))
     night = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
     with store_conn.cursor() as cur:
         cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
@@ -164,6 +164,17 @@ def test_status_shows_a_closed_quiet_window(store_conn):
     store_conn.commit()
     text = status.render(store_conn, night, schedule)
     assert "window closed until 06:00 Rome" in text
+
+
+def test_status_shows_the_gate_open_at_night_without_a_closed_window(store_conn):
+    schedule = ScheduleConfig()
+    night = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, day) "
+                    "VALUES ('linkedin.com', %s, 2, %s)", (night, local_day(schedule, night)))
+    store_conn.commit()
+    text = status.render(store_conn, night, schedule)
+    assert "LinkedIn gate: 2/1400 requests today (weekday), window open" in text
 
 
 def test_status_does_not_show_yesterdays_refusals_as_today(store_conn):

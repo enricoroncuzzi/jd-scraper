@@ -8,7 +8,7 @@ def test_every_runbook_sql_block_executes(store_conn):
             cur.execute(block)
 
 
-def test_the_runbook_gap_query_ignores_pre_deploy_and_night_gaps(store_conn):
+def test_the_runbook_gap_query_ignores_pre_deploy_rows_and_spans_midnight(store_conn):
     import re
     from datetime import timedelta
     text = open("deploy/RUNBOOK.md").read()
@@ -19,12 +19,11 @@ def test_the_runbook_gap_query_ignores_pre_deploy_and_night_gaps(store_conn):
         cur.execute("INSERT INTO pace_events (at, kind, outcome, spacing_seconds) VALUES "
                     "('2026-10-16 08:29+02', 'search', 'ok', NULL), "
                     "('2026-10-16 14:39+02', 'search', 'ok', NULL)")
-        # New-code rows 75 s apart within one Rome day; the cross-midnight pair is a different
-        # partition and must not count as a gap either.
+        # New-code rows 75 s apart across Rome midnight: with no closed window that is a
+        # real 75 s gap, so the query must no longer partition the timeline by day.
         cur.execute("INSERT INTO pace_events (at, kind, outcome, spacing_seconds) VALUES "
                     "('2026-10-17 23:59:30+02', 'search', 'ok', 75), "
-                    "('2026-10-18 06:00:30+02', 'search', 'ok', 75), "
-                    "('2026-10-18 06:01:45+02', 'search', 'ok', 75)")
+                    "('2026-10-18 00:00:45+02', 'search', 'ok', 75)")
     store_conn.commit()
     with store_conn.cursor() as cur:
         cur.execute(gap_sql)

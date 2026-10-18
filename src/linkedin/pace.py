@@ -4,11 +4,12 @@ One budget per host, stored in the `pace_budgets` table and guarded by a
 Postgres session advisory lock, so the collector and the processor cannot
 exceed it together and never have two LinkedIn requests in flight.
 
-Two things gate every request, all enforced here so no caller can bypass them:
-the quiet window (config/schedule.json `closed_hours`, Rome time) and the shared
-daily request budget (weekday/weekend cap, Rome calendar day). When the gate is
-closed `slot` raises PaceGateClosed instead of blocking a tick for hours; the
-services catch that and go idle. Every request is recorded in `pace_events`.
+Two things can gate every request, all enforced here so no caller can bypass them:
+an optional closed window (config/schedule.json `closed_hours`, Rome time, null as
+shipped so LinkedIn runs around the clock) and the shared daily request budget
+(weekday/weekend cap, Rome calendar day). When the gate is closed `slot` raises
+PaceGateClosed instead of blocking a tick for hours; the services catch that and go
+idle. Every request is recorded in `pace_events`.
 
 The pace is fixed (2026-10-18 refusal study): a constant base spacing per window
 (75 s weekday / 110 s weekend, never below the cap-derived floor) jittered +/-20 %.
@@ -192,9 +193,9 @@ class Slot:
 class PaceBudget:
     """Use `with pace.slot("search") as slot:` around exactly one LinkedIn request
     and call slot.clean() or slot.throttled() with what came back. When the
-    schedule gate is closed the `with` raises PaceGateClosed and no request is
-    made, so a caller must never wrap the request in a bare try/except that would
-    swallow it.
+    schedule gate is closed (a configured closed window or the daily cap) the
+    `with` raises PaceGateClosed and no request is made, so a caller must never
+    wrap the request in a bare try/except that would swallow it.
 
     `conn` must be a dedicated autocommit connection: the advisory lock lives as
     long as the session, so a crashed service releases it by disconnecting.
