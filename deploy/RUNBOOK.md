@@ -244,8 +244,9 @@ the next turn may spend more than one processor tick waiting for it. If a walk i
 times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
 The gate now closes only for the daily cap: there is no night window as shipped.
 
-At 110 s over 24 h the weekend does about 785 requests, under the 800 cap, so the cap is not
-reached early; only if every jitter draw bottomed out at the 108 s floor would the 800th request
+A flat 110 s over 24 h would be about 785 requests. The 108 s floor clamps the low jitter draws
+(110 x 0.8 = 88 s becomes 108 s), so the realised mean spacing is about 114.5 s and the weekend
+does about 754 requests, comfortably under the 800 cap, so the cap is not reached early; only if every jitter draw bottomed out at the 108 s floor would the 800th request
 land exactly at Rome midnight, when the counter resets. The evening is never stopped by the cap.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
