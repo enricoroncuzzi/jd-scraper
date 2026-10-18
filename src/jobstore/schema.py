@@ -196,6 +196,10 @@ DDL: list[str] = [
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS weekend_spacing_seconds DOUBLE PRECISION",
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS calm_days INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS last_clean_at TIMESTAMPTZ",
+    # Fixed pace (2026-10-18 refusal study): the nudge, the stored bases and the day verdict
+    # are no longer read. description_run is how many descriptions have taken the last turns
+    # in a row, so the collector and processor share the two-of-three turn share.
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS description_run INTEGER NOT NULL DEFAULT 0",
     """
     CREATE TABLE IF NOT EXISTS pace_events (
         id             BIGSERIAL PRIMARY KEY,

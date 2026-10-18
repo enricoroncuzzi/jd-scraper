@@ -5,7 +5,7 @@ from psycopg2.extras import Json
 
 from src.linkedin import pace as pace_module
 from src.linkedin.pace import ManagedPace, PaceBudget, PaceBusy, PaceGateClosed
-from src.linkedin.schedule import RefusalPolicy, ScheduleConfig
+from src.linkedin.schedule import ScheduleConfig
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
 
@@ -34,9 +34,6 @@ def make_budget(store_conn, store_conn_factory):
         return PaceBudget(conn, clock=fake.clock, sleep=fake.sleep, uniform=lambda a, b: (a + b) / 2,
                           schedule=schedule or ScheduleConfig(), **options)
     return make
-
-
-NO_MIN_SAMPLE = ScheduleConfig(refusals=RefusalPolicy(hour_min_requests=1))
 
 
 def _row(budget, *columns):
@@ -138,14 +135,26 @@ def test_the_day_counts_requests_and_refusals(make_budget):
 
 def test_every_request_logs_its_spacing_and_its_refusal_wait(make_budget):
     fake = FakeTime()
-    budget = make_budget(fake, NO_MIN_SAMPLE)
+    budget = make_budget(fake)
     with budget.slot("search") as slot:
         slot.clean(200)
     with budget.slot("search") as slot:
         slot.throttled(429)
-    # the second spacing carries the hour nudge: 1 refusal in 2 requests is over 10%
-    assert _events(budget, "outcome", "spacing_seconds", "wait_seconds", "factor") == [
-        ("ok", 75.0, None, 1.0), ("refused", 112.5, 60.0, 1.5)]
+    # The fixed pace carries on after a refusal: both spacings are the same 75 s.
+    assert _events(budget, "outcome", "spacing_seconds", "wait_seconds") == [
+        ("ok", 75.0, None), ("refused", 75.0, 60.0)]
+
+
+def test_a_stale_live_row_base_and_nudge_do_not_slow_the_fixed_pace(make_budget):
+    # The live pace_budgets row still stores weekday 99 s / weekend 133 s and nudge x3 from the
+    # old adaptive code; the deploy must run at 75/110 x1 with no manual step.
+    fake = FakeTime()
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, weekday_spacing_seconds=99.0, weekend_spacing_seconds=133.0, nudge=3.0)
+    with budget.slot("search") as slot:
+        slot.clean(200)
+    assert _row(budget, "next_slot_at") == (WED_NOON + timedelta(seconds=75),)
 
 
 def test_a_stale_breaker_rest_from_the_old_code_does_not_close_the_gate(make_budget):
@@ -158,7 +167,7 @@ def test_a_stale_breaker_rest_from_the_old_code_does_not_close_the_gate(make_bud
     assert gate.open and gate.reason == "open"
     with budget.slot("search") as slot:
         slot.clean(200)
-    assert fake.sleeps == [] and _row(budget, "nudge") == (1.0,)
+    assert fake.sleeps == [] and _row(budget, "requests_today") == (1,)
 
 
 def test_the_old_aimd_factor_is_ignored(make_budget):
@@ -192,13 +201,15 @@ def test_no_second_request_can_be_in_flight(make_budget):
     second._unlock()
 
 
-def test_an_overdue_description_keeps_its_second_turn_within_the_processor_budget(make_budget):
-    # Revision 2 (plan review round 2, change 1): two spacings exceed the 120 s budget, so an
-    # overdue description that is next in line must not give up on elapsed time.
+def test_an_overdue_description_keeps_a_turn_after_a_search_within_the_processor_budget(make_budget):
+    # Two spacings exceed the 120 s budget. The description yields because its run is at the
+    # cap; the search takes its turn; the description is then next in line and must not
+    # give up on elapsed time, only on a remaining wait longer than the budget.
     fake = FakeTime()
     description, search = make_budget(fake, give_up_after=120), make_budget(fake)
     description.snapshot()
-    _set(description, last_kind="description", next_slot_at=fake.now + timedelta(seconds=75))
+    _set(description, description_run=2, last_kind="description",
+         next_slot_at=fake.now + timedelta(seconds=75))
     search._declare_wanting("search")
     taken = []
 
@@ -237,94 +248,79 @@ def test_the_lock_is_not_held_while_waiting(make_budget):
     assert free == [True] * 5               # the old loop slept once, locked: [False]
 
 
-def test_a_description_yields_while_a_search_is_waiting(make_budget):
+def test_a_description_takes_its_turn_over_a_waiting_search(make_budget):
     fake = FakeTime()
     description, search = make_budget(fake), make_budget(fake)
     description.snapshot()                  # the row exists and the next slot is now
     search._declare_wanting("search")        # a walk is waiting for its turn
-    order = []
-
-    def the_search_takes_its_turn(seconds):
-        if seconds == pace_module.YIELD_SECONDS and not order:
-            fake.on_sleep = None
-            with search.slot("search") as slot:
-                order.append("search")
-                slot.clean(200)
-    fake.on_sleep = the_search_takes_its_turn
     with description.slot("description") as slot:
-        order.append("description")
         slot.clean(200)
-    assert order == ["search", "description"]
-    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
-    assert sum(fake.sleeps[1:]) == pytest.approx(75)   # the description waits out the search's spacing
-    assert _events(description, "kind") == [("search",), ("description",)]
-    assert _row(description, "last_kind") == ("description",)
+    assert fake.sleeps == []                 # the share gives this turn to the description
+    assert _events(description, "kind") == [("description",)]
+    assert _row(description, "last_kind", "description_run") == ("description", 1)
 
 
-def test_a_search_does_not_yield_to_a_waiting_description(make_budget):
+def test_a_search_yields_while_descriptions_are_under_their_share(make_budget):
     fake = FakeTime()
     search, description = make_budget(fake), make_budget(fake)
     search.snapshot()
-    _set(search, last_kind="search")
+    description._declare_wanting("description")
+    order = []
+
+    def the_description_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with description.slot("description") as slot:
+                order.append("description")
+                slot.clean(200)
+    fake.on_sleep = the_description_takes_its_turn
+    with search.slot("search") as slot:
+        order.append("search")
+        slot.clean(200)
+    assert order == ["description", "search"]
+    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
+    assert sum(fake.sleeps[1:]) == pytest.approx(75)   # the search waits out the description's spacing
+    assert _events(description, "kind") == [("description",), ("search",)]
+
+
+def test_a_search_takes_its_turn_once_the_description_run_reaches_the_cap(make_budget):
+    fake = FakeTime()
+    search, description = make_budget(fake), make_budget(fake)
+    search.snapshot()
+    _set(search, description_run=2, last_kind="description")
     description._declare_wanting("description")
     with search.slot("search") as slot:
         slot.clean(200)
     assert fake.sleeps == []
+    assert _row(search, "last_kind", "description_run") == ("search", 0)
 
 
-def test_an_overdue_description_takes_every_second_turn(make_budget):
-    fake = FakeTime()
-    search, description = make_budget(fake), make_budget(fake)
-    search.snapshot()
-    _set(search, last_kind="search")
-    description._declare_wanting("description", overdue=True)
-    taken = []
-
-    def the_description_takes_its_turn(seconds):
-        if seconds == pace_module.YIELD_SECONDS and not taken:
-            fake.on_sleep = None
-            with description.slot("description", overdue=True) as slot:
-                taken.append("description")
-                slot.clean(200)
-    fake.on_sleep = the_description_takes_its_turn
-    with search.slot("search") as slot:
-        taken.append("search")
-        slot.clean(200)
-    assert taken == ["description", "search"]
-    # after a description turn the search goes first, even with an overdue description waiting
-    _set(search, last_kind="description", next_slot_at=fake.now)
-    description._declare_wanting("description", overdue=True)
-    before = len(fake.sleeps)
-    with search.slot("search") as slot:
-        slot.clean(200)
-    assert fake.sleeps[before:] == []
-
-
-def test_an_overdue_description_goes_even_while_a_search_waits(make_budget):
+def test_an_overdue_description_takes_the_turn_before_a_search(make_budget):
     fake = FakeTime()
     description, search = make_budget(fake), make_budget(fake)
     description.snapshot()
-    _set(description, last_kind="search")
     search._declare_wanting("search")
     with description.slot("description", overdue=True) as slot:
         slot.clean(200)
     assert fake.sleeps == []
+    assert _row(description, "last_kind", "description_run") == ("description", 1)
 
 
-def test_the_overdue_marker_is_dropped_after_the_description_turn(make_budget):
+def test_the_description_marker_is_dropped_after_its_turn(make_budget):
     fake = FakeTime()
     budget = make_budget(fake)
-    with budget.slot("description", overdue=True) as slot:
-        assert {"description", "overdue"} <= set(_row(budget, "wanting")[0])
+    with budget.slot("description") as slot:
+        assert "description" in _row(budget, "wanting")[0]
         slot.clean(200)
     assert _row(budget, "wanting") == ({},)
 
 
-def test_two_waiters_wake_together_and_the_search_wins(make_budget):
+def test_two_waiters_wake_together_and_the_description_goes_first(make_budget):
     fake = FakeTime()
     description, search = make_budget(fake), make_budget(fake)
     description.snapshot()
     _set(description, next_slot_at=fake.now + timedelta(seconds=10))
+    description._declare_wanting("description")
     search._declare_wanting("search")          # the search caller sleeps in its own 10 s wait
     order = []
 
@@ -333,23 +329,24 @@ def test_two_waiters_wake_together_and_the_search_wins(make_budget):
             search._declare_wanting("search")
         elif seconds == pace_module.YIELD_SECONDS and not order:
             fake.on_sleep = None
-            with search.slot("search") as slot:
-                order.append("search")
+            with description.slot("description") as slot:
+                order.append("description")
                 slot.clean(200)
             fake.on_sleep = hook
     fake.on_sleep = hook
-    with description.slot("description") as slot:
-        order.append("description")
+    with search.slot("search") as slot:
+        order.append("search")
         slot.clean(200)
-    assert order == ["search", "description"]
+    assert order == ["description", "search"]
     assert fake.sleeps[:2] == [10, pace_module.YIELD_SECONDS]
-    assert _events(description, "kind") == [("search",), ("description",)]
+    assert _events(description, "kind") == [("description",), ("search",)]
 
 
 def test_a_caller_that_cannot_get_a_turn_gives_up_without_a_request(make_budget):
     fake = FakeTime()
     description, search = make_budget(fake, give_up_after=10), make_budget(fake)
     description.snapshot()
+    _set(description, description_run=2, last_kind="search")  # the share is the search's turn
     search._declare_wanting("search")
     fake.on_sleep = lambda _seconds: search._declare_wanting("search")  # a long walk keeps wanting
     with pytest.raises(PaceBusy):
@@ -366,8 +363,9 @@ def test_giving_up_writes_only_the_markers_so_another_services_refusal_survives(
     The processor loaded the row before the collector wrote it, so any save of its state on the way
     out would overwrite the refusal. The patched unlock puts the collector's request exactly there."""
     fake = FakeTime()
-    collector, processor = make_budget(fake, NO_MIN_SAMPLE), make_budget(fake, give_up_after=0.1)
+    collector, processor = make_budget(fake), make_budget(fake, give_up_after=0.1)
     collector.snapshot()
+    _set(collector, description_run=2, last_kind="description")  # the share is the search's turn
     collector._declare_wanting("search")       # so the processor yields its turn
     refused = []
     real_unlock = processor._unlock
@@ -383,9 +381,9 @@ def test_giving_up_writes_only_the_markers_so_another_services_refusal_survives(
         with processor.slot("description"):
             raise AssertionError("no request may be made")
     at = refused[0]
-    # next_slot_at carries the hour nudge (1 refusal in 1 request): 75 s x 1.5
+    # The fixed pace spaces the next slot 75 s out; the refusal wait is separate.
     assert _row(collector, "requests_today", "refusal_streak", "cooldown_until", "next_slot_at", "last_kind") == (
-        1, 1, at + timedelta(seconds=60), at + timedelta(seconds=112.5), "search")
+        1, 1, at + timedelta(seconds=60), at + timedelta(seconds=75), "search")
     assert "description" not in _row(collector, "wanting")[0]
 
 
@@ -431,12 +429,11 @@ def test_a_marker_declared_while_a_slot_is_held_survives_its_release(make_budget
     assert "description" in wanting and "search" not in wanting
 
 
-def test_managed_pace_forwards_give_up_after_and_overdue(store_conn, store_conn_factory):
+def test_managed_pace_forwards_give_up_after(store_conn, store_conn_factory):
     fake = FakeTime()
     managed = ManagedPace(lambda: store_conn_factory(store_conn), clock=fake.clock, sleep=fake.sleep,
                           uniform=lambda a, b: (a + b) / 2, give_up_after=10)
     with managed.slot("description", overdue=True) as slot:
-        assert "overdue" in managed._current().snapshot().wanting
         slot.clean(200)
     assert managed._current().give_up_after == 10
     managed._current().conn.close()
@@ -461,17 +458,6 @@ def test_managed_pace_reopens_a_dropped_connection(store_conn, store_conn_factor
     opened[1].close()
 
 
-def test_the_day_verdict_is_persisted_and_tightens_the_spacing(make_budget):
-    fake = FakeTime()
-    budget = make_budget(fake)
-    budget.snapshot()
-    _set(budget, day=date(2026, 10, 12), requests_today=500, refusals_today=0, calm_days=2)
-    with budget.slot("search") as slot:
-        slot.clean(200)
-    assert _row(budget, "weekday_spacing_seconds")[0] == pytest.approx(67.5)
-    assert _row(budget, "calm_days")[0] == 0
-
-
 def test_an_overdue_next_in_line_description_gives_up_on_a_long_wait(make_budget):
     fake = FakeTime()
     budget = make_budget(fake, give_up_after=120)
@@ -483,4 +469,4 @@ def test_an_overdue_next_in_line_description_gives_up_on_a_long_wait(make_budget
             raise AssertionError("no request may be made")
     assert _row(budget, "requests_today") == (0,) and _events(budget, "kind") == []
     wanting = _row(budget, "wanting")[0]
-    assert "description" not in wanting and "overdue" not in wanting
+    assert "description" not in wanting

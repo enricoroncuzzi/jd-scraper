@@ -37,11 +37,21 @@ def test_the_shipped_schedule_carries_the_pace_and_refusal_numbers():
     cfg = load_schedule_config()
     p, r = cfg.pace, cfg.refusals
     assert (p.start_weekday_seconds, p.start_weekend_seconds, p.jitter) == (75, 110, 0.2)
-    assert (p.calm_days_to_tighten, p.calm_refusal_rate, p.loosen_refusal_rate, p.step) == (3, 0.02, 0.10, 0.10)
-    assert (p.min_day_requests, p.max_spacing_factor) == (100, 2.0)
+    assert p.description_turn_share == pytest.approx(2 / 3, abs=1e-3)
     assert (r.first_wait_seconds, r.max_wait_seconds) == (60, 1800)
-    assert (r.hour_refusal_rate, r.hour_multiplier, r.hour_max_multiplier) == (0.10, 1.5, 3.0)
-    assert r.hour_min_requests == 10
+
+
+def test_a_leftover_hour_nudge_key_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="removed"):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS,
+                                               "refusals": {**REFUSALS, "hour_multiplier": 1.5}}))
+
+
+def test_a_leftover_day_verdict_key_is_rejected(tmp_path):
+    for override in ({"pace": {**PACE, "tighten": TIGHTEN}},
+                     {"pace": {**PACE, "max_spacing_factor": 2.0}}):
+        with pytest.raises(ValueError, match="removed"):
+            load_schedule_config(_write(tmp_path, {**DEFAULTS, **override}))
 
 
 def test_the_floor_is_the_open_hours_over_the_cap():
@@ -140,20 +150,16 @@ DEFAULTS = {
     "pace": {
         "start_spacing_seconds": {"weekday": 75, "weekend": 110},
         "jitter": 0.2,
-        "max_spacing_factor": 2.0,
-        "tighten": {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.10,
-                    "step": 0.10, "min_day_requests": 100},
+        "description_turn_share": 2 / 3,
     },
     "refusals": {
         "first_wait_seconds": 60,
         "max_wait_seconds": 1800,
-        "hour_refusal_rate": 0.10,
-        "hour_multiplier": 1.5,
-        "hour_max_multiplier": 3.0,
-        "hour_min_requests": 10,
     },
 }
-PACE, TIGHTEN, REFUSALS = DEFAULTS["pace"], DEFAULTS["pace"]["tighten"], DEFAULTS["refusals"]
+PACE, REFUSALS = DEFAULTS["pace"], DEFAULTS["refusals"]
+TIGHTEN = {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.10,
+           "step": 0.10, "min_day_requests": 100}
 
 
 @pytest.mark.parametrize("override", [
@@ -166,13 +172,11 @@ PACE, TIGHTEN, REFUSALS = DEFAULTS["pace"], DEFAULTS["pace"]["tighten"], DEFAULT
     {"daily_caps": {"weekday": 0, "weekend": 800}},
     {"daily_caps": {"weekday": 1400}},
     {"pace": {**PACE, "jitter": 0.6}},
-    {"pace": {**PACE, "tighten": {**TIGHTEN, "step": 0}}},
-    {"pace": {**PACE, "tighten": {**TIGHTEN, "calm_refusal_rate": 1.5}}},
+    {"pace": {**PACE, "description_turn_share": 1.0}},
+    {"pace": {**PACE, "description_turn_share": 0.4}},
     {"pace": {**PACE, "start_spacing_seconds": {"weekday": 0, "weekend": 110}}},
     {"refusals": {**REFUSALS, "max_wait_seconds": 30}},
-    {"refusals": {**REFUSALS, "hour_multiplier": 0.9}},
     {"refusals": {**REFUSALS, "hour_min_requests": 0}},
-    {"pace": {**PACE, "max_spacing_factor": 0.5}},
 ])
 def test_a_malformed_schedule_raises(tmp_path, override):
     with pytest.raises(ValueError):

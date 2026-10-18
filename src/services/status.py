@@ -12,8 +12,8 @@ from dotenv import load_dotenv
 
 from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
-from src.linkedin.pace import Gate, PaceState, evaluate_gate, stored_spacing
-from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests_today_for
+from src.linkedin.pace import Gate, PaceState, evaluate_gate
+from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests_today_for, start_spacing_seconds
 
 
 def rome(value: datetime | None, schedule: ScheduleConfig, fmt: str = "%Y-%m-%d %H:%M") -> str:
@@ -54,24 +54,21 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         for source, parts in cadence.items():
             lines.append(f"  {source:<10} cadence: " + ", ".join(parts))
         cur.execute("SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, "
-                    "refusals_today, day, refusal_streak, request_times, refusal_times, nudge, "
-                    "nudged_at, weekday_spacing_seconds, weekend_spacing_seconds, calm_days, "
-                    "last_clean_at FROM pace_budgets WHERE host = 'linkedin.com'")
+                    "refusals_today, day, refusal_streak, last_clean_at, description_run "
+                    "FROM pace_budgets WHERE host = 'linkedin.com'")
         pace = cur.fetchone()
         if pace:
-            (next_slot, wait_until, kind, wanting, today, refusals, day, streak, request_times,
-             refusal_times, nudge, nudged_at, weekday_spacing, weekend_spacing, calm_days,
-             last_clean_at) = pace
+            (next_slot, wait_until, kind, wanting, today, refusals, day, streak,
+             last_clean_at, description_run) = pace
             state = PaceState(next_slot, kind, dict(wanting or {}), today, refusals, day, wait_until,
-                              streak, list(request_times or []), list(refusal_times or []), nudge,
-                              nudged_at, weekday_spacing, weekend_spacing, calm_days, last_clean_at)
-            wd = stored_spacing(state, schedule, "weekday")
-            we = stored_spacing(state, schedule, "weekend")
+                              streak, last_clean_at, description_run or 0)
+            wd = start_spacing_seconds(schedule, "weekday")
+            we = start_spacing_seconds(schedule, "weekend")
             success = (f", last success {rome(last_clean_at, schedule)}" if last_clean_at else "")
             waiting = (f", waiting until {rome(wait_until, schedule, '%H:%M:%S')}"
                        if wait_until and wait_until > now else "")
-            lines.append(f"LinkedIn pace: base {wd:.0f}s weekday / {we:.0f}s weekend, "
-                         f"hour nudge x{state.nudge:.1f}, {state.refusal_streak} refusals in a row, "
+            lines.append(f"LinkedIn pace: fixed {wd:.0f}s weekday / {we:.0f}s weekend, "
+                         f"{refusals}/{today} refused today, {state.refusal_streak} refusals in a row, "
                          f"last request: {state.last_kind}{success}{waiting}")
             gate = evaluate_gate(schedule, now,
                                  requests_today=requests_today_for(day, today, schedule, now))
