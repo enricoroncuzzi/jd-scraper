@@ -41,11 +41,11 @@ def test_the_prompt_carries_the_verifier_rule_for_the_tier(store_conn, cfg):
     offers = [JobOffer(id=0, title="AI", company="Acme", link="x", description="d", description_status="ok")]
     invoke_combined(chain, offers, require_italy_eligibility=True, profile="p", priority_keywords=["LLM"],
                     exclude_keywords=["Java"], sleep=lambda _s: None)
-    assert "someone living in Italy" in chain.payloads[0]["remote_rule"]
+    assert "living in Italy" in chain.payloads[0]["remote_rule"]
     other = FakeChain(_output(1))
     invoke_combined(other, offers, require_italy_eligibility=False, profile="p",
                     priority_keywords=[], exclude_keywords=[], sleep=lambda _s: None)
-    assert "no required days in an office" in other.payloads[0]["remote_rule"]
+    assert "work mode only" in other.payloads[0]["remote_rule"]
 
 
 def test_late_work_location_text_is_appended_when_it_falls_past_the_scoring_prefix():

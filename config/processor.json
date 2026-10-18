@@ -12,6 +12,7 @@
   "backoff_cap_hours": 12,
   "llm_stop_at_requests": 950,
   "title_prefilter": {"1": true, "2": true, "3": true, "4": true},
-  "structured_remote": {"enabled": false},
+  "remote_rules": {"enabled": true},
+  "structured_remote": {"enabled": true, "confirm": false},
   "merged_call": {"enabled": false}
 }

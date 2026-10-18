@@ -68,7 +68,7 @@ def test_parses_all_three_verdicts(monkeypatch):
     by_id = {o.id: o for o in verified}
     assert by_id[1].remote_verdict == "confirmed"
     assert by_id[2].remote_verdict == "rejected"
-    assert by_id[3].remote_verdict == "unconfirmed"
+    assert by_id[3].remote_verdict == "not_stated"
     assert by_id[2].remote_reason == "Requires two days per week on site."
     assert usage["total_tokens"] == 15
 
@@ -79,7 +79,7 @@ def test_empty_description_short_circuits_without_a_call(monkeypatch):
     verified, usage = verify_offers([_offer(1, description="", status="failed")], True, "key")
 
     assert calls["count"] == 0
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert "description" in verified[0].remote_reason.lower()
     assert usage["total_tokens"] == 0
 
@@ -90,7 +90,7 @@ def test_failed_batch_falls_back_to_unconfirmed_not_rejected(monkeypatch):
 
     verified, _ = verify_offers([_offer(1), _offer(2)], True, "key")
 
-    assert [o.remote_verdict for o in verified] == ["unconfirmed", "unconfirmed"]
+    assert [o.remote_verdict for o in verified] == ["not_stated", "not_stated"]
 
 
 def test_missing_api_key_degrades_the_whole_stage(monkeypatch):
@@ -99,7 +99,7 @@ def test_missing_api_key_degrades_the_whole_stage(monkeypatch):
     verified, usage = verify_offers([_offer(1), _offer(2)], True, "")
 
     assert calls["count"] == 0
-    assert all(o.remote_verdict == "unconfirmed" for o in verified)
+    assert all(o.remote_verdict == "not_stated" for o in verified)
     assert usage["total_tokens"] == 0
     assert usage["degraded"] is True
 
@@ -113,7 +113,7 @@ def test_offer_missing_from_the_response_becomes_unconfirmed(monkeypatch):
 
     by_id = {o.id: o for o in verified}
     assert by_id[1].remote_verdict == "confirmed"
-    assert by_id[2].remote_verdict == "unconfirmed"
+    assert by_id[2].remote_verdict == "not_stated"
 
 
 def test_italy_eligibility_flag_reaches_the_prompt(monkeypatch):
@@ -170,7 +170,7 @@ def test_content_free_fallback_description_short_circuits_without_a_call(monkeyp
     verified, usage = verify_offers([offer], True, "key")
 
     assert calls["count"] == 0
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert "description" in verified[0].remote_reason.lower()
     assert usage["total_tokens"] == 0
 
@@ -199,7 +199,7 @@ def test_client_construction_failure_degrades_instead_of_raising(monkeypatch):
     verified, usage = verify_offers([_offer(1), _offer(2)], True, "key")
 
     assert calls["count"] == 0
-    assert [o.remote_verdict for o in verified] == ["unconfirmed", "unconfirmed"]
+    assert [o.remote_verdict for o in verified] == ["not_stated", "not_stated"]
     assert all(o.remote_reason == _DEGRADED_REASON for o in verified)
     assert usage["degraded"] is True
     assert usage["total_tokens"] == 0
@@ -213,7 +213,7 @@ def test_client_construction_failure_with_nothing_to_check_is_not_degraded(monke
 
     verified, usage = verify_offers([_offer(1, description="", status="failed")], True, "key")
 
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert usage["degraded"] is False
 
 
@@ -229,7 +229,7 @@ def test_mixed_case_verdicts_are_normalized(monkeypatch):
     by_id = {o.id: o for o in verified}
     assert by_id[1].remote_verdict == "confirmed"
     assert by_id[2].remote_verdict == "rejected"
-    assert by_id[3].remote_verdict == "unconfirmed"
+    assert by_id[3].remote_verdict == "not_stated"
     assert by_id[1].remote_reason == "States remote anywhere in the EU."
 
 
@@ -240,7 +240,7 @@ def test_an_unknown_verdict_word_still_falls_back_to_unconfirmed(monkeypatch):
 
     verified, _ = verify_offers([_offer(1)], True, "key")
 
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert verified[0].remote_reason == _DEGRADED_REASON
 
 
@@ -527,7 +527,7 @@ def test_openrouter_quota_fails_over_the_rest_of_the_run_to_groq(monkeypatch):
     by_id = {o.id: o for o in verified}
     assert all(by_id[i].remote_verdict == "confirmed" for i in range(1, 9))
     assert all(by_id[i].remote_verdict == "rejected" for i in range(9, 17))
-    assert all(by_id[i].remote_verdict == "unconfirmed" for i in range(17, 25))
+    assert all(by_id[i].remote_verdict in ("not_stated", "unconfirmed") for i in range(17, 25))
     assert or_chain.invoke.call_count == 2
     assert calls["count"] == 2  # batch 2 succeeds, batch 3 hits TPD and stops
     assert usage["provider"] == "openrouter+groq"
@@ -546,7 +546,7 @@ def test_proactive_groq_ceiling_blocks_the_fallback(monkeypatch):
 
     assert or_chain.invoke.call_count == 0
     assert calls["count"] == 0
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert usage["provider"] == "none"
     assert usage["degraded"] is True
 
@@ -586,7 +586,7 @@ def test_tpd_exhaustion_without_an_openrouter_key_stops_the_stage(monkeypatch):
 
     # Stage-stop: only the first (failing) batch ever reaches Groq.
     assert calls["count"] == 1
-    assert all(o.remote_verdict == "unconfirmed" for o in verified)
+    assert all(o.remote_verdict == "not_stated" for o in verified)
     assert usage["degraded"] is True
     assert usage["provider"] == "groq"
 
@@ -598,7 +598,7 @@ def test_openrouter_batch_failure_falls_back_to_unconfirmed_not_a_crash(monkeypa
 
     verified, usage = verify_offers([_offer(1)], True, "groq-key", llm_api_key="or-key")
 
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert usage["degraded"] is True
 
 
@@ -630,7 +630,7 @@ def test_missing_groq_key_without_openrouter_key_still_just_degrades(monkeypatch
     # No fallback configured either: the pre-failover behaviour is preserved.
     verified, usage = verify_offers([_offer(1)], True, "")
 
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert usage["degraded"] is True
     assert usage["provider"] == "none"  # neither provider was called
 
@@ -664,7 +664,7 @@ def test_openrouters_own_daily_cap_stops_further_openrouter_calls(monkeypatch):
     # call is also skipped (groq_exhausted persists) and its OpenRouter
     # attempt is skipped too (openrouter_exhausted), not a second doomed call.
     assert or_chain.invoke.call_count == 1
-    assert all(o.remote_verdict == "unconfirmed" for o in verified)
+    assert all(o.remote_verdict == "not_stated" for o in verified)
     assert usage["degraded"] is True
 
 
@@ -709,7 +709,7 @@ def test_openrouter_failover_stops_at_its_daily_request_share(monkeypatch):
     assert or_chain.invoke.call_count == 2
     by_id = {o.id: o for o in verified}
     assert all(by_id[i].remote_verdict == "confirmed" for i in range(1, 17))
-    assert all(by_id[i].remote_verdict == "unconfirmed" for i in range(17, 25))
+    assert all(by_id[i].remote_verdict in ("not_stated", "unconfirmed") for i in range(17, 25))
     assert usage["openrouter_requests"] == 2
     assert usage["provider"] == "openrouter"
     assert usage["degraded"] is True
@@ -724,7 +724,7 @@ def test_openrouter_failover_makes_no_call_once_the_share_is_already_spent(monke
     )
 
     assert or_chain.invoke.call_count == 0
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert usage["openrouter_requests"] == 0
     assert usage["degraded"] is True
     assert usage["provider"] == "none"
@@ -746,7 +746,7 @@ def test_openrouter_retries_count_against_the_daily_request_share(monkeypatch):
     )
 
     assert or_chain.invoke.call_count == 2
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
     assert usage["openrouter_requests"] == 2
     assert usage["degraded"] is True
 
@@ -891,7 +891,7 @@ def test_a_throttled_batch_sends_exactly_the_requests_it_counted(monkeypatch):
     assert hits["groq"] == 1  # a TPD 429 is final: no SDK-level retries
     assert usage["openrouter_requests"] > 0
     assert hits["openrouter"] == usage["openrouter_requests"]
-    assert verified[0].remote_verdict == "unconfirmed"
+    assert verified[0].remote_verdict == "not_stated"
 
 
 def test_each_groq_verification_batch_is_recorded():
@@ -991,9 +991,10 @@ def test_openrouter_verification_routes_nemotron_primary_with_structured_fallbac
                             "type": "function",
                             "function": {
                                 "name": tool_name,
-                                "arguments": json.dumps({"offers": [
-                                    {"id": 1, "verdict": "confirmed", "reason": "States remote."},
-                                ]}),
+                                "arguments": json.dumps({"offers": [{
+                                    "id": 1, "work_mode": "remote", "eligibility": "open",
+                                    "quote": "fully remote", "reason": "States remote.",
+                                }]}),
                             },
                         }],
                     },

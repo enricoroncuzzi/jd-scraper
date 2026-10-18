@@ -27,6 +27,7 @@ NEON_ARCHIVE_DDL = [
         first_seen_at TIMESTAMPTZ NOT NULL, last_seen_at TIMESTAMPTZ NOT NULL, description TEXT NOT NULL,
         description_status TEXT NOT NULL, description_source TEXT, first_refused_at TIMESTAMPTZ,
         language TEXT, tier_hint SMALLINT, tier SMALLINT, remote_verdict TEXT, remote_reason TEXT NOT NULL,
+        remote_advice TEXT NOT NULL DEFAULT '',
         score SMALLINT, summary TEXT NOT NULL, comment TEXT NOT NULL, application_channel TEXT,
         stage TEXT NOT NULL, stage_reason TEXT NOT NULL, stage_changed_at TIMESTAMPTZ NOT NULL,
         attempts INTEGER NOT NULL, next_attempt_at TIMESTAMPTZ NOT NULL, note_day DATE, delivery_day DATE,
@@ -57,6 +58,8 @@ NEON_ARCHIVE_DDL = [
     )
     """,
     "ALTER TABLE llm_calls ADD COLUMN IF NOT EXISTS service TEXT",
+    # 2026-10-18 verdict split: `advised` jobs carry their eligibility warning.
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS remote_advice TEXT NOT NULL DEFAULT ''",
     """
     CREATE TABLE IF NOT EXISTS llm_call_jobs (
         call_id UUID NOT NULL, job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -70,7 +73,7 @@ JOB_COLUMNS = (
     "id", "note_no", "canonical_url", "title", "company", "company_norm", "title_norm", "country",
     "location_raw", "work_mode", "remote_hint", "posted_at", "first_seen_at", "last_seen_at",
     "description", "description_status", "description_source", "first_refused_at", "language",
-    "tier_hint", "tier", "remote_verdict", "remote_reason", "score", "summary", "comment",
+    "tier_hint", "tier", "remote_verdict", "remote_reason", "remote_advice", "score", "summary", "comment",
     "application_channel", "stage", "stage_reason", "stage_changed_at", "attempts", "next_attempt_at",
     "note_day", "delivery_day", "delivered_at", "alerted_at",
 )

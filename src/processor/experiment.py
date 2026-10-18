@@ -32,7 +32,7 @@ STORE_SAMPLE_SQL = """
 SELECT canonical_url, title, company, location_raw, description, tier, remote_verdict, score
   FROM jobs
  WHERE description_status = 'ok' AND description <> '' AND tier IN (1, 3, 4)
-   AND remote_verdict IN ('confirmed', 'rejected', 'unconfirmed')
+   AND remote_verdict IN ('confirmed', 'advised', 'not_stated', 'rejected', 'unconfirmed')
    AND first_seen_at >= now() - make_interval(days => %s)
 """
 

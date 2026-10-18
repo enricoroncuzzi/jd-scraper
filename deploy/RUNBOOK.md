@@ -186,12 +186,23 @@ loses nothing.
 - Language-model use: the day summary shows OpenRouter requests against 1,000. It turns
   `HIGH` from 800. A budget that prioritises tier 1 is built only if usage exceeds 800 a day
   on three days in a fortnight (spec section 6.5).
+- Remote-check verdicts (2026-10-18): each tier digest now has up to three sections, "Confirmed
+  full-remote", "Remote, eligibility to check" (a short advice line says what to check) and
+  "Work mode not stated". Only the last one is withheld from Telegram strong-match alerts; it
+  still appears in the daily digest and the vault. `rejected.md` still carries every rejection,
+  now including remote-only-as-a-perk. Inspect the mix with
+  `psql jds -c "SELECT remote_verdict, count(*) FROM jobs WHERE tier IN (1,3,4) AND first_seen_at > now() - interval '7 days' GROUP BY 1;"`.
 - Deploying new code: `git pull --ff-only && .venv/bin/pip install -r requirements.txt`, then
   restart one unit at a time (`sudo systemctl restart jds-process`; wait for `status` to show
   it healthy; then the next). A restart sends SIGTERM and the service stops between jobs, so it
   waits at most `TimeoutStopSec` (5 minutes) and then systemd kills it; killing mid-job is safe
-  because every stage commits per job or per batch. Database changes are additive and applied
-  by `init_store` when a service starts. The pacing change has its own order below.
+  because every stage commits per job or per batch. Database changes are applied
+  by `init_store` when a service starts. They are additive except for one migration in the
+  2026-10-18 remote-verdict release: the first service start after that pull drops and
+  recreates `jobs_remote_verdict_chk` so `advised`/`not_stated` can be stored (a validation
+  scan over the jobs table, a few seconds at production size) and adds `remote_advice`. The
+  fingerprint then matches, so later starts do no DDL. The pacing change has its own order
+  below.
 - Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
 
 ### The LinkedIn pace and schedule gate

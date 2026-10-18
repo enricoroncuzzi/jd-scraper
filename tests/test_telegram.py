@@ -11,11 +11,12 @@ def _offer(id, title, score):
     )
 
 
-def _scored(score, verdict="not_checked", title="Role"):
+def _scored(score, verdict="not_checked", title="Role", advice=""):
     return ScoredOffer(
         id=hash(title) % 1000000, title=title, company="Acme", location="EU",
         link=f"https://li.com/{title}", score=score,
         comment="ok", summary="summary here", remote_verdict=verdict,
+        remote_advice=advice,
     )
 
 
@@ -106,18 +107,21 @@ def test_send_summary_logs_on_failure(monkeypatch, capsys):
     assert "[telegram]" in captured.out
 
 
-def test_summary_separates_confirmed_from_unconfirmed(monkeypatch):
+def test_summary_separates_confirmed_advised_and_not_stated(monkeypatch):
     sent = _capture(monkeypatch)
     offers = [
         _scored(9, verdict="confirmed", title="Confirmed Role"),
-        _scored(9, verdict="unconfirmed", title="Unsure Role"),
+        _scored(9, verdict="advised", title="Advised Role", advice="remote, limited to the UK - check eligibility"),
+        _scored(9, verdict="not_stated", title="Unsure Role"),
     ]
     send_summary(offers, 8, "Hey!", "t", "1", verification_enabled=True)
 
     text = sent["text"]
     assert "Confirmed full-remote" in text
-    assert "Remote not confirmed" in text
-    assert text.index("Confirmed Role") < text.index("Unsure Role")
+    assert "Remote, eligibility to check" in text
+    assert "Work mode not stated" in text
+    assert text.index("Confirmed Role") < text.index("Advised Role") < text.index("Unsure Role")
+    assert "remote, limited to the UK - check eligibility" in text
 
 
 def test_summary_has_no_sections_when_verification_is_off(monkeypatch):
@@ -165,7 +169,7 @@ def test_both_sections_full_stays_within_telegram_limit(monkeypatch):
     assert len(sent["text"]) <= 4096
 
 
-def test_unconfirmed_section_shares_the_detail_budget_with_confirmed(monkeypatch):
+def test_not_stated_section_shares_the_detail_budget_with_confirmed(monkeypatch):
     sent = _capture(monkeypatch)
     offers = [_scored(9, verdict="confirmed", title=f"Confirmed {i}") for i in range(5)]
     offers += [_scored(9, verdict="unconfirmed", title=f"Unsure {i}") for i in range(3)]
@@ -173,13 +177,13 @@ def test_unconfirmed_section_shares_the_detail_budget_with_confirmed(monkeypatch
     send_summary(offers, 8, "Hey!", "t", "1", verification_enabled=True)
 
     text = sent["text"]
-    assert "Remote not confirmed (3)" in text
+    assert "Work mode not stated (3)" in text
     for i in range(3):
         assert f"Unsure {i}" not in text
     assert "+3 more above threshold" in text
 
 
-def test_unconfirmed_offers_get_the_leftover_detail_budget(monkeypatch):
+def test_not_stated_offers_get_the_leftover_detail_budget(monkeypatch):
     sent = _capture(monkeypatch)
     offers = [_scored(9, verdict="confirmed", title=f"Confirmed {i}") for i in range(3)]
     offers += [_scored(9, verdict="unconfirmed", title=f"Unsure {i}") for i in range(4)]

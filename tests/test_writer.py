@@ -167,11 +167,11 @@ def test_write_digest_low_score_has_no_tailor_link(tmp_path):
     assert "tailor:" not in content
 
 
-def _scored_v(score, verdict, title="Role", company="Co", reason=""):
+def _scored_v(score, verdict, title="Role", company="Co", reason="", advice=""):
     return ScoredOffer(
         id=1, title=title, company=company, link="https://x/1", score=score,
         location="Berlin, Germany", summary="A role.",
-        remote_verdict=verdict, remote_reason=reason,
+        remote_verdict=verdict, remote_reason=reason, remote_advice=advice,
     )
 
 
@@ -184,17 +184,22 @@ def test_digest_is_a_single_file(tmp_path):
     assert not (tier_dir / "digest_hybrid.md").exists()
 
 
-def test_digest_separates_confirmed_from_unconfirmed(tmp_path):
+def test_digest_separates_confirmed_advised_and_not_stated(tmp_path):
     offers = [
         _scored_v(9, "confirmed", title="Confirmed Role"),
+        _scored_v(9, "advised", title="Advised Role", reason="Remote (UK).",
+                  advice="remote, limited to the UK - check eligibility"),
         _scored_v(9, "unconfirmed", title="Unsure Role", reason="Says remote, no country."),
     ]
     write_digest(offers, str(tmp_path), 8, tier=3, verification_enabled=True)
     text = (tmp_path / date.today().isoformat() / "tier3" / "digest.md").read_text()
 
     assert "Confirmed full-remote" in text
-    assert "Remote not confirmed" in text
-    assert text.index("Confirmed Role") < text.index("Remote not confirmed")
+    assert "Remote, eligibility to check" in text
+    assert "Work mode not stated" in text
+    assert (text.index("Confirmed Role") < text.index("Advised Role")
+            < text.index("Work mode not stated"))
+    assert "remote, limited to the UK - check eligibility" in text
     assert "Says remote, no country." in text
 
 
@@ -204,7 +209,7 @@ def test_digest_has_no_verdict_sections_when_verification_is_off(tmp_path):
     text = (tmp_path / date.today().isoformat() / "tier2" / "digest.md").read_text()
 
     assert "Confirmed full-remote" not in text
-    assert "Remote not confirmed" not in text
+    assert "Work mode not stated" not in text
     assert "Any Role" in text
 
 

@@ -2,6 +2,7 @@ import json
 import os
 import re
 from datetime import date
+from src import remote_verdicts
 from src.models import JobOffer, ScoredOffer
 
 
@@ -62,7 +63,8 @@ def write_rejected(
     path = os.path.join(tier_dir, "rejected.md")
     lines = [f"# Rejected by remote verification - {today} (tier {tier})\n"]
     if not offers:
-        lines.append("None. Every offer was confirmed or left unconfirmed.\n")
+        lines.append("None. Every offer was confirmed, advised or left with its work mode "
+                     "unstated.\n")
     else:
         for o in offers:
             lines.append(f"- **{o.title} - {o.company}** · {o.location} · [link]({o.link})")
@@ -87,6 +89,7 @@ def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
         if offer.description_status != "ok"
         else ""
     )
+    remote_check = f"**Remote check:** {offer.remote_advice}\n" if offer.remote_advice else ""
     return (
         f"---\n"
         f"date: {today}\n"
@@ -94,6 +97,7 @@ def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
         f"work_mode: {offer.work_mode}\n"
         f"remote_verdict: {offer.remote_verdict}\n"
         f"remote_reason: {json.dumps(offer.remote_reason)}\n"
+        f"remote_advice: {json.dumps(offer.remote_advice)}\n"
         f"score: {offer.score}\n"
         f"company: {offer.company}\n"
         f"location: {offer.location}\n"
@@ -106,6 +110,7 @@ def _format_note(offer: ScoredOffer, tag: str, today: str, tier: int) -> str:
         f"**Comment:** {offer.comment}\n"
         f"**Summary:** {offer.summary}\n"
         f"**Link:** {offer.link}\n"
+        f"{remote_check}"
         f"**Scraped:** {today}\n"
         f"{warning}\n\n"
         f"## Job Description\n\n"
@@ -123,6 +128,8 @@ def _digest_entry(o: ScoredOffer, today: str, tier: int, with_reason: bool) -> l
         f"· [👎 not for me](jdlabel:not_for_me/{today}/tier{tier}/scraped/{note_file})",
         f"  {o.summary}",
     ]
+    if o.remote_advice:
+        lines.append(f"  ⚠ {o.remote_advice}")
     if with_reason and o.remote_reason:
         lines.append(f"  _{o.remote_reason}_")
     lines.append("")
@@ -154,15 +161,24 @@ def _format_digest(offers, today, threshold, tier, offer_cap, verification_enabl
             for o in high[:offer_cap]:
                 lines.extend(_digest_entry(o, today, tier, with_reason=False))
     else:
-        confirmed = [o for o in high if o.remote_verdict == "confirmed"][:offer_cap]
-        unconfirmed = [o for o in high if o.remote_verdict != "confirmed"][:offer_cap]
+        # D1/D3: the digest separates what was confirmed, what is remote with an
+        # eligibility warning, and what never stated its work mode. Old rows keep
+        # their legacy `unconfirmed` value and land in the last section.
+        confirmed = [o for o in high
+                     if remote_verdicts.is_confirmed_or_unchecked(o.remote_verdict)][:offer_cap]
+        advised = [o for o in high if remote_verdicts.is_advised(o.remote_verdict)][:offer_cap]
+        not_stated = [o for o in high if remote_verdicts.is_not_stated(o.remote_verdict)][:offer_cap]
         if confirmed:
             lines.append(f"## Confirmed full-remote (>={threshold})\n")
             for o in confirmed:
                 lines.extend(_digest_entry(o, today, tier, with_reason=False))
-        if unconfirmed:
-            lines.append(f"## Remote not confirmed (>={threshold})\n")
-            for o in unconfirmed:
+        if advised:
+            lines.append(f"## Remote, eligibility to check (>={threshold})\n")
+            for o in advised:
+                lines.extend(_digest_entry(o, today, tier, with_reason=False))
+        if not_stated:
+            lines.append(f"## Work mode not stated (>={threshold})\n")
+            for o in not_stated:
                 lines.extend(_digest_entry(o, today, tier, with_reason=True))
 
     if low:

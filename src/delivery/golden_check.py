@@ -17,7 +17,7 @@ from src.delivery.jobs import DeliveryJob
 from src.delivery.render import render_digest, render_note
 
 VERIFICATION = {1: True, 2: False, 3: True, 4: True}
-_ADDED = re.compile(r"^(source|also_seen_on): .*\n", re.MULTILINE)
+_ADDED = re.compile(r"^(source|also_seen_on|remote_advice): .*\n", re.MULTILINE)
 _DEFERRED = re.compile(r"(\d+) offer\(s\) (?:are )?still unscored")
 
 

@@ -43,7 +43,15 @@ class ProcessorConfig:
     backoff_first_minutes: int = 30
     backoff_cap_hours: int = 12
     llm_stop_at_requests: int = 950
-    structured_remote_enabled: bool = False
+    # The source's structured work mode (freehire, Himalayas) is a shortcut only
+    # for hybrid/on-site: the scout measured 99.8% agreement on 420 decided jobs.
+    # The confirm shortcut ("remote_worldwide", "remote" in Italy) measured below
+    # the project's own 95% bar, so it stays off unless its numbers improve.
+    structured_remote_enabled: bool = True
+    structured_remote_confirm_enabled: bool = False
+    # The deterministic phrase rules (src/remote_rules.py) that run before the
+    # model. See that module for what they will and will not decide.
+    remote_rules_enabled: bool = True
     merged_call_enabled: bool = False
 
 
@@ -90,6 +98,10 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         backoff_first_minutes=int(data["backoff_first_minutes"]),
         backoff_cap_hours=int(data["backoff_cap_hours"]),
         llm_stop_at_requests=int(data["llm_stop_at_requests"]),
-        structured_remote_enabled=bool(data.get("structured_remote", {}).get("enabled", False)),
+        structured_remote_enabled=bool(
+            data.get("structured_remote", {}).get("enabled", True)),
+        structured_remote_confirm_enabled=bool(
+            data.get("structured_remote", {}).get("confirm", False)),
+        remote_rules_enabled=bool(data.get("remote_rules", {}).get("enabled", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
     )

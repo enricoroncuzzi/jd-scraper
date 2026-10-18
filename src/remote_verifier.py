@@ -16,10 +16,20 @@ this stage is capped, at OPENROUTER_VERIFICATION_DAILY_REQUEST_CAP. A
 RateLimitError that means the account cap is exhausted stops further
 OpenRouter calls the same way.
 
+Since 2026-10-18 the answer is two fields, not one word: the model reports
+work_mode (remote/hybrid/onsite/flexible/not_stated) separately from eligibility
+(open/restricted/not_stated), quotes the phrase that decided it, and the code
+maps that to the verdict vocabulary in src/remote_verdicts.py. A remote job
+limited to another country becomes `advised` (delivered with a warning, never
+rejected); a silent description becomes `not_stated` (digest only, no Telegram
+alert). The deterministic rule layer in src/remote_rules.py settles what the
+text states outright before this module is asked.
+
 The stage is a filter, never a gate. Every failure mode - an empty
 description, a batch that will not complete, both providers unavailable -
-resolves to "unconfirmed", so a bad API minute can never silently discard a
-real job. What changed is that "the stage quietly failing" now surfaces as
+resolves to "not stated" (or the legacy `unconfirmed` sentinel for a degraded
+run, which downstream reads as not stated), so a bad API minute can never
+silently discard a real job. What changed is that "the stage quietly failing" now surfaces as
 usage["degraded"] whenever a material share of batches never produced a real
 verdict, not only when literally every batch failed (see
 _DEGRADED_FAILURE_RATIO) - a run where 27 of 28 batches died used to report
@@ -29,6 +39,7 @@ itself healthy.
 import functools
 import inspect
 import json
+import re
 import time
 
 import groq
@@ -40,6 +51,16 @@ from pydantic import BaseModel, ValidationError, field_validator
 from src import telemetry
 from src.llm_limits import limit_for
 from src.models import JobOffer
+from src.remote_verdicts import (
+    ADVISED,
+    CONFIRMED,
+    NOT_STATED,
+    REJECTED,
+    based_in_advice,
+    country_in,
+    limited_to_advice,
+    no_restriction_advice,
+)
 from src.scorer import (
     _EmptyStructuredOutput,
     _is_quota_exceeded,
@@ -51,18 +72,26 @@ from src.scorer import (
 # Larger than the scorer's BATCH_SIZE deliberately: this stage pays a fixed
 # per-batch prompt overhead (rules + JSON schema instructions), and Groq's
 # 200,000-token/day free allowance forces amortizing that over more offers,
-# not fewer. Blunt whole-description truncation (formerly 5000 chars) at
-# post-reshape volume (~517 new offers/day across 4 tiers) cost ~510,000
-# tokens/day - 2.5x the allowance - and dies partway through the first tier,
-# falling every later offer back to "unconfirmed". See _extract_policy_excerpt.
+# not fewer.
 BATCH_SIZE = 8
-# Per-offer excerpt budget AND the fallback prefix length for a description
-# with no detected remote/location keyword (see _POLICY_KEYWORDS) - kept small
-# because a passage that never names a work-location term is, by
-# _build_prompt's own instructions, going to yield "unconfirmed" regardless of
-# how much of it the model sees. Changing it moves the whole stage's daily
-# Groq token spend, not just the fallback.
-_MAX_DESC_CHARS = 1000
+# The model now reads the whole description (bounded here), not the old
+# 1,000-character keyword excerpt: the scout measured that 54% of descriptions
+# got a flat prefix that never contained the work-mode sentence, and that the
+# two-field answer (work_mode + eligibility) no longer needs the model to hunt
+# for a keyword. A job longer than the cap keeps its keyword windows appended
+# via _extract_policy_excerpt. The rule pre-pass (src/remote_rules.py) settles
+# the silent descriptions before they reach this stage, so the token increase
+# applies to far fewer jobs. Batch size and daily limits are unchanged.
+_MAX_DESC_CHARS = 6000
+# Groq's free plan allows 8,000 tokens per minute, and an 8-offer batch of whole
+# descriptions would blow through it. A batch therefore shares one character
+# budget (about 6,300 tokens, leaving room for the rules, the schema and the
+# answer), so a smaller batch may send more of each posting and a full batch
+# sends about 3,000 characters of each.
+_PROMPT_DESCRIPTION_BUDGET_CHARS = 24_000
+_MIN_PER_OFFER_CHARS = 1500
+# Only the keyword windows of an over-long description are appended past the cap.
+_EXCERPT_APPENDIX_CHARS = 1000
 _MAX_RETRIES = 4
 _GROQ_MODEL = "openai/gpt-oss-20b"
 
@@ -116,10 +145,18 @@ _DEGRADED_FAILURE_RATIO = 0.1
 # on. _extract_policy_excerpt anchors on the keyword itself instead, so the
 # input is small AND the signal survives wherever it falls in the posting.
 _POLICY_KEYWORDS = (
+    # English / Italian (the list the stage shipped with)
     "remote", "remoto", "hybrid", "ibrid", "on-site", "onsite", "in sede",
     "in ufficio", "office", "presenza", "presenziale", "smart working",
     "full-remote", "full remote", "work from", "wfh", "sede di lavoro",
     "modalità di lavoro", "in person", "trasferta", "in loco",
+    # Spanish / French / German: the scout measured 188 descriptions with a
+    # work-mode word this list used to miss entirely ("modelo híbrido",
+    # "teletrabajo", "presencial", "télétravail").
+    "híbrido", "hibrido", "híbrida", "teletrabajo", "presencial", "remoto",
+    "télétravail", "hybride", "présentiel", "sur site", "à distance",
+    "homeoffice", "home office", "home-office", "mobiles arbeiten", "vor ort",
+    "präsenz", "hybrides", "vollständig remote", "überall",
 )
 # Chars of context kept on each side of a detected keyword, and always kept
 # from the very start of the description (job-intro context, e.g. a
@@ -239,39 +276,197 @@ def _extract_policy_excerpt(description: str, budget: int = _MAX_DESC_CHARS) -> 
 
 
 _NO_DESCRIPTION_REASON = "Description unavailable, could not verify."
-_DEGRADED_REASON = "Verification unavailable, treated as unconfirmed."
+# Kept as the legacy sentinel: a stage failure is not a work-mode judgement, and
+# everything downstream normalises this value to not_stated (src/remote_verdicts).
+_DEGRADED_REASON = "Verification unavailable, treated as not stated."
 
 _ITALY_RULE = (
-    "confirmed ONLY when the description shows the role is fully remote AND that "
-    "someone living in Italy can hold it. An explicit mention of Italy, of the EU "
-    "or Europe generally, or of remote work with no country restriction all "
-    "count. rejected when the role needs any on-site or hybrid presence, or when "
-    "it restricts residency to a country that is not Italy."
+    "Someone living in Italy must be able to hold the role from Italy. Italy, the "
+    "EU/EEA, Europe, or worldwide all count as open. This does NOT change the "
+    "work_mode answer: a remote role limited to another country is still remote."
 )
 
 _REMOTE_ONLY_RULE = (
-    "confirmed ONLY when the description shows the role is fully remote, with no "
-    "required days in an office. rejected when the role needs any on-site or "
-    "hybrid presence."
+    "This tier judges the work mode only; eligibility is not part of the answer."
 )
+
+_WORK_MODE_VALUES = ("remote", "hybrid", "onsite", "flexible", "not_stated")
+# output (or a model still answering the old shape) parses; mapped below.
+_LEGACY_VERDICTS = {
+    "confirmed": "remote",
+    "rejected": "hybrid",
+    "unconfirmed": "not_stated",
+}
 
 
 class _VerdictItem(BaseModel):
     id: int
-    verdict: str
+    work_mode: str = ""
+    eligibility: str = ""
+    quote: str = ""
     reason: str = ""
+    verdict: str = ""
 
-    @field_validator("verdict")
+    @field_validator("work_mode", "eligibility", "verdict")
     @classmethod
     def _canonical(cls, value: str) -> str:
-        # The model is asked for lowercase but drifts to "Confirmed"; everything
+        # The model is asked for lowercase but drifts to "Remote"; everything
         # downstream matches on the canonical lowercase form, so fold it here at
         # the boundary rather than at each comparison.
-        return value.strip().lower()
+        return (value or "").strip().lower()
 
 
 class _VerdictOutput(BaseModel):
     offers: list[_VerdictItem]
+
+
+class _AnswerItem(BaseModel):
+    """The schema the model is asked for. No legacy `verdict` field: the old
+    one-field answer is only parsed, never requested."""
+
+    id: int
+    work_mode: str = ""
+    eligibility: str = ""
+    quote: str = ""
+    reason: str = ""
+
+    @field_validator("work_mode", "eligibility")
+    @classmethod
+    def _canonical(cls, value: str) -> str:
+        return (value or "").strip().lower()
+
+
+class _AnswerOutput(BaseModel):
+    offers: list[_AnswerItem]
+
+
+def _per_offer_budget(batch_size: int) -> int:
+    if batch_size <= 0:
+        return _MAX_DESC_CHARS
+    return min(_MAX_DESC_CHARS, max(_MIN_PER_OFFER_CHARS,
+                                    _PROMPT_DESCRIPTION_BUDGET_CHARS // batch_size))
+
+
+def _description_for_prompt(description: str, budget: int = _MAX_DESC_CHARS) -> str:
+    """The whole description, bounded. Older rows and absurdly long postings keep
+    their keyword windows appended so a decisive late sentence is not lost."""
+    if len(description) <= budget:
+        return description
+    # A decisive late sentence must survive the cap, but the appendix is itself
+    # bounded: a keyword-dense posting could otherwise double the prompt.
+    appendix = min(_EXCERPT_APPENDIX_CHARS, max(200, budget // 5))
+    excerpt = _extract_policy_excerpt(description, budget=appendix)
+    body = description[:budget]
+    if excerpt and excerpt not in body:
+        body += "\n[...]\n" + excerpt
+    return body
+
+
+def _quote_key(text: str) -> str:
+    """Quote matching that survives the stored text's glued words and punctuation
+    ("LocationRemote" vs "Location: Remote"). Case and non-alphanumerics are
+    dropped on both sides; anything left over is compared as a substring."""
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def _quote_found(quote: str, description: str) -> bool:
+    key = _quote_key(quote)
+    return len(key) >= 4 and key in _quote_key(description)
+
+
+def _advice(description: str, eligibility: str) -> str:
+    if eligibility == "open":
+        return ""
+    country = country_in(description)
+    if country and country != "Italy":
+        return limited_to_advice(country)
+    return no_restriction_advice()
+
+
+def _resolve_verdict(item: _VerdictItem, description: str,
+                     require_italy_eligibility: bool) -> tuple[str, str, str]:
+    """Map one structured answer to (verdict, reason, advice).
+
+    The quote is the model's evidence. A verdict whose quote cannot be found in
+    the description is dropped to not_stated rather than trusted - the scout
+    measured 15.3% of rejected reasons quoting text the posting did not contain,
+    and a rejection removes the job. An empty quote therefore also means
+    not_stated.
+    """
+    if not item.work_mode and item.verdict:
+        # A one-field answer in the pre-2026-10-18 shape. It carries no quote to
+        # check, so it is mapped as it always was rather than downgraded; the
+        # current prompt asks for the two-field shape and the quote.
+        legacy = _LEGACY_VERDICTS.get(item.verdict)
+        if legacy in ("remote", "hybrid"):
+            verdict = CONFIRMED if legacy == "remote" else REJECTED
+            return verdict, item.reason, ""
+        return NOT_STATED, item.reason or "The description does not state the work mode.", ""
+
+    work_mode = item.work_mode
+    if work_mode not in _WORK_MODE_VALUES:
+        return NOT_STATED, "Model answer was not understood, treated as not stated.", ""
+    if work_mode == "not_stated":
+        return NOT_STATED, item.reason or "The description does not state the work mode.", ""
+
+    quote = item.quote.strip()
+    found = _quote_found(quote, description)
+    if work_mode in ("hybrid", "onsite", "flexible"):
+        if not found:
+            return (NOT_STATED,
+                    "Model quoted text that is not in the description; not rejected.",
+                    "")
+        label = {"hybrid": "hybrid", "onsite": "on-site",
+                 "flexible": "remote only as a perk"}[work_mode]
+        reason = item.reason or f"Description says: '{quote}' ({label})"
+        return REJECTED, reason, ""
+
+    # work_mode == "remote"
+    if not found:
+        return (NOT_STATED,
+                "Model quoted text that is not in the description; treated as not stated.",
+                "")
+    reason = item.reason or f"Description says: '{quote}'"
+    if not require_italy_eligibility:
+        return CONFIRMED, reason, ""
+    eligibility = item.eligibility or "not_stated"
+    if eligibility == "open":
+        return CONFIRMED, reason, ""
+    if eligibility == "restricted":
+        # The quote is the sentence that decided it ("Remote (UK)"), so read the
+        # country from there before falling back to the whole description.
+        return ADVISED, reason, _advice((quote + " " + description), "restricted")
+    return ADVISED, reason, no_restriction_advice()
+
+
+class _ResolvedVerdict(BaseModel):
+    """One offer's stored answer, already mapped to the verdict vocabulary."""
+    verdict: str
+    reason: str = ""
+    advice: str = ""
+
+
+def _resolve_items(items: list, batch: list[JobOffer],
+                   require_italy_eligibility: bool) -> dict[int, _ResolvedVerdict]:
+    """Map every answered offer, keyed by offer id. An unknown or missing id is
+    simply absent from the result, exactly like a skipped offer."""
+    offers = {offer.id: offer for offer in batch}
+    resolved: dict[int, _ResolvedVerdict] = {}
+    for item in items:
+        offer = offers.get(item.id)
+        if offer is None:
+            continue
+        # An answer in a shape we do not know is a missing answer, not a verdict:
+        # the offer stays not stated and counts toward the degraded ratio.
+        if item.work_mode:
+            if item.work_mode not in _WORK_MODE_VALUES:
+                continue
+        elif getattr(item, "verdict", "") not in _LEGACY_VERDICTS:
+            continue
+        verdict, reason, advice = _resolve_verdict(
+            item, offer.description, require_italy_eligibility)
+        resolved[item.id] = _ResolvedVerdict(verdict=verdict, reason=reason, advice=advice)
+    return resolved
 
 
 class _OpenRouterShareSpent(Exception):
@@ -315,25 +510,45 @@ def _is_malformed_output_error(e: Exception) -> bool:
 
 def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str:
     rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
+    budget = _per_offer_budget(len(batch))
     offers_text = "\n\n".join(
         f"ID: {o.id}\nTitle: {o.title}\nCompany: {o.company}\n"
-        f"Location: {o.location}\nDescription: {_extract_policy_excerpt(o.description)}"
+        f"Location: {o.location}\nDescription: {_description_for_prompt(o.description, budget)}"
         for o in batch
     )
     return (
-        "You check whether job offers are genuinely full-remote. For each offer "
-        "return exactly one verdict.\n\n"
-        f"Rules: {rule}\n"
-        "unconfirmed when the description simply does not settle the question. "
-        "Never guess: if the text is silent or vague, answer unconfirmed rather "
-        "than confirmed or rejected.\n\n"
-        "The reason must be one sentence naming the phrase in the description "
-        "that drove your verdict.\n\n"
+        "You read job postings and report how the work is done. For each offer "
+        "answer with work_mode, eligibility and the quote that decided it.\n\n"
+        "work_mode is one of:\n"
+        "- remote: fully remote. Remote-first with offices optional counts as remote.\n"
+        "- hybrid: any required office days.\n"
+        "- onsite: the role is done at an office or site.\n"
+        "- flexible: remote only mentioned as a perk or an option (smart working, "
+        "WFH days, 'hybrid or remote', 'flexible remote working').\n"
+        "- not_stated: the description is silent or too vague to settle it.\n"
+        "Never infer on-site from an office address, a city name or a company HQ; "
+        "use not_stated instead.\n\n"
+        "eligibility is about where the person may live, and only matters when "
+        "work_mode is remote:\n"
+        "- open: worldwide, Europe/EU/EEA/EMEA, or no country restriction "
+        "stated. 'Remote' with no country restriction is open.\n"
+        "- restricted: limited to residents or right-to-work holders of one "
+        "specific country.\n"
+        "- not_stated: when work_mode is not remote.\n"
+        f"{rule}\n\n"
+        "quote must be a short phrase copied exactly from the description (at most "
+        "15 words) that states the work mode: 'fully remote', '3 days a week in "
+        "the office', 'Remote (UK)'. Empty only when work_mode is not_stated.\n\n"
+        "Wording in English, Italian, Spanish, French and German all appears: "
+        "remote/remoto/da remoto/teletrabajo/télétravail/homeoffice, "
+        "hybrid/ibrido/modelo híbrido/hybride/präsenz, in sede/presencial/vor ort.\n\n"
         f"Offers:\n{offers_text}\n\n"
         f"Return ONLY a JSON object, no prose and no markdown fences, with an "
         f"\"offers\" array holding exactly {len(batch)} objects, each with keys "
-        "\"id\" (the same id you were given), \"verdict\" (one of \"confirmed\", "
-        "\"rejected\", \"unconfirmed\") and \"reason\" (one sentence)."
+        "\"id\" (the same id you were given), \"work_mode\" (one of \"remote\", "
+        "\"hybrid\", \"onsite\", \"flexible\", \"not_stated\"), \"eligibility\" "
+        "(one of \"open\", \"restricted\", \"not_stated\"), \"quote\" (exact "
+        "phrase from the description) and \"reason\" (one short sentence)."
     )
 
 
@@ -374,12 +589,7 @@ def _verify_batch(
                 usage["completion_tokens"] += getattr(response.usage, "completion_tokens", 0) or 0
                 usage["total_tokens"] += getattr(response.usage, "total_tokens", 0) or 0
                 parsed = _VerdictOutput.model_validate_json(response.choices[0].message.content)
-            verdicts = {
-                item.id: item
-                for item in parsed.offers
-                if item.verdict in ("confirmed", "rejected", "unconfirmed")
-            }
-            return verdicts, usage
+            return _resolve_items(parsed.offers, batch, require_italy_eligibility), usage
         except groq.RateLimitError as e:
             if _is_daily_quota_exceeded(e):
                 # Genuinely exhausted for the day - resets at the next UTC day
@@ -429,7 +639,7 @@ def _openrouter_chain(llm_api_key: str):
         # function_calling (not the default json_schema/response_format
         # method) because that's the only mode src/scorer.py validated clean
         # (no reasoning-token bloat) across these exact free models.
-        | llm.with_structured_output(_VerdictOutput, method="function_calling")
+        | llm.with_structured_output(_AnswerOutput, method="function_calling")
     )
 
 
@@ -467,11 +677,7 @@ def _verify_batch_openrouter(
                                output_tokens=counter.last_completion_tokens)
                 if result is None:
                     raise _EmptyStructuredOutput()
-            verdicts = {
-                item.id: item
-                for item in result.offers
-                if item.verdict in ("confirmed", "rejected", "unconfirmed")
-            }
+            verdicts = _resolve_items(result.offers, batch, require_italy_eligibility)
             usage["openrouter_prompt_tokens"] += counter.prompt_tokens
             usage["openrouter_completion_tokens"] += counter.completion_tokens
             usage["openrouter_total_tokens"] += counter.total_tokens
@@ -524,7 +730,7 @@ def verify_offers(
     openrouter_requests_used_today: int = 0,
     batch_size: int | None = None,
 ) -> tuple[list[JobOffer], dict]:
-    """Mark each offer confirmed, rejected or unconfirmed. Never raises.
+    """Mark each offer with the new verdict vocabulary. Never raises.
 
     batch_size sets how many offers one OpenRouter request carries (default
     BATCH_SIZE). Groq's free-plan 8,000 tokens/minute ceiling does not allow
@@ -532,7 +738,7 @@ def verify_offers(
     Groq is sent there in BATCH_SIZE chunks.
 
     llm_api_key (OpenRouter) is the primary judge. Without it, the stage
-    uses Groq only, and a Groq-unavailable run's offers stay unconfirmed.
+    uses Groq only, and a Groq-unavailable run's offers are left not stated.
     groq_tokens_used_today lets the caller (main.py, which already tracks the
     day's running Groq total across tiers) skip the Groq fallback BEFORE it
     contributes to blowing the cap, not only after a 429 proves it already
@@ -558,20 +764,20 @@ def verify_offers(
         # rejected verdict drawn from the location line alone.
         content_free = description == f"{offer.title} at {offer.company}"
         if not description or offer.description_status in ("failed", "rate_limited") or content_free:
-            offer.remote_verdict = "unconfirmed"
+            offer.remote_verdict = NOT_STATED
             offer.remote_reason = _NO_DESCRIPTION_REASON
         else:
             checkable.append(offer)
 
     # A missing or broken Groq key only disables the fallback. OpenRouter
     # still runs when it is configured. Both unavailable marks the batch
-    # unconfirmed rather than dropping the offer.
+    # not stated rather than dropping the offer.
     client = None
     groq_exhausted = False
     if not groq_api_key:
         print("[verifier] No Groq API key"
               + (" - OpenRouter is the only verifier." if llm_api_key else
-                 " - marking every offer unconfirmed."))
+                 " - marking every offer not stated."))
         groq_exhausted = True
     else:
         try:
@@ -579,7 +785,7 @@ def verify_offers(
         except Exception as e:
             print(f"[verifier] Could not build the Groq client ({type(e).__name__}: {e})"
                   + (" - OpenRouter is the only verifier." if llm_api_key else
-                     " - marking every offer unconfirmed."))
+                     " - marking every offer not stated."))
             groq_exhausted = True
 
     openrouter_chain = _openrouter_chain(llm_api_key) if llm_api_key else None
@@ -691,11 +897,13 @@ def verify_offers(
         for offer in batch:
             item = verdicts.get(offer.id)
             if item is None:
-                offer.remote_verdict = "unconfirmed"
+                offer.remote_verdict = NOT_STATED
                 offer.remote_reason = _DEGRADED_REASON
+                offer.remote_advice = ""
             else:
                 offer.remote_verdict = item.verdict
                 offer.remote_reason = item.reason
+                offer.remote_advice = getattr(item, "advice", "")
 
     used_openrouter = usage["openrouter_requests"] > 0
     if used_openrouter and used_groq:

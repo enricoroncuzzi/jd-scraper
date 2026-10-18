@@ -34,8 +34,10 @@ def run_autoapply(
     again). An OpenRouter daily-quota error stops the loop; other tailoring
     failures skip that offer and continue."""
     today = date.today().isoformat()
-    # Unconfirmed offers are left for the digest. not_checked covers tier 2,
-    # which accepts every work mode and runs no verification.
+    # Advised (remote, eligibility to check) and not-stated offers are left for
+    # the digest and a hand decision; the legacy `unconfirmed` value reads as not
+    # stated. not_checked covers tier 2, which accepts every work mode and runs
+    # no verification.
     candidates = [
         o for o in offers
         if o.score >= threshold and o.remote_verdict in ("confirmed", "not_checked")

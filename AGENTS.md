@@ -14,8 +14,9 @@ configuration. This file only holds the standing rules and a short map.
 - `jds-collect-linkedin` (`src/linkedin/`) walks search slices and records sightings.
   `jds-collect-freehire` / `jds-collect-himalayas` plus their `jds-resume-*` timers
   (`src/sources/`) pull the other sources. `jds-process` (`src/processor/`) runs the
-  stage machine: cheap checks, descriptions, language, remote verification
-  (`src/remote_verifier.py`), scoring (`src/scorer.py`). `jds-deliver`
+  stage machine: cheap checks, descriptions, language, the remote check
+  (`src/remote_rules.py` rule pre-pass, then `src/remote_verifier.py`), scoring
+  (`src/scorer.py`). `jds-deliver`
   (`src/delivery/`) sends alerts and the daily digest, auto-tailors above-cutoff jobs
   and copies to Neon. `jds-watchdog` and `jds-backup` watch and back up.
   `python -m src.services.status` shows all of it.
@@ -23,7 +24,9 @@ configuration. This file only holds the standing rules and a short map.
   Italy full-remote, tier 2 Switzerland/San Marino any work mode, tier 3 EU/EEA
   full-remote (via `search.allowed_countries`), tier 4 United Kingdom full-remote.
   Tier 2's `search.countries` must say "San Marino, San Marino": the bare name
-  geo-resolves to San Marino, California.
+  geo-resolves to San Marino, California. The tier configs carry no
+  `search.work_mode`: LinkedIn's guest endpoint silently ignores `f_WT`, so the
+  remote check is the only work-mode filter for tiers 1, 3 and 4.
 - CV tailoring is `tailor.py` and `src/tailor/`.
 - `main.py`, `orchestrator.py`, `src/scraper.py`, `src/dedup.py`, `src/retry_queue.py` and
   `src/autoapply/pipeline.py` are the old daily-cron pipeline. They still ship until
@@ -51,6 +54,14 @@ configuration. This file only holds the standing rules and a short map.
   window. Page caps and cadences (`config/collector.json`) are captain decisions.
 - The verifier's OpenRouter model pin (`src/remote_verifier.py`) stays independent of
   the scorer's (`src/scorer.py`), so one stage's pin drift does not move the other.
+- The remote verdict vocabulary is `src/remote_verdicts.py`, and the captain decided it
+  on 2026-10-18: `advised` (remote, eligibility to check) is delivered and alerted with
+  an advice line and is **never rejected for eligibility alone**; `not_stated` stays in
+  the digest in its own section and **never triggers a Telegram alert**; only
+  `confirmed` and tier 2's `not_checked` are auto-tailored; the legacy `unconfirmed`
+  value reads as `not_stated`. Do not collapse these back into one verdict.
+- The remote check stays on the current free models: a paid hosted model and a local
+  model were both weighed in the 2026-10-18 scout and declined (D4/D5).
 - Daily provider limits live in `config/llm_limits.json` and are perishable: re-check
   them live against the provider when you change them (`src/llm_limits.py`).
 
