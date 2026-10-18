@@ -36,7 +36,7 @@ from src.remote_verdicts import (
     CONFIRMED,
     NOT_STATED,
     REJECTED,
-    country_in,
+    countries_in,
     limited_to_advice,
     unrestricted_advice,
 )
@@ -187,25 +187,24 @@ _OPEN_SCOPE = re.compile(
 # D3 case that must be delivered with a warning instead of rejected.
 _REMOTE_PAREN_COUNTRY = re.compile(r"remote\s*\(\s*([^)]{2,24})\)", re.IGNORECASE)
 
-# A residency or right-to-work condition. The country is taken from the match
-# window, not from the whole description, and a bare "based in" / "located in"
-# is not a condition: it is usually the company HQ.
+# An explicit residency or right-to-work condition. Only wording that is a
+# condition on the candidate: "based in", "located in" or "live in" alone is
+# usually the company HQ, the team or the product's users, so it is not here.
 _RESIDENCY = re.compile(
     "|".join([
         r"right\s+to\s+work\b(?!-)",
         r"work\s+authori[sz]ation",
         r"eligible\s+to\s+work\s+in",
-        r"must\s+(?:be\s+)?(?:live|reside|residing|located|based)\s+in",
+        r"must\s+(?:be\s+)?(?:reside|residing|located|based)\s+in",
         r"reside(?:nt)?s?\s+(?:in|of)",
-        r"\b(?:candidates?|applicants?|you|those|people)\s+(?:who\s+)?(?:must\s+)?liv(?:e|ing)\s+in\b",
-        r"only\s+.{0,30}(?:uk|us|italy|germany|france|spain|poland|netherlands)",
         r"security\s+clearance",
-        r"citizenship",
         r"work\s+permit",
-        r"visa\s+sponsor",
     ]),
     re.IGNORECASE,
 )
+# A condition that excludes a place ("Germany, not Italy", "outside the UK") is
+# not a list of eligible countries; the model reads it.
+_EXCLUSION = re.compile(r"\b(?:not|except|excluding|outside|other\s+than)\b", re.IGNORECASE)
 
 # A negated phrase is not a policy statement ("this is not a fully remote role").
 _NEGATION = re.compile(r"\b(?:not|no|non|nicht|kein\w*|pas|senza|sin)\b[\s\w]{0,18}$", re.IGNORECASE)
@@ -250,42 +249,74 @@ def _list_items(text: str) -> str:
             continue
         if (len(items) == _LIST_LINES or line.endswith(".")
                 or len(line.split()) > _LIST_ITEM_MAX_WORDS
-                or not (country_in(line) or _OPEN_SCOPE.search(line))):
+                or not (countries_in(line) or _OPEN_SCOPE.search(line))):
             break
         items.append(line)
     return "\n".join(items)
 
 
-def _condition_country(window: str) -> str | None:
-    """Italy anywhere in a condition makes the role workable from Italy, even
-    when the condition also names other countries ("Germany or Italy")."""
-    if re.search(r"(?<![a-z])italy(?![a-z])", window.lower()):
-        return "Italy"
-    return country_in(window)
+RESTRICTION_OPEN = "open"
+RESTRICTION_UNCLEAR = "unclear"
 
 
-def stated_restriction(text: str) -> str | None:
-    """The country a residency or right-to-work condition names, or a
-    "Remote (UK)" scope names, or None. The country is read only from the
-    sentence that holds the condition (after it first, then before it), so an
-    HQ, a client list or an "offices in Italy" line cannot stand in for it, and
-    "must reside in the EU" names no country at all."""
+def condition_countries(window: str) -> tuple[str, ...] | None:
+    """The countries one eligibility condition names: () when it names only an
+    open scope (the EU, Europe, worldwide), None when it does not parse cleanly
+    (an exclusion, no place at all, or foreign countries mixed with an open scope)."""
+    if _EXCLUSION.search(window):
+        return None
+    countries = countries_in(window)
+    if "Italy" in countries:
+        return countries
+    if countries:
+        return None if _OPEN_SCOPE.search(window) else countries
+    return () if _OPEN_SCOPE.search(window) else None
+
+
+def _condition_windows(text: str) -> list[str]:
+    """The sentence (and list, for "one of:" followed by a line per country) of
+    every residency condition, plus every "Remote (UK)" scope that names a place."""
+    windows = []
     for match in _RESIDENCY.finditer(text):
         left = max(text.rfind(end, 0, match.start()) for end in _SENTENCE_ENDS) + 1
         right = min((i for i in (text.find(end, match.end()) for end in _SENTENCE_ENDS)
                      if i != -1), default=len(text))
-        after = text[match.start():right]
+        window = text[left:right]
         if (text[right:right + 1] == "\n"
-                and (after.rstrip().endswith(":") or not re.search(r"\w", text[match.end():right]))):
-            after += "\n" + _list_items(text[right:])
-        country = _condition_country(after) or _condition_country(text[left:match.start()])
-        if country:
-            return country
+                and (window.rstrip().endswith(":") or not re.search(r"\w", text[match.end():right]))):
+            window += "\n" + _list_items(text[right:])
+        windows.append(window)
     for match in _REMOTE_PAREN_COUNTRY.finditer(text):
-        country = country_in(match.group(1))
-        if country:
-            return country
-    return None
+        scope = match.group(1)
+        if countries_in(scope) or _OPEN_SCOPE.search(scope):
+            windows.append(scope)
+    return windows
+
+
+def stated_restriction(text: str) -> str | None:
+    """What the text's eligibility conditions say, read only from the sentence or
+    list that holds each condition, so an HQ, a client list or an "offices in
+    Italy" line cannot stand in for one:
+
+    - None: the text states no condition at all;
+    - RESTRICTION_UNCLEAR: a condition does not parse cleanly, so only the model
+      may decide;
+    - "Italy": Italy is among the countries named, so an Italy resident is eligible;
+    - RESTRICTION_OPEN: every condition names an open scope ("reside in the EU");
+    - otherwise the foreign countries named, joined for the advice line.
+    """
+    windows = _condition_windows(text)
+    if not windows:
+        return None
+    named: list[str] = []
+    for window in windows:
+        countries = condition_countries(window)
+        if countries is None:
+            return RESTRICTION_UNCLEAR
+        named += [country for country in countries if country not in named]
+    if "Italy" in named:
+        return "Italy"
+    return " or ".join(named) if named else RESTRICTION_OPEN
 
 
 @dataclass(frozen=True)
@@ -295,18 +326,23 @@ class RuleVerdict:
     advice: str = ""
 
 
-def _eligibility(text: str, location: str, *, require_italy_eligibility: bool) -> tuple[str, str]:
-    """(verdict, advice) for a job already known to be fully remote."""
+def _eligibility(text: str, location: str, *,
+                 require_italy_eligibility: bool) -> tuple[str, str] | None:
+    """(verdict, advice) for a job already known to be fully remote, or None when
+    a stated condition is unclear and the model must decide."""
     if not require_italy_eligibility:
         return CONFIRMED, ""
-    country = stated_restriction(text)
-    if country == "Italy":
+    scope = stated_restriction(text)
+    if scope == RESTRICTION_UNCLEAR:
+        return None
+    if scope in ("Italy", RESTRICTION_OPEN):
         return CONFIRMED, ""
-    if country:
-        return ADVISED, limited_to_advice(country)
+    if scope:
+        return ADVISED, limited_to_advice(scope)
     if _OPEN_SCOPE.search(text):
         return CONFIRMED, ""
     return ADVISED, unrestricted_advice(location)
+
 
 def classify(
     description: str,
@@ -336,7 +372,10 @@ def classify(
     if hybrid and not remote:
         return RuleVerdict(REJECTED, f"{RULE_PREFIX}'{hybrid}' requires on-site presence")
     if remote and not hybrid:
-        verdict, advice = _eligibility(text, location, require_italy_eligibility=require_italy_eligibility)
+        eligibility = _eligibility(text, location, require_italy_eligibility=require_italy_eligibility)
+        if eligibility is None:
+            return None
+        verdict, advice = eligibility
         reason = f"{RULE_PREFIX}'{remote}' states a fully remote role"
         return RuleVerdict(verdict, reason, advice)
     # Mixed signals, or a remote word only as a perk: the model decides.

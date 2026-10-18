@@ -116,7 +116,7 @@ def test_a_remote_role_restricted_to_italy_is_confirmed(monkeypatch):
 
 
 @pytest.mark.parametrize("description,advice", [
-    ("ABOUT US: we build developer tools. Fully remote. Candidates must live in Spain.",
+    ("ABOUT US: we build developer tools. Fully remote. Candidates must reside in Spain.",
      "remote, limited to Spain - check eligibility"),
     ("Many of us work in Poland. Fully remote. Offices in Italy. You must reside in Poland.",
      "remote, limited to Poland - check eligibility"),
@@ -133,22 +133,45 @@ def test_a_restricted_answer_reads_the_country_from_the_restriction_sentence(
     assert (job.remote_verdict, job.remote_advice) == ("advised", advice)
 
 
-@pytest.mark.parametrize("description,verdict,advice", [
+@pytest.mark.parametrize("description,quote,verdict,advice", [
     ("Remote. Open to candidates living in Italy only. We serve clients across Europe.",
-     "confirmed", ""),
+     "Open to candidates living in Italy only", "confirmed", ""),
     ("Remote. Open to candidates living in Germany only. We serve clients across Europe.",
-     "advised", "remote, limited to Germany - check eligibility"),
-    ("Remote. Open to candidates living in Germany or Italy. Our HQ is in Berlin.",
-     "confirmed", ""),
-    ("Remote. Open to candidates living in one of:\nGermany\nItaly\nAbout us",
-     "confirmed", ""),
+     "Open to candidates living in Germany only", "advised",
+     "remote, limited to Germany - check eligibility"),
+    ("Remote. You must reside in Germany or Italy. Our HQ is in Berlin.",
+     "Remote", "confirmed", ""),
+    ("Remote. You must reside in one of:\nGermany\nItaly\nAbout us",
+     "Remote", "confirmed", ""),
+    # An exclusion is not parsed by rule: the model's "restricted" stands.
+    ("Remote. You must reside in Germany, not Italy.", "Remote", "advised",
+     "remote, based in Germany - check eligibility"),
 ])
 def test_a_restricted_answer_confirms_italy_and_advises_another_country(
-        monkeypatch, description, verdict, advice):
+        monkeypatch, description, quote, verdict, advice):
     job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
-                             "quote": "Open to candidates living in"},
+                             "quote": quote},
                require_italy=True, description=description)
     assert (job.remote_verdict, job.remote_advice) == (verdict, advice)
+
+
+@pytest.mark.parametrize("description", [
+    "Fully remote. You must be eligible to work in the EU. Our HQ is in Berlin, Germany.",
+    "Fully remote. We serve clients across Germany and our team members live in Berlin.",
+])
+def test_the_regex_never_turns_an_open_answer_into_an_advice(monkeypatch, description):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "Fully remote"},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
+def test_the_regex_never_turns_a_restricted_answer_into_a_confirmation(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": "Fully remote"},
+               require_italy=True,
+               description="Fully remote. You must be eligible to work in the EU.")
+    assert job.remote_verdict == "advised"
 
 
 def test_a_quote_taken_from_the_title_or_location_is_found(monkeypatch):

@@ -157,28 +157,38 @@ _US_PATTERNS = (
 
 
 def country_in(text: str) -> str | None:
-    """The first known country named in `text`, as a short display name, or None.
+    """The first known country named in `text` (see countries_in), or None."""
+    countries = countries_in(text)
+    return countries[0] if countries else None
+
+
+def countries_in(text: str) -> tuple[str, ...]:
+    """Every known country named in `text`, as short display names.
 
     Two-letter forms are checked separately: "uk" appears inside words, so it only
     counts uppercase, in parentheses, or after a preposition; "us" is also an
     English pronoun ("of us", "ABOUT US"), so it only counts as an uppercase word
-    outside an all-caps phrase, "(US)", "in/within the US" or "US-based". Nothing here is used to reject a job - only to word an
-    advice line - so a miss costs a vaguer line, never a lost posting.
+    outside an all-caps phrase, "(US)", "in/within the US" or "US-based". Nothing
+    here is used to reject a job - only to decide eligibility and word an advice
+    line - so a miss costs a vaguer line, never a lost posting.
     """
     lowered = text.lower()
+    found: list[str] = []
     for needle, display in _COUNTRY_DISPLAY:
+        if display in found:
+            continue
         if needle == "us":
-            if any(re.search(pattern, text) for pattern in _US_PATTERNS):
-                return display
+            named = any(re.search(pattern, text) for pattern in _US_PATTERNS)
         elif needle == "uk":
-            if (re.search(rf"\b{needle.upper()}\b", text)
-                    or re.search(rf"\(\s*{needle}\s*\)", text, re.IGNORECASE)
-                    or re.search(rf"\b(?:in|within|of|to|from|inside)\s+(?:the\s+)?{needle}\b",
-                                 text, re.IGNORECASE)):
-                return display
-        elif re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", lowered):
-            return display
-    return None
+            named = bool(re.search(rf"\b{needle.upper()}\b", text)
+                         or re.search(rf"\(\s*{needle}\s*\)", text, re.IGNORECASE)
+                         or re.search(rf"\b(?:in|within|of|to|from|inside)\s+(?:the\s+)?{needle}\b",
+                                      text, re.IGNORECASE))
+        else:
+            named = bool(re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", lowered))
+        if named:
+            found.append(display)
+    return tuple(found)
 
 
 def advice_line(verdict: str | None, remote_advice: str = "", remote_reason: str = "") -> str:
