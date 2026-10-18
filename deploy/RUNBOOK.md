@@ -115,7 +115,7 @@ walk while the cron wrapper holds `/home/enrico/.jd-scraper.lock`, but do not re
    see section 3). If it prints `NOT COMMITTED`, stop: nothing was written. Do not `source .env`
    in the shell: an unquoted `&` in the URL cuts it short. The Python entry points read `.env`
    themselves, except this script, which only reads the environment.
-5. Create the slices and check the count (132 for the four tiers and four roles):
+5. Create the slices and check the count (127: four roles in 33 areas, less the five `skip_slices` pairs):
    `.venv/bin/python -m src.linkedin.collector --sync-slices`
 6. Start, in this order, checking `status` after each:
    `sudo systemctl enable --now jds-process jds-collect-linkedin jds-deliver jds-watchdog.timer jds-backup.timer`
