@@ -246,8 +246,9 @@ The gate now closes only for the daily cap: there is no night window as shipped.
 
 A flat 110 s over 24 h would be about 785 requests. The 108 s floor clamps the low jitter draws
 (110 x 0.8 = 88 s becomes 108 s), so the realised mean spacing is about 114.5 s and the weekend
-does about 754 requests, comfortably under the 800 cap, so the cap is not reached early; only if every jitter draw bottomed out at the 108 s floor would the 800th request
-land exactly at Rome midnight, when the counter resets. The evening is never stopped by the cap.
+does about 754 requests, comfortably under the 800 cap, so the cap is not reached early; only if
+every jitter draw bottomed out at the 108 s floor would the 800th request land exactly at Rome
+midnight, when the counter resets. The evening is never stopped by the cap.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
 `*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
