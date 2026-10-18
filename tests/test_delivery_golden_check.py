@@ -1,4 +1,5 @@
 """golden_check against a day folder written by the legacy writer (the oracle)."""
+import re
 from datetime import date
 
 import pytest
@@ -25,6 +26,10 @@ def legacy_day(tmp_path, monkeypatch):
         offers = [to_scored_offer(j) for j in jobs]
         writer.write_notes(offers, str(tmp_path), 8, tier)
         writer.write_digest(offers, str(tmp_path), 8, tier, verification, deferred_count=3 if tier == 1 else 0)
+    # Simulate a day folder written before 2026-10-18, when the note had no
+    # remote_advice field; the check is expected to tolerate that one addition.
+    for note in tmp_path.rglob("*.md"):
+        note.write_text(re.sub(r"^remote_advice: .*\n", "", note.read_text(), flags=re.MULTILINE))
     return tmp_path / DAY.isoformat()
 
 

@@ -5,9 +5,14 @@ note written into today's folder (so a jd-sync after the alert brings it to the
 Mac) and a short Telegram message. It still appears in the next daily digest,
 marked "sent earlier". Sending happens before alerted_at is set, so a crash can
 only repeat an alert, never lose one.
+
+D1 (2026-10-18): a job whose description never states the work mode stays in the
+daily digest but never triggers one of these alerts. An advised job (remote,
+eligibility to check) does alert, carrying its short advice line.
 """
 from datetime import datetime
 
+from src import remote_verdicts
 from src.delivery.daily import note_path, write_text
 from src.delivery.jobs import DeliveryJob, load_jobs
 from src.delivery.render import render_note
@@ -16,13 +21,25 @@ from src.processor.config import ProcessorConfig
 
 
 def format_alert(job: DeliveryJob) -> str:
-    unconfirmed = "" if job.remote_verdict in ("confirmed", "not_checked") else " (remote not confirmed)"
-    return (f"Strong match {job.score}/10 - tier {job.tier}{unconfirmed}\n"
+    # Confirmed and tier 2's not_checked have no advice; an advised job says why
+    # in one short line instead of the old "(remote not confirmed)" tag.
+    advice = remote_verdicts.advice_line(job.remote_verdict, job.remote_advice, job.remote_reason)
+    suffix = f"\n{advice}" if advice else ""
+    return (f"Strong match {job.score}/10 - tier {job.tier}{suffix}\n"
             f"{job.title} - {job.company}\n{job.summary}\n{job.canonical_url}")
 
 
 def due_alerts(conn, cfg: ProcessorConfig) -> list[DeliveryJob]:
-    conditions = " OR ".join("(j.tier = %s AND j.score >= %s)" for _ in cfg.policies)
+    # D1: not-stated jobs are digest-only. The legacy `unconfirmed` value means
+    # the same thing. Tier 2 runs no check and is not filtered (its verdict is
+    # not_checked); COALESCE covers the same case for a row the stage has not
+    # reached yet.
+    conditions = " OR ".join(
+        "(j.tier = %s AND j.score >= %s"
+        + ("" if not policy.remote_check_enabled else
+           " AND COALESCE(j.remote_verdict, 'not_checked') NOT IN ('not_stated', 'unconfirmed')")
+        + ")"
+        for tier, policy in sorted(cfg.policies.items()))
     params = tuple(value for tier, policy in sorted(cfg.policies.items()) for value in (tier, policy.threshold))
     return load_jobs(conn, f"j.stage = 'scored' AND j.alerted_at IS NULL AND ({conditions})", params,
                      order="j.score DESC, j.first_seen_at")

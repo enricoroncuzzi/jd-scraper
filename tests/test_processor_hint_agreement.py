@@ -22,7 +22,7 @@ def test_agreement_is_measured_per_shortcut_and_unconfirmed_is_not_a_disagreemen
     _job(store_conn, 12, "remote", "confirmed", tier=3, country="germany")  # not covered by the shortcut
     _job(store_conn, 20, "onsite", "rejected", tier=3, country="germany")
     first, second, _third = hint_agreement(store_conn)
-    assert (first["agreed"], first["disagreed"], first["unconfirmed"], first["decided"]) == (9, 1, 1, 10)
+    assert (first["agreed"], first["disagreed"], first["undecided"], first["decided"]) == (9, 1, 1, 10)
     assert first["rate"] == 0.9 and first["ready"] is False  # too few decided and under 95 percent
     assert (second["agreed"], second["decided"]) == (1, 1) and second["ready"] is False
 

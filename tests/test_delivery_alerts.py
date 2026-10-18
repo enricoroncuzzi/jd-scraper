@@ -83,10 +83,30 @@ def test_a_send_that_returns_false_counts_as_failed(store_conn, cfg, settings):
     assert run_alerts(store_conn, cfg, settings, lambda text: False, NOW) == 0
 
 
-def test_unconfirmed_remote_is_said_in_the_message(store_conn, cfg):
+def test_a_not_stated_work_mode_is_never_alerted(store_conn, cfg, settings):
+    job = scored_job(store_conn, 1, 9, verdict="not_stated")
+    assert due_alerts(store_conn, cfg) == []
+    assert run_alerts(store_conn, cfg, settings, Outbox(), NOW) == 0
+    assert _row(store_conn, job)[0] is None
+
+
+def test_a_legacy_unconfirmed_row_reads_as_not_stated_and_is_never_alerted(store_conn, cfg):
     scored_job(store_conn, 1, 9, verdict="unconfirmed")
-    (job,) = load_jobs(store_conn, "j.stage = 'scored'")
-    assert "(remote not confirmed)" in format_alert(job).splitlines()[0]
+    assert due_alerts(store_conn, cfg) == []
+
+
+def test_an_advised_job_alerts_with_its_advice_line(store_conn, cfg, settings):
+    job = scored_job(store_conn, 1, 9, verdict="advised",
+                     reason="Remote (UK).",
+                     remote_advice="remote, limited to the UK - check eligibility")
+    (loaded,) = load_jobs(store_conn, "j.stage = 'scored'")
+    assert load_jobs(store_conn, "j.stage = 'scored'") and loaded.id == job
+    outbox = Outbox()
+    assert run_alerts(store_conn, cfg, settings, outbox, NOW) == 1
+    assert outbox.messages[0].splitlines()[:2] == [
+        "Strong match 9/10 - tier 1",
+        "remote, limited to the UK - check eligibility",
+    ]
 
 
 def test_packaging_runs_after_the_alert_and_its_failure_is_contained(store_conn, cfg, settings, capsys):

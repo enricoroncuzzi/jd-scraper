@@ -1,9 +1,11 @@
 """Does a source's own work-mode field agree with the model's remote verdict?
 
-The structured shortcut (processor.json `structured_remote.enabled`) skips the
-model, so it ships off. While it is off, every job still gets a model verdict, and
-this report compares the two on real traffic. Adopt a shortcut only when its
-decided agreement is above 95 percent on at least MIN_DECIDED jobs.
+The reject shortcut (hybrid/on-site from the source's own work mode) was switched
+on 2026-10-18 after measuring 99.8% agreement on 420 decided jobs, so those jobs no
+longer reach the model and this report can no longer measure that row. The two
+confirm shortcuts stay off (87.3% and 66.7%, both below the bar); this report is
+what keeps measuring them on real traffic. Adopt a shortcut only when its decided
+agreement is above 95 percent on at least MIN_DECIDED jobs.
 
     python -m src.processor.hint_agreement
 """
@@ -33,8 +35,8 @@ def hint_agreement(conn) -> list[dict]:
         for name, condition, predicted in SHORTCUTS:
             cur.execute(
                 f"SELECT remote_verdict, count(*) FROM jobs WHERE {condition} "
-                "AND remote_verdict IN ('confirmed', 'rejected', 'unconfirmed') "
-                "GROUP BY remote_verdict")
+                "AND remote_verdict IN ('confirmed', 'advised', 'not_stated', 'rejected', "
+                "'unconfirmed') GROUP BY remote_verdict")
             counts = dict(cur.fetchall())
             agreed = counts.get(predicted, 0)
             other = "rejected" if predicted == "confirmed" else "confirmed"
@@ -42,7 +44,9 @@ def hint_agreement(conn) -> list[dict]:
             rate = agreed / decided if decided else None
             rows.append({
                 "shortcut": name, "agreed": agreed, "disagreed": counts.get(other, 0),
-                "unconfirmed": counts.get("unconfirmed", 0), "decided": decided, "rate": rate,
+                "undecided": (sum(counts.get(v, 0) for v in
+                                     ("not_stated", "advised", "unconfirmed"))),
+                "decided": decided, "rate": rate,
                 "ready": decided >= MIN_DECIDED and rate is not None and rate > THRESHOLD,
             })
     return rows
@@ -54,7 +58,7 @@ def format_report(rows: list[dict]) -> str:
         rate = "n/a" if row["rate"] is None else f"{row['rate']:.1%}"
         verdict = "READY to enable" if row["ready"] else f"not ready (needs {MIN_DECIDED}+ decided and > 95%)"
         lines.append(f"{row['shortcut']}: {rate} of {row['decided']} decided "
-                     f"(unconfirmed {row['unconfirmed']}) - {verdict}")
+                     f"(undecided {row['undecided']}) - {verdict}")
     return "\n".join(lines)
 
 

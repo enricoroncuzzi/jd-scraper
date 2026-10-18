@@ -14,6 +14,10 @@ from src.remote_verifier import _DEGRADED_REASON
 from tests.test_processor_cheap import ENGLISH
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
+# A work-mode mention that the deterministic rules deliberately refuse to settle
+# (remote as a perk, no confident phrase), so these tests exercise the model path
+# rather than the rule pre-pass.
+_UNDECIDED = ENGLISH + " We are a remote-friendly company with flexible working."
 KEYS = LlmKeys("llm-key", "groq-key")
 
 
@@ -25,7 +29,7 @@ def cfg():
 def _described(conn, cfg, n, *, location="Milan, Italy", tier_hint=1, minutes_ago=0, **overrides):
     values = dict(source="freehire", source_job_id=f"j{n}", source_url=f"https://freehire.me/j{n}",
                   title=f"AI Engineer {n}", company=f"Company {n}", location=location,
-                  tier_hint=tier_hint, description=ENGLISH, description_source="freehire")
+                  tier_hint=tier_hint, description=_UNDECIDED, description_source="freehire")
     values.update(overrides)
     job_id = record_sighting(conn, CardInput(**values), NOW - timedelta(minutes=minutes_ago)).job_id
     check_one(conn, job_id, cfg, NOW - timedelta(minutes=minutes_ago))
@@ -88,23 +92,26 @@ def test_tier_two_needs_no_remote_check(store_conn, cfg):
     assert _row(store_conn, job)[2:4] == ("not_checked", "")
 
 
-def test_structured_verdicts_only_where_they_agree_with_the_model_rules(cfg):
-    tier1, tier3 = cfg.policies[1], cfg.policies[3]
-    assert structured_verdict("remote", "italy", tier1)[0] == "confirmed"
-    assert structured_verdict("remote", "germany", tier1) is None
-    assert structured_verdict("remote", "italy", tier3) is None  # Italy eligibility needs the model
-    assert structured_verdict("onsite", "germany", tier3)[0] == "rejected"
-    assert structured_verdict("hybrid", "italy", tier1)[0] == "rejected"
-    assert structured_verdict("remote_worldwide", None, tier3)[0] == "confirmed"
-    assert structured_verdict("remote_worldwide", None, tier1)[0] == "confirmed"
-    assert structured_verdict(None, "italy", tier1) is None
+def test_only_the_hybrid_onsite_hint_is_a_shortcut():
+    assert structured_verdict("onsite")[0] == "rejected"
+    assert structured_verdict("hybrid")[0] == "rejected"
+    # The confirm cases measured 87.3% and 66.7%: below the project's 95% bar.
+    assert structured_verdict("remote_worldwide") is None
+    assert structured_verdict("remote") is None
+    assert structured_verdict(None) is None
 
 
-def test_structured_rules_are_ignored_while_the_switch_is_off(store_conn, cfg):
+def test_the_hybrid_onsite_hint_settles_without_a_model_call(store_conn, cfg):
+    job = _described(store_conn, cfg, 1, remote_hint="onsite")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
+    assert _row(store_conn, job)[:4] == ("filtered_out", "remote_rejected_structured",
+                                         "rejected", "Source states the work mode. (onsite)")
+
+
+def test_the_hint_shortcut_can_be_switched_off(store_conn, cfg):
     _described(store_conn, cfg, 1, remote_hint="onsite")
-    assert apply_deterministic_rules(store_conn, cfg, NOW) == 0
-    on = replace(cfg, structured_remote_enabled=True)
-    assert apply_deterministic_rules(store_conn, on, NOW) == 1
+    off = replace(cfg, structured_remote_enabled=False)
+    assert apply_deterministic_rules(store_conn, off, NOW) == 0
 
 
 def test_a_full_batch_is_verified_with_the_tiers_italy_rule_and_stored(store_conn, cfg):

@@ -4,7 +4,13 @@ Draft-and-notify only: nothing here submits an application. For every
 above-threshold job that is confirmed (or tier 2's not_checked), has a note on disk
 and has not been packaged: classify the application channel, tailor the CV, cover
 letter and recruiter message with the existing tailor.run, write the package
-manifest, and record the job in job_applications. In dry-run the Telegram "package
+manifest, and record the job in job_applications.
+
+`advised` (remote, eligibility to check) and `not_stated` jobs are deliberately
+not packaged: the captain decides those by hand, and packaging one would spend a
+package on a job that is not confirmed remote without the advice in front of him.
+The filter lives in the SQL below (NOT 'unconfirmed': the legacy value reads as
+not stated). In dry-run the Telegram "package
 ready" notice is skipped but the row is still written, so the same job is never
 tailored twice.
 
@@ -92,6 +98,7 @@ def candidates(conn, cfg: ProcessorConfig, now: datetime) -> list[DeliveryJob]:
         return []
     conditions = " OR ".join("(j.tier = %s AND j.score >= %s)" for _ in enabled)
     params = tuple(value for pair in enabled for value in pair)
+    # Only a confirmed (or unchecked) remote job is packaged; see the module docstring.
     jobs = load_jobs(
         conn,
         f"j.stage IN ('scored', 'delivered') AND j.note_day IS NOT NULL "

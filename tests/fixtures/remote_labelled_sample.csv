@@ -1,0 +1,182 @@
+k,label,tier,title,location,remote_hint,text
+1,U,4,Lead Data Analyst - Treasury Operations,"London, England, United Kingdom",,Pet friendly offices ... London office
+2,P,1,ML & AI Engineer,"Rende, Calabria, Italy",,Smart working
+3,R,3,Senior Research Manager - Animal Welfare,Worldwide,remote_worldwide,"remote, asynchronous, international environment"
+4,H,3,Senior AI Engineer,"Athens, Attiki, Greece",,flexible hybrid model in our Athens office or work remotely from anywhere in EEA ... (up to 6 weeks per year)
+5,P,3,Data Engineer,"Copenhagen, Capital Region of Denmark, Denmark",,Flexible remote work ... our offices
+6,R,1,Software Engineer,"Milan, Lombardy, Italy",,Full remote work.
+7,P,1,AI Functional Analyst,"Milan, Lombardy, Italy",,opzioni di Smart working e orari flessibili
+8,R,3,Data Analyst,Worldwide,remote_worldwide,Location: Fully Remote
+9,U,3,Data Scientist (Generative AI),Poland,remote,hybrid search
+10,P,1,EXPERT DATA & AI ENGINEER - SISTEMI CRM E MARKETING (IT),"Rome, Latium, Italy",,Sede Roma ... opzioni di Smart working
+11,R,3,AI Solutions Engineer,Worldwide,remote_worldwide,We
+12,U,3,Senior Generative AI Engineer,"Cluj-Napoca, Cluj, Romania",,
+13,U,3,Tech_AI Engineer,N/A,,
+14,H,4,"Senior AI Engineer, AI Lab",London - Commercial,hybrid,"#LI-Hybrid ... hybrid working pattern, 3+ days office attendance required"
+15,U,3,AI ENGINEER,N/A,,
+16,O,1,CRM Manager,"Milan, Lombardy, Italy",,The position is based in Milan
+17,U,4,Machine Learning Engineer (Contract),"London, England, United Kingdom",,
+18,H,3,Software Engineer,Greater Madrid Metropolitan Area,,Modelo híbrido ... trabajar juntos en persona
+19,H,3,Working Student (f/m/d) - AI Software Engineer,N/A,,Additional Locations: #LI-Hybrid
+20,U,4,Senior Machine Learning Engineer,"London Area, United Kingdom",,
+21,O,3,Senior Backend &amp; AI Engineer (Cyber-Engineering),"Paris, FR",,Based in Paris
+22,H,4,"Environmental Data Scientist | Energy in Warrington, gb","Warrington, GB",,Hybrid/Flexible working ... our hybrid approach
+23,R,1,Lead Developer (P.IVA),Greater Milan Metropolitan Area,,Lavoro da remoto con incontri periodici a Milano
+24,R,3,Backend MLOps Engineer - REMOTO,Spain,,REMOTO ... Modalidad REMOTO
+25,O,3,AI Engineer,"Virum, Danmark",,You live in Denmark and are based at our Virum office
+26,U,3,"Senior AI Engineer, Agents and Platform (f/m/d)",Berlin,,
+27,U,3,"Lead Data Scientist, Revenue - Ads","Vilnius, Lithuania",hybrid,
+28,U,4,Founding AI / Data Software Engineer,United Kingdom,,"Location: UK, Europe or USA preferred"
+29,U,1,AI Automation INTERN,"Milan, Lombardy, Italy",,
+30,U,1,AI Promotion & Governance Analyst,"Trento, Trentino-Alto Adige, Italy",,
+31,P,4,Full Stack Developer,"Birmingham, England, United Kingdom",,Flexible/remote working
+32,R,1,Data Analyst | Freelance | Full Remote,Italy,,lavorera in modalita full remote e possibili trasferte in provincia di Varese
+33,U,3,Data Scientist,"Sofia, Sofia City, Bulgaria",,working collaboratively in a remote environment
+34,P,1,Generative AI Software Engineer,"Turin, Piedmont, Italy",,Smart working: individual remote working agreements
+35,U,3,AI Engineer,"Madrid, Community of Madrid, Spain",,
+36,U,4,"Data Scientist, Early Career (UK)",United Kingdom,,
+37,U,3,Sr REACT NATIVE (Deazy),Worldwide,remote_worldwide,
+38,U,3,Senior Agentic AI Engineer (Python),Poland,,
+39,R,4,AI Engineer-Anthropic-University/Graduate Level - UK,UK - Remote,remote,[Location / Hybrid / Remote] ... UK - Remote
+40,U,4,Senior Full Stack Engineer (Realtime & Voice) Customer Experience Platform,"London, England, United Kingdom",,
+41,U,3,D360 Forward Deployed Engineer,"Munich, Bavaria, Germany",,
+42,U,4,Senior Data Scientist - AI & Machine Learning,Welwyn,,
+43,R,3,Senior Applied AI Engineer,Worldwide,remote_worldwide,We ... +
+44,U,3,Signal Processing Engineer (RF Processing & Analytics),"Paris, Île-de-France, France",,
+45,R,1,AI Engineer,"Milan, Lombardy, Italy",,Full remote. Per davvero ... timezone compatibile con l
+46,U,3,"Computer Vision Engineer, Bamboo","Paris, Île-de-France, France",,Comfortable working remotely
+47,R,4,AI Research Engineer,"London, England, United Kingdom",,"competitive salary, benefits, and remote working"
+48,U,3,Senior Machine Learning Engineer,Portugal,,working remotely or in a hybrid model across Europe
+49,U,1,NEOLAUREATI/E in STATISTICA - ACADEMY JUNIOR DATA SCIENTIST,"Bologna, Emilia-Romagna, Italy",,
+50,U,3,Consultoría | NJFY27 Junior Artificial Intelligence & Analytics | Septiembre 2026,Greater Barcelona Metropolitan Area,,
+51,U,4,"Software Engineer (Data, AI)","England, United Kingdom",,
+52,P,3,Salesforce Developer,"Budapest, Budapest, Hungary",,"Flexible working arrangements (Flex-work, Home Office)"
+53,O,1,Junior Data Scientist,"Rome, Latium, Italy",,da inserire nella sede di Roma
+54,H,1,Junior Data Analyst,"Milan, Lombardy, Italy",,"we work in a hybrid model, with autonomy over when to come into the office"
+55,H,3,Senior Account Executive (m/f/d) - Applied AI,"Munich, Germany",hybrid,Hybrid work setup
+56,U,1,Senior Developer ESRI,"Milan, Lombardy, Italy",,
+57,P,3,Machine Learning Engineer,"Bucharest, Bucharest, Romania",,"work flexibly and remotely, and our inspiring offices"
+58,R,3,AI Engineer (.NET / Azure AI),Portugal,remote,A remote-first company
+59,P,4,"Senior Software Engineer (Kotlin, Spring Boot)","Leeds, England, United Kingdom",,"flexible working, including hybrid and remote options. Our office hubs are located in..."
+60,R,3,Data Scientist (Remote-Worldwide),"Amsterdam, Netherlands",,Remote-Worldwide ... Location: Remote
+61,U,4,Data Scientist,"London, England, United Kingdom",,
+62,U,3,"Senior Manager, Global Category & Innovation Intelligence Services","Dublin, County Dublin, Ireland",,
+63,H,4,Data Scientist,London (GB80),hybrid,We offer a hybrid working policy
+64,U,1,Deep AI native software engineering,"Milan, Lombardy, Italy",,
+65,P,1,Data Science Generative AI Consultant,"Milan, Lombardy, Italy",,"Accordo di smart working, ove compatibile con l"
+66,R,4,Machine Learning Engineer,United Kingdom,,"London (Remote) | Up to GBP 90,000"
+67,U,3,Lead  GenAI Solutions Architect,Cluj-Napoca - Decembrie,,EMEA Technology Hub in Cluj
+68,U,1,(CDP)_ICT Application Analyst Data & AI Platforms_Tempo Determinato Sostituzione Maternità,"Rome, Latium, Italy",,
+69,C,4,AWS Data Scientist - Public Sector,"Leicester, England, United Kingdom",,must be a resident in the UK ... living continuously in the UK for the last 5 years ... security clearance
+70,U,4,Data & AI Architect - GTM Solutioning & Presales,"London Area, United Kingdom",,
+71,H,1,GenAI Engineer - Allitude,N/A,,"Sede di lavoro: Trento, Bologna, Roma (modalita ibrida)"
+72,H,4,Applied AI & Analytics - Principal Consultant,UK - London,,Location: London (Hybrid)
+73,P,4,AI Engineer - Front end,"Staines-upon-Thames, England, gb",,This role is hybrid or remote ... right balance of remote and in-office working
+74,P,3,Junior Data & AI Engineer,"Bratislava, Bratislava, Slovakia",,option to work from home (by agreement)
+75,C,4,AI / Machine Learning Engineer,United Kingdom,,"REMOTE GBP70,000 ... Applicants must have the right to work in the UK"
+76,H,1,Junior Consultant | Digital Finance Transformation,"Padua, Veneto, Italy",,Hybrid work arrangements to promote a healthy work-life balance
+77,U,1,Tech Lead - AI,"Milan, Lombardy, Italy",,
+78,R,1,Back End Developer,Italy,,Da remoto
+79,U,3,Senior AI Engineer,"Budapest, Szervita tér .",onsite,BM25 hybrid retrieval
+80,R,4,Member of Engineering (Post-training),United Kingdom,,Fully remote work & flexible hours
+81,R,3,Mid/Senior AI Engineer,Worldwide,remote_worldwide,100% remote by design ... no mandatory office days
+82,R,1,AI Engineer,"Florence, Tuscany, Italy",,"Total flexibility. 100% remote, hybrid, or in-office. You decide"
+83,U,4,Senior AI Engineer,"Guildford, England, United Kingdom",,
+84,C,3,Programador/a Python Senior,Spain,,100% Teletrabajo ... Ubicacion: Espana
+85,U,4,Applied AI Engineer (up to £180k),"London, England, United Kingdom",,
+86,R,4,AI Software Engineer (Remote),United Kingdom,,Location: Remote (Work from Anywhere)
+87,O,3,"Data Scientist, Marketing Mix Modelling","Barcelona, ES",,Based in Barcelona ... Your day-to-day base will be our office at Norrsken House Barcelona
+88,H,3,AI Engineer,"Sundbyberg, SE",,#LI-HYBRID
+89,U,3,Data - Graduate - Poland,"Cracow, Małopolskie, Poland",,Legally permitted to work in Poland
+90,R,3,"AI/ML Engineer, Internal Platforms",Worldwide,remote_worldwide,Location: Remote ... remote-first workforce
+91,R,3,AI Developer / Agentic AI Engineer,Spain,,Posicion 100% remoto
+92,P,3,Senior RWE Biostatistician,Slovakia,,remote working allowances
+93,O,3,Head of Data Science,"Sofia, Sofia, Bulgaria",hybrid,Work in the heart of Sofia ... bring your furry friend to work - because every office is better with paws
+94,R,4,"Software Engineer, AI Enablement",United Kingdom,,Remote first company - most of our teams work fully remotely
+95,U,1,Software Engineer,"Turin, Piedmont, Italy",,
+96,O,1,Robot Programmer,"Turin, Piedmont, Italy",,"Modalita: In presenza, con trasferte presso clienti"
+97,U,1,Junior Developer IA,"Rome, Latium, Italy",,
+98,U,3,Data Scientist / AI Engineer (d/m/f),N/A,,
+99,H,4,Data scientist lead,"Leeds, United Kingdom",,Location Flexible / Hybrid
+100,R,1,AI Agent Evaluation Specialist (CS / Data Science Students Welcome),Italy,,freelance role is fully remote
+101,R,4,AI Applied Engineer,United Kingdom,,Fully remote across the UK & Europe
+102,R,4,Data Science Expert - AI Content Specialist,"Glasgow, Scotland, United Kingdom",,"fully remote, flexible contract role ... Location: Remote"
+103,H,3,"SAP Architect (Technical, GenAI, SAP Innovation)",N/A,hybrid,Enjoy hybrid working model
+104,U,4,2027 BNY Analyst Program – Engineering (Data Science) (Manchester),"Greater Manchester, United Kingdom",,
+105,H,4,Data Scientist,"London, United Kingdom",,"hybrid approach, with teams in the office around four days a week"
+106,P,3,Forward Deployed AI Engineer | Enterprise AI | €150k | Munich/Remote,Greater Munich Metropolitan Area,,Munich/Remote
+107,U,3,Senior CX Platform Engineer,Worldwide,remote_worldwide,
+108,R,3,Senior Data Scientist_remote(m/f/d),Austria,,You work fully remote and flexibly from anywhere within Europe
+109,U,3,Senior AI Engineer,"Braga, Braga",onsite,
+110,R,3,Agentic AI Engineer,Netherlands,,Location: Remote ... - Remote
+111,U,1,AI Engineer,"Florence, Tuscany, Italy",,
+112,R,4,Senior Machine Learning Engineer,"Edinburgh, Scotland, United Kingdom",,"fully remote, flexible contract role ... Location: Remote"
+113,H,3,Junior AI Engineer,Cork-County Cork-Ireland,,"Hybrid at One Albert Quay, Cork"
+114,H,1,Senior Data Engineer,"Milan, Lombardy, Italy",,modalita di lavoro onsite e un giorno da remoto a settimana
+115,U,3,"Senior Technical Staff, AI Architect - Agentic AI-GenAI","Cork, Co. Cork, Ireland",onsite,
+116,U,4,Senior Software Engineer,"Gloucester, England, United Kingdom",,
+117,P,3,Applied AI Engineer,"Munich, BY, de",,Flexible working hours as well as homeoffice
+118,R,3,AI Engineer - Remote,Worldwide,remote_worldwide,- Remote ... Job Details Remote
+119,P,1,Tech Intern - Accenture Customer Innovation Network,"Milan, Lombardy, Italy",,"Accordo di smart working, ove compatibile con l"
+120,R,1,AI Engineer,"Milan, Lombardy, Italy",,"Total flexibility. 100% remote, hybrid, or in-office. You decide"
+121,U,4,"Data Science Industrial Placement - Multiple roles within Biostats, Data Management, Real-World Data and more",Welwyn,,
+122,U,4,"Principal Data Scientist, Experimentation",London,,
+123,R,1,AI Generalist,Italy,,"This full-time, remote role"
+124,O,4,Lead Data Scientist - Marketing Sciences in Leicester,"Leicester, GB",,"Based from our client in Enderby, Leicestershire"
+125,P,4,Quantitative Developer (Banking),"London Area, United Kingdom",,Location: Fully remote or hybrid in London
+126,U,3,GenAI Engineer,Poland,remote,
+127,R,4,Data Scientist (Remote | $245–$280/hr),"London Area, United Kingdom",,Location: Remote ... Fully remote opportunity
+128,R,4,Data Scientist (Masters),United Kingdom,,"fully remote, flexible contract role ... work ... anywhere in the world"
+129,O,1,Stage Data & CRM Operations,"Milan, Lombardy, Italy",,Sede di lavoro: Milano Sud
+130,R,3,Product Engineering Lead (QVAC) (100% remote),Worldwide,remote_worldwide,(100% remote) ... working remotely from every corner of the world
+131,U,4,Finance AI Engineer ( Manager ),"London, England, United Kingdom",,
+132,C,4,Back End Developer (AI Infrastructure),"London, England, United Kingdom",,fully remote ... looking for Back End Developers based in London
+133,U,1,Senior Merchandising Consultant (Italy),Greater Milan Metropolitan Area,,This is a hybrid role
+134,R,4,Full-Stack Engineer - Ads Engine,United Kingdom,,This role is remote-first ... anywhere between the US East Coast and India ... European timezones
+135,P,1,Finance Supply Chain Analyst Internship,"Sesto San Giovanni, Lombardy, Italy",,possibilita di lavoro da remoto e orari flessibili
+136,U,3,Data Analyst - Financial Crime team,"Brno, South Moravia, Czechia",,
+137,O,1,Artificial Intelligence Researcher,Greater Genoa Metropolitan Area,,Sede di lavoro: Genova
+138,U,1,GenAI & AI Engineering Consultant,"Milan, Lombardy, Italy",,
+139,U,3,AI Engineer,Spain,,talento ... este donde este
+140,U,4,Founding Engineer (AI Startup) (4CA10E8),"London, England, United Kingdom",,
+141,R,4,Artificial Intelligence Engineer,"London Area, United Kingdom",,Location: UK/Europe (Remote)
+142,U,1,Data Engineer Databricks,Italy,,
+143,R,1,Software Engineer — AI Agent Platform / Polyant,Italy,,A remote working environment in Italy ... Based in Italy
+144,P,1,Business Analyst - Intern,"Milan, Lombardy, Italy",,"Accordo di smart working, ove compatibile"
+145,U,1,Full Stack Developer,Italy,,
+146,U,3,Senior Software Engineer – AI Infrastructure,Hungary,,
+147,U,3,Power Platform & AI Solutions Developer,"Bucharest, Bucharest, Romania",,
+148,H,3,Business Intelligence & Data Science Consultant,"Porto, Portugal",,Location: Oporto - Hybrid
+149,U,3,Senior AI Software Engineer,Portugal,,
+150,U,4,LLM Agent Research Intern,United Kingdom-London,,
+151,U,1,Artificial Intelligence Engineer,"Ariccia, Latium, Italy",,
+152,U,3,AI Engineer,"Barcelona, Catalonia, Spain",,
+153,O,3,Business Development Representative with Spanish - GenAI Ads Solutions,"Barcelona, Catalonia, Spain",,Full-time position in Barcelona ... You ... s 22@ district
+154,O,3,Senior Data Scientist (Find My),Malmo,,"The work is on-site in Malmo, Sweden"
+155,R,3,Principal Backend Engineer (Go/PostgreSQL) - Remote,Worldwide,remote_worldwide,- Remote ... Location: Remote
+156,H,3,Data Scientist Expert,N/A,,home office days ... typically up to 6 days per month
+157,R,4,"Applied AI Engineer | Remote across the UK and Europe | £100,000–£150,000 + equity","London Area, United Kingdom",,Fully remote for candidates based in the UK or Europe who can work UK hours
+158,U,1,AI ARCHITECT - INSURANCE PRICING SPECIALIST,"Milan, Lombardy, Italy",,
+159,U,3,European GenAI Solutions Expert,N/A,,
+160,U,4,ML Research Engineer (up to £120k + Equity),"London Area, United Kingdom",,
+161,U,4,Quantitative Equity Research Analyst,"London, England, United Kingdom",,hybrid quant/fundamental
+162,H,3,Data Scientist (Privacy),"Barcelona, Spain",hybrid,Hybrid work model: 2 days/ week in our office
+163,R,1,Machine Learning Engineer & Software Developer — Part-Time/Full Time,Italy,,Fully remote work
+164,R,4,Senior Machine Learning Scientist at Chattermill Analytics Limited,United Kingdom,,"LocationRemote, Europe"
+165,P,1,Junior SAP Analyst - Internship,"Turin, Piedmont, Italy",,"Accordo di smart working, ove compatibile"
+166,R,1,AI Engineer/Data Scientist p.iva (Rif.5975),Italy,,SEDE DI LAVORO Full Remote
+167,R,3,Freelance Data Scientist with Ontology and Graph expertise,Worldwide,remote_worldwide,this position is fully remote
+168,U,3,Senior Data Scientist – GenAI,"Warszawa, Poland",remote,hybrid search
+169,U,1,Senior Customer Data Analyst,"Milan, Lombardy, Italy",,
+170,U,1,Data Scientist,Italy,,
+171,U,4,AI Engineer,"London Area, United Kingdom",,The role can be based in any of these locations
+172,R,1,AI Engineer,"Milan, Lombardy, Italy",,Full remote. Per davvero.
+173,U,3,Senior AI Engineer,"Helsinki, Uusimaa, Finland",,home office purchases
+174,U,4,Applied AI Engineer,United Kingdom,,from our offices and remotely
+175,U,4,Data scientist (AI/ML Metrics),"Manchester Area, United Kingdom",,
+176,R,3,Mid/Senior AI Engineer,"Zaragoza, Aragon, Spain",,100% Remote Work: no mandatory office days
+177,O,4,Data Scientist - Defence,"London, Greater London, England, United Kingdom",,expected to work on-site with our customers four days per week
+178,P,4,Lead AI Engineer Python LLM - Tech Consultancy,"London, England, United Kingdom",,London / WFH
+179,P,4,AI Engineer,"Manchester, England, United Kingdom",,Flexible/remote working
+180,O,3,PhD Researcher Applied Science,"Paris, Île-de-France, France",,based in Paris and London
+181,P,1,Generative AI Engineer,"Bologna, Emilia-Romagna, Italy",,modello di lavoro agile personalizzato e flessibile

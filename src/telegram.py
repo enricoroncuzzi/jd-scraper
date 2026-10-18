@@ -1,5 +1,6 @@
 from datetime import date
 import requests
+from src import remote_verdicts
 from src.models import ScoredOffer
 
 _API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -55,12 +56,17 @@ def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "
 
 
 def _offer_block(o: ScoredOffer) -> list[str]:
-    return [
+    lines = [
         f"- <b>{escape_html(o.title)} - {escape_html(o.company)}</b> ({o.score}/10)",
         f"  {escape_html(o.location)}",
         f"  {escape_html(o.summary)}",
-        f"  {escape_html(o.link)}\n",
     ]
+    advice = remote_verdicts.advice_line(o.remote_verdict, o.remote_advice, o.remote_reason)
+    if advice:
+        # D3: remote but the eligibility needs a human look. Delivered, not dropped.
+        lines.append(f"  ⚠ {escape_html(advice)}")
+    lines.append(f"  {escape_html(o.link)}\n")
+    return lines
 
 
 def _append_section(lines: list[str], header: str, ranked: list[ScoredOffer], budget: int) -> int:
@@ -105,19 +111,28 @@ def _format_message(
         if not verification_enabled:
             _append_section(lines, f"<b>High-score offers ({len(high)}):</b>", ranked, _TOP_N)
         else:
-            confirmed = [o for o in ranked if o.remote_verdict == "confirmed"]
-            unconfirmed = [o for o in ranked if o.remote_verdict != "confirmed"]
-            # One detailed-block budget shared by both sections, so the message
+            confirmed = [o for o in ranked
+                         if remote_verdicts.is_confirmed_or_unchecked(o.remote_verdict)]
+            advised = [o for o in ranked if remote_verdicts.is_advised(o.remote_verdict)]
+            not_stated = [o for o in ranked if remote_verdicts.is_not_stated(o.remote_verdict)]
+            # One detailed-block budget shared by the sections, so the message
             # cannot double in size when verification is on. Confirmed offers
-            # hold the budget first; unconfirmed get what is left.
+            # hold the budget first; the other sections get what is left.
             budget = _TOP_N
             if confirmed:
                 budget = _append_section(
                     lines, f"<b>Confirmed full-remote ({len(confirmed)}):</b>", confirmed, budget
                 )
-            if unconfirmed:
+            if advised:
+                budget = _append_section(
+                    lines, f"<b>Remote, eligibility to check ({len(advised)}):</b>",
+                    advised, budget
+                )
+            if not_stated:
+                # D1: kept in the digest, clearly separated, and never alerted.
                 _append_section(
-                    lines, f"<b>Remote not confirmed ({len(unconfirmed)}):</b>", unconfirmed, budget
+                    lines, f"<b>Work mode not stated ({len(not_stated)}):</b>",
+                    not_stated, budget
                 )
 
     if low:
@@ -132,7 +147,8 @@ def _format_message(
     if verification_degraded:
         lines.append(
             "\n<i>Remote verification was incomplete for this tier; some offers may show "
-            "unconfirmed because a stage failure, not a real judgement, left them that way.</i>"
+            "'work mode not stated' because a stage failure, not a real judgement, left them "
+            "that way.</i>"
         )
 
     return "\n".join(lines)

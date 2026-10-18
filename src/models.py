@@ -11,8 +11,14 @@ class JobOffer(BaseModel):
     description: str = ""
     description_status: Literal["ok", "partial", "failed", "rate_limited"] = "ok"
     work_mode: str = ""
-    remote_verdict: Literal["confirmed", "rejected", "unconfirmed", "not_checked"] = "not_checked"
+    # See src/remote_verdicts.py for what each verdict means. `unconfirmed` is the
+    # pre-2026-10-18 value and stays accepted so old rows and recorded outputs
+    # still parse; it is read as not_stated everywhere.
+    remote_verdict: Literal[
+        "confirmed", "advised", "not_stated", "rejected", "not_checked", "unconfirmed"
+    ] = "not_checked"
     remote_reason: str = ""
+    remote_advice: str = ""
 
 
 class ScoredOffer(JobOffer):

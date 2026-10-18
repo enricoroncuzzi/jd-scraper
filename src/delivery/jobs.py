@@ -9,7 +9,7 @@ from src.models import ScoredOffer
 _COLUMNS = (
     "id", "note_no", "title", "company", "location_raw", "canonical_url", "description",
     "description_status", "work_mode", "remote_verdict", "remote_reason", "score", "comment",
-    "summary", "tier", "note_day", "alerted_at", "stage", "stage_changed_at",
+    "summary", "tier", "note_day", "alerted_at", "stage", "stage_changed_at", "remote_advice",
 )
 SELECT_DELIVERY_JOB = f"SELECT {', '.join('j.' + c for c in _COLUMNS)} FROM jobs j"
 
@@ -35,6 +35,7 @@ class DeliveryJob:
     alerted_at: datetime | None
     stage: str = "scored"
     stage_changed_at: datetime | None = None
+    remote_advice: str = ""
     source: str = "linkedin"
     also_seen_on: list[str] = field(default_factory=list)
 
@@ -83,4 +84,5 @@ def to_scored_offer(job: DeliveryJob) -> ScoredOffer:
         description_status=job.description_status if job.description_status in
         ("ok", "partial", "failed", "rate_limited") else "ok",
         work_mode=job.work_mode, remote_verdict=job.remote_verdict or "not_checked",
-        remote_reason=job.remote_reason, score=job.score, comment=job.comment, summary=job.summary)
+        remote_reason=job.remote_reason, remote_advice=job.remote_advice,
+        score=job.score, comment=job.comment, summary=job.summary)

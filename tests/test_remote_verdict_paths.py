@@ -1,0 +1,276 @@
+"""Every verdict path of the two-field remote answer, without any live model.
+
+The prompt asks for work_mode + eligibility + a quote from the description; the
+code maps that to the verdict vocabulary. These tests fix that mapping, including
+the D3 rule (eligibility limits never reject) and the quote check (an unsupported
+quote is not a verdict).
+"""
+import json
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.models import JobOffer
+from src.remote_rules import classify
+from src.remote_verifier import (
+    _PROMPT_DESCRIPTION_BUDGET_CHARS,
+    _description_for_prompt,
+    _per_offer_budget,
+    _quote_found,
+    verify_offers,
+)
+
+DESCRIPTION = ("Acme builds developer tools. This role is fully remote across Europe. "
+               "You will work with Python and PyTorch on retrieval pipelines every day.")
+
+
+def _offer(offer_id=1, description=DESCRIPTION):
+    return JobOffer(id=offer_id, title="AI Engineer", company="Acme", location="Berlin, Germany",
+                    link=f"https://x/{offer_id}", description=description,
+                    description_status="ok")
+
+
+def _mock(monkeypatch, items):
+    seen = {"prompts": []}
+
+    def create(**kwargs):
+        seen["prompts"].append(kwargs["messages"][0]["content"])
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = json.dumps({"offers": items})
+        response.usage = MagicMock(prompt_tokens=100, completion_tokens=20, total_tokens=120)
+        return response
+
+    client = MagicMock()
+    client.chat.completions.create = create
+    monkeypatch.setattr("src.remote_verifier._client", lambda key: client)
+    return seen
+
+
+def _run(monkeypatch, item, *, require_italy, description=DESCRIPTION, offer=None):
+    items = [{"id": 1, **item}]
+    _mock(monkeypatch, items)
+    verified, _usage = verify_offers([offer or _offer(description=description)],
+                                     require_italy, "key")
+    return verified[0]
+
+
+def test_remote_open_is_confirmed(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "fully remote across Europe"},
+               require_italy=True)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
+def test_remote_first_counts_as_remote(monkeypatch):
+    description = "We are remote-first, with an office in Berlin if you want it."
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "remote-first"},
+               require_italy=True, description=description)
+    assert job.remote_verdict == "confirmed"
+
+
+def test_remote_limited_to_another_country_is_advised_never_rejected(monkeypatch):
+    description = "We are fully remote. Remote (UK) only."
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": "Remote (UK) only"},
+               require_italy=True, description=description)
+    assert job.remote_verdict == "advised"
+    assert job.remote_advice == "remote, limited to the UK - check eligibility"
+
+
+def test_remote_without_a_stated_restriction_is_advised_in_tier_three(monkeypatch):
+    offer = _offer()
+    offer.location = "Remote"
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
+                             "quote": "fully remote across Europe"},
+               require_italy=True, offer=offer)
+    assert job.remote_verdict == "advised"
+    assert job.remote_advice == "remote, no stated country restriction - check eligibility"
+
+
+def test_plain_remote_is_confirmed_by_either_layer_in_tier_one(monkeypatch):
+    description = ("This is a fully remote role. You will build retrieval pipelines with "
+                   "Python and PyTorch and ship evaluation tooling for our product teams.")
+    offer = _offer(description=description)
+    ruled = classify(description, title=offer.title, location=offer.location,
+                     require_italy_eligibility=False)
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
+                             "quote": "fully remote role"},
+               require_italy=False, offer=offer)
+    assert (job.remote_verdict, job.remote_advice) == (ruled.verdict, ruled.advice)
+    assert job.remote_verdict == "confirmed"
+
+
+def test_plain_remote_in_tier_three_goes_to_the_model_and_is_advised(monkeypatch):
+    """D3: plain 'Remote' with no country named is advised, never confirmed."""
+    description = ("This is a fully remote role. You will build retrieval pipelines with "
+                   "Python and PyTorch and ship evaluation tooling for our product teams.")
+    offer = _offer(description=description)
+    offer.location = "London, United Kingdom"
+    assert classify(description, title=offer.title, location=offer.location,
+                    require_italy_eligibility=True) is None
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
+                             "quote": "fully remote role"},
+               require_italy=True, offer=offer)
+    assert (job.remote_verdict, job.remote_advice) == (
+        "advised", "remote, based in the UK - check eligibility")
+
+
+@pytest.mark.parametrize("description,eligibility,verdict,advice", [
+    ("Fully remote. Remote - Italy. Our HQ is in London, UK.", "restricted", "confirmed", ""),
+    ("Fully remote. Location: Remote (UK). We serve clients across Europe.", "not_stated",
+     "advised", "remote, limited to the UK - check eligibility"),
+])
+def test_an_explicit_remote_scope_settles_eligibility_on_the_model_path(
+        monkeypatch, description, eligibility, verdict, advice):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": eligibility,
+                             "quote": "Fully remote"},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == (verdict, advice)
+
+
+@pytest.mark.parametrize("description,quote", [
+    ("Fully remote. Open to candidates living in Italy only.",
+     "Open to candidates living in Italy only"),
+    ("Fully remote. You must reside in Germany or Italy.", "You must reside in Germany or Italy"),
+])
+def test_an_italy_inclusive_restriction_answered_open_is_confirmed(monkeypatch, description, quote):
+    # The tier 3/4 prompt defines a restriction that includes Italy as open.
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open", "quote": quote},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
+@pytest.mark.parametrize("description,quote,advice", [
+    ("Fully remote. Candidates must reside in Spain.", "Candidates must reside in Spain",
+     "remote, limited to Spain - check eligibility"),
+    ("Fully remote. You must reside in Germany, not Italy.",
+     "You must reside in Germany, not Italy", "remote, limited to Germany - check eligibility"),
+    ("Fully remote. Many of us work in Poland. Eligibility is limited.", "Fully remote",
+     "remote, eligibility to check"),
+])
+def test_a_restricted_answer_is_advised_with_the_country_its_quote_names(
+        monkeypatch, description, quote, advice):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": quote},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == ("advised", advice)
+
+
+@pytest.mark.parametrize("description", [
+    "Fully remote. You must be eligible to work in the EU. Our HQ is in Berlin, Germany.",
+    "Fully remote. We serve clients across Germany and our team members live in Berlin.",
+])
+def test_the_regex_never_turns_an_open_answer_into_an_advice(monkeypatch, description):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "Fully remote"},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
+def test_the_regex_never_turns_a_restricted_answer_into_a_confirmation(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": "Fully remote"},
+               require_italy=True,
+               description="Fully remote. You must be eligible to work in the EU.")
+    assert job.remote_verdict == "advised"
+
+
+def test_a_quote_taken_from_the_title_or_location_is_found(monkeypatch):
+    offer = JobOffer(id=1, title="Backend Engineer - REMOTE", company="Acme",
+                     location="Italy (Remote)", link="https://x/1",
+                     description="Great team, smart working and flexible hours. " * 5,
+                     description_status="ok")
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open", "quote": "REMOTE"},
+               require_italy=False, offer=offer)
+    assert job.remote_verdict == "confirmed"
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "Italy (Remote)"},
+               require_italy=True, offer=offer.model_copy(update={"remote_verdict": None}))
+    assert job.remote_verdict == "confirmed"
+
+
+def test_tier_one_does_not_need_the_eligibility_answer(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": "fully remote across Europe"},
+               require_italy=False)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
+@pytest.mark.parametrize("work_mode", ["hybrid", "onsite", "flexible"])
+def test_hybrid_on_site_and_perk_remote_are_rejected_with_a_found_quote(monkeypatch, work_mode):
+    job = _run(monkeypatch, {"work_mode": work_mode, "eligibility": "not_stated",
+                             "quote": "fully remote across Europe"},
+               require_italy=False)
+    assert job.remote_verdict == "rejected"
+
+
+def test_a_rejection_whose_quote_is_not_in_the_text_is_not_rejected(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "hybrid", "eligibility": "not_stated",
+                             "quote": "three days a week in the London office"},
+               require_italy=False)
+    assert job.remote_verdict == "not_stated"
+
+
+def test_a_confirmation_whose_quote_is_not_in_the_text_is_not_stated(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "work from anywhere on the planet"},
+               require_italy=False)
+    assert job.remote_verdict == "not_stated"
+
+
+def test_an_empty_quote_is_not_stated(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open", "quote": ""},
+               require_italy=False)
+    assert job.remote_verdict == "not_stated"
+
+
+def test_not_stated_is_stored_as_its_own_verdict(monkeypatch):
+    job = _run(monkeypatch, {"work_mode": "not_stated", "eligibility": "not_stated",
+                             "quote": "", "reason": "The posting never says."},
+               require_italy=False)
+    assert job.remote_verdict == "not_stated"
+    assert job.remote_reason == "The posting never says."
+
+
+def test_quote_matching_survives_glued_words_and_punctuation():
+    # The stored text loses spaces ("LocationRemote, Europe"); the model quotes
+    # the readable form. Both normalize to the same key.
+    assert _quote_found("Location: Remote, Europe", "LocationRemote, Europe - fully remote")
+    assert _quote_found("FULLY REMOTE", "This is a Fully-Remote role.")
+    assert not _quote_found("three days in the office", DESCRIPTION)
+
+
+def test_the_whole_description_reaches_the_model_not_a_1000_char_prefix(monkeypatch):
+    description = ("Acme builds developer tools. " * 60) + " This role is fully remote."
+    assert len(description) > 1500
+    seen = _mock(monkeypatch, [{"id": 1, "work_mode": "remote", "eligibility": "open",
+                                "quote": "fully remote"}])
+    verify_offers([_offer(description=description)], True, "key")
+    assert "This role is fully remote." in seen["prompts"][0]
+    assert "fully remote" in seen["prompts"][0]
+
+
+def test_the_prompt_is_bounded_for_an_absurd_description():
+    long = ("remote " * 5000) + "fully remote"
+    assert len(_description_for_prompt(long)) <= 6000
+
+
+def test_a_full_batch_of_long_descriptions_stays_inside_the_shared_budget():
+    intro = "Acme builds developer tools for retrieval and evaluation. " * 60
+    late = " Work mode: this is a hybrid role with two days in the Milan office." * 3
+    budget = _per_offer_budget(8)
+    shown = [_description_for_prompt(intro + late + f" offer {n}", budget) for n in range(8)]
+    assert all("hybrid role" in text for text in shown)
+    assert sum(len(text) for text in shown) <= _PROMPT_DESCRIPTION_BUDGET_CHARS
+
+
+def test_a_full_batch_shares_one_description_budget_for_groq():
+    """An 8-offer batch must stay inside Groq's 8,000-token/minute free plan."""
+    assert _per_offer_budget(8) == 3000
+    assert _per_offer_budget(1) == 6000
+    description = ("word " * 600) + "SENTINEL-LATE " + ("word " * 400)
+    assert len(description) > 5000
+    assert "SENTINEL-LATE" not in _description_for_prompt(description, _per_offer_budget(8))
+    assert "SENTINEL-LATE" in _description_for_prompt(description, _per_offer_budget(1))

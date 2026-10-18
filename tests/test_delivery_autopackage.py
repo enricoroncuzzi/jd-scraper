@@ -56,7 +56,9 @@ def _delivered(conn, n, score=9, **kw):
 def test_candidates_are_confirmed_above_threshold_with_a_note_and_no_package_yet(store_conn, cfg):
     good = _delivered(store_conn, 1)
     _delivered(store_conn, 2, score=7)
-    _delivered(store_conn, 3, verdict="unconfirmed")
+    _delivered(store_conn, 3, verdict="unconfirmed")  # legacy: reads as not stated
+    _delivered(store_conn, 7, verdict="advised", remote_advice="remote, limited to the UK - check eligibility")
+    _delivered(store_conn, 8, verdict="not_stated")
     scored_job(store_conn, 4, 9)  # scored but no note written yet
     tier2 = _delivered(store_conn, 5, tier=2, verdict="not_checked", location="Zurich, Switzerland")
     packaged = _delivered(store_conn, 6)

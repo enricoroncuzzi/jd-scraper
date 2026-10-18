@@ -135,3 +135,11 @@ def test_a_partial_description_keeps_the_legacy_warning(tmp_path):
     new = render_note(job, 8, DAY)
     assert "⚠ description: partial" in new
     assert _strip_added_fields(new) == legacy
+
+
+def test_an_advised_note_carries_the_short_advice_line():
+    job = _job(1, 9, verdict="advised",
+               remote_advice="remote, limited to the UK - check eligibility")
+    text = render_note(job, 8, DAY)
+    assert 'remote_advice: "remote, limited to the UK - check eligibility"' in text
+    assert "**Remote check:** remote, limited to the UK - check eligibility" in text

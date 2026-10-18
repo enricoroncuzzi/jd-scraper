@@ -49,11 +49,11 @@ def find_twin(conn, job_id: str) -> str | None:
 def _load(cur, job_id: str) -> dict:
     cur.execute(
         "SELECT id, stage, first_seen_at, last_seen_at, posted_at, canonical_url, description, "
-        "description_status, description_source, remote_verdict, remote_reason, score, summary, "
-        "comment, language FROM jobs WHERE id = %s", (job_id,))
+        "description_status, description_source, remote_verdict, remote_reason, remote_advice, score, "
+        "summary, comment, language FROM jobs WHERE id = %s", (job_id,))
     keys = ("id", "stage", "first_seen_at", "last_seen_at", "posted_at", "canonical_url",
             "description", "description_status", "description_source", "remote_verdict",
-            "remote_reason", "score", "summary", "comment", "language")
+            "remote_reason", "remote_advice", "score", "summary", "comment", "language")
     return dict(zip(keys, cur.fetchone()))
 
 
@@ -112,11 +112,12 @@ def merge_jobs(conn, a: str, b: str) -> str:
         cur.execute(
             "UPDATE jobs SET remote_verdict = COALESCE(remote_verdict, %s), "
             "remote_reason = CASE WHEN remote_reason = '' THEN %s ELSE remote_reason END, "
+            "remote_advice = CASE WHEN remote_advice = '' THEN %s ELSE remote_advice END, "
             "score = COALESCE(score, %s), summary = CASE WHEN summary = '' THEN %s ELSE summary END, "
             "comment = CASE WHEN comment = '' THEN %s ELSE comment END, "
             "language = COALESCE(language, %s) WHERE id = %s",
-            (drop["remote_verdict"], drop["remote_reason"], drop["score"], drop["summary"],
-             drop["comment"], drop["language"], keep["id"]))
+            (drop["remote_verdict"], drop["remote_reason"], drop["remote_advice"], drop["score"],
+             drop["summary"], drop["comment"], drop["language"], keep["id"]))
         cur.execute("DELETE FROM jobs WHERE id = %s", (drop["id"],))
     return keep["id"]
 

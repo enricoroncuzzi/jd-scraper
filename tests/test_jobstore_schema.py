@@ -63,7 +63,7 @@ def test_jobs_has_the_spec_columns(store_conn):
         "id", "canonical_url", "title", "company", "company_norm", "title_norm", "country",
         "location_raw", "work_mode", "posted_at", "first_seen_at", "last_seen_at",
         "description", "description_status", "description_source", "language", "tier",
-        "remote_verdict", "remote_reason", "score", "summary", "comment",
+        "remote_verdict", "remote_reason", "remote_advice", "score", "summary", "comment",
         "application_channel", "stage", "stage_reason", "attempts", "next_attempt_at",
         "delivered_at", "alerted_at", "archived_at", "posted_text",
     }
@@ -101,6 +101,14 @@ def _insert_job(conn, **overrides):
         cur.execute(f"INSERT INTO jobs ({columns}) VALUES ({placeholders}) RETURNING id",
                     list(values.values()))
         return cur.fetchone()[0]
+
+
+@pytest.mark.parametrize("verdict", ["confirmed", "advised", "not_stated", "rejected",
+                                    "not_checked", "unconfirmed"])
+def test_every_shipped_verdict_is_accepted_by_the_store(store_conn, verdict):
+    # `unconfirmed` is the legacy value old rows carry; `advised`/`not_stated`
+    # arrived 2026-10-18 and the constraint was rewritten for them.
+    _insert_job(store_conn, remote_verdict=verdict)
 
 
 @pytest.mark.parametrize("overrides", [
@@ -217,3 +225,23 @@ def test_init_store_takes_no_schema_lock_when_the_schema_is_current(
     finally:
         for conn in (reader, starter, admin):
             conn.close()
+
+
+def test_an_old_verdict_constraint_is_upgraded_in_place(store_conn):
+    """Deploy path for 2026-10-18: an existing store only allowed the four old
+    verdicts, so the new one is dropped and recreated by the same init_store."""
+    with store_conn.cursor() as cur:
+        cur.execute("ALTER TABLE jobs DROP CONSTRAINT jobs_remote_verdict_chk")
+        cur.execute(
+            "ALTER TABLE jobs ADD CONSTRAINT jobs_remote_verdict_chk CHECK (remote_verdict IS NULL "
+            "OR remote_verdict IN ('confirmed','rejected','unconfirmed','not_checked'))")
+        cur.execute("DELETE FROM kv_state WHERE key = 'schema_version'")
+    store_conn.commit()
+
+    init_store(store_conn)
+
+    _insert_job(store_conn, remote_verdict="advised")
+    _insert_job(store_conn, remote_verdict="not_stated")
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT value FROM kv_state WHERE key = 'schema_version'")
+        assert cur.fetchone()[0] == schema_fingerprint()

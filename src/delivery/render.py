@@ -65,7 +65,8 @@ def render_rejected(jobs: list[DeliveryJob], digest_day: date, tier: int) -> str
     """The audit trail of what the remote check threw out, written even when empty."""
     lines = [f"# Rejected by remote verification - {digest_day.isoformat()} (tier {tier})\n"]
     if not jobs:
-        lines.append("None. Every offer was confirmed or left unconfirmed.\n")
+        lines.append("None. Every offer was confirmed, advised or left with its work mode "
+                     "unstated.\n")
     else:
         for job in jobs:
             lines.append(f"- **{job.title} - {job.company}** · {job.location_raw} · "

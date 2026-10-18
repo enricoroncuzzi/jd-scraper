@@ -19,7 +19,10 @@ import json
 
 STAGES = ("seen", "described", "filtered_out", "scored", "delivered", "expired")
 DESCRIPTION_STATUSES = ("ok", "pending", "rate_limited", "failed")
-REMOTE_VERDICTS = ("confirmed", "rejected", "unconfirmed", "not_checked")
+# The verdict vocabulary (src/remote_verdicts.py). `advised` and `not_stated`
+# arrived 2026-10-18; `unconfirmed` is the legacy value old rows still carry and
+# is read as not_stated everywhere.
+REMOTE_VERDICTS = ("confirmed", "advised", "not_stated", "rejected", "not_checked", "unconfirmed")
 
 DDL: list[str] = [
     """
@@ -69,6 +72,7 @@ DDL: list[str] = [
         tier                SMALLINT,
         remote_verdict      TEXT,
         remote_reason       TEXT NOT NULL DEFAULT '',
+        remote_advice       TEXT NOT NULL DEFAULT '',
         score               SMALLINT,
         summary             TEXT NOT NULL DEFAULT '',
         comment             TEXT NOT NULL DEFAULT '',
@@ -89,7 +93,8 @@ DDL: list[str] = [
             description_status IN ('ok','pending','rate_limited','failed')),
         CONSTRAINT jobs_remote_verdict_chk CHECK (
             remote_verdict IS NULL
-            OR remote_verdict IN ('confirmed','rejected','unconfirmed','not_checked')),
+            OR remote_verdict IN (
+                'confirmed','advised','not_stated','rejected','not_checked','unconfirmed')),
         CONSTRAINT jobs_score_chk CHECK (score IS NULL OR score BETWEEN 1 AND 10)
     )
     """,
@@ -100,6 +105,21 @@ DDL: list[str] = [
     """CREATE INDEX IF NOT EXISTS jobs_unarchived_idx ON jobs (stage)
        WHERE archived_at IS NULL AND stage IN ('scored', 'delivered', 'expired')""",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_text TEXT",
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS remote_advice TEXT NOT NULL DEFAULT ''",
+    # 2026-10-18 verdict split: the existing constraint only allowed the four old
+    # values, so `advised`/`not_stated` writes would fail on a live store. The
+    # DDL fingerprint changes, so init_store runs this once on deploy. One
+    # statement, because two services starting together (a rolling restart) must
+    # not race a DROP and an ADD into a duplicate-constraint error.
+    """DO $$
+    BEGIN
+        ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_remote_verdict_chk;
+        ALTER TABLE jobs ADD CONSTRAINT jobs_remote_verdict_chk CHECK (
+            remote_verdict IS NULL
+            OR remote_verdict IN (
+                'confirmed','advised','not_stated','rejected','not_checked','unconfirmed'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$""",
     """
     CREATE TABLE IF NOT EXISTS sightings (
         id            BIGSERIAL PRIMARY KEY,
