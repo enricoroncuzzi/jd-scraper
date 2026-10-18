@@ -142,12 +142,12 @@ def test_an_open_scope_is_confirmed_even_when_the_office_is_in_a_foreign_country
     assert result.verdict == CONFIRMED and result.advice == ""
 
 
-def test_a_company_hq_sentence_does_not_override_an_open_scope():
-    result = classify("This is a fully remote role open to candidates across Europe. "
-                      "Our company is based in Berlin, Germany.",
-                      title="AI Engineer", location="Berlin, Germany",
+def test_a_title_word_containing_reside_is_not_a_condition():
+    result = classify("This is a fully remote role. Our Vice Presidents in Germany lead the team.",
+                      title="AI Engineer", location="Milan, Italy",
                       require_italy_eligibility=True)
-    assert result.verdict == CONFIRMED and result.advice == ""
+    assert result.verdict == ADVISED
+    assert result.advice == "remote, no stated country restriction - check eligibility"
 
 
 @pytest.mark.parametrize("text,verdict,advice", [
@@ -159,19 +159,16 @@ def test_a_company_hq_sentence_does_not_override_an_open_scope():
     ("Many of us work in Poland. This is a fully remote role. Offices in Italy. "
      "You must reside in Poland.", ADVISED, "remote, limited to Poland - check eligibility"),
     ("This is a fully remote role for residents of Italy. Our HQ is in London.", CONFIRMED, ""),
-    ("This is a fully remote role across our Europe-wide team. You must reside in one of:\n"
-     "Germany\nSpain\nWe ship tooling for engineers.", ADVISED,
-     "remote, limited to Germany or Spain - check eligibility"),
     ("This is a fully remote role. Open to candidates living in Italy only.", CONFIRMED, ""),
-    ("This is a fully remote role open to candidates across Europe. Our team members live in "
-     "Germany, Spain and Portugal.", CONFIRMED, ""),
-    ("This is a fully remote role. Most of us live in Berlin, Germany, and we hire across "
-     "the EU.", CONFIRMED, ""),
     ("This is a fully remote role. Candidates must live in Italy.", CONFIRMED, ""),
     ("This is a fully remote role. Candidates must live in Germany.", ADVISED,
-     "remote, based in Germany - check eligibility"),
-    ("This is a fully remote role open to candidates across Europe. We build an app that "
-     "helps people living in Germany find a doctor.", CONFIRMED, ""),
+     "remote, limited to Germany - check eligibility"),
+    ("This is a fully remote role. Candidates must live in Germany. We are a leading AI "
+     "company in Europe.", ADVISED, "remote, limited to Germany - check eligibility"),
+    ("This is a fully remote role. UK citizens only. We serve clients across Europe.", ADVISED,
+     "remote, limited to the UK - check eligibility"),
+    ("This is a fully remote role, open to candidates in Spain only. Our offices are in Italy.",
+     ADVISED, "remote, limited to Spain - check eligibility"),
     ("This is a fully remote role. You must have the right to work in the UK.", ADVISED,
      "remote, limited to the UK - check eligibility"),
     ("This is a fully remote role. You must reside in Germany or Italy.", CONFIRMED, ""),
@@ -199,6 +196,18 @@ def test_a_residency_condition_decides_eligibility_before_any_incidental_scope(
 @pytest.mark.parametrize("text", [
     "This is a fully remote role. You must reside in Germany, not Italy.",
     "This is a fully remote role. Security clearance required.",
+    "This is a fully remote role across our Europe-wide team. You must reside in one of:\n"
+    "Germany\nSpain\nWe ship tooling for engineers.",
+    "This is a fully remote role open to candidates across Europe. Our team members live in "
+    "Germany, Spain and Portugal.",
+    "This is a fully remote role. Most of us live in Berlin, Germany, and we hire across the EU.",
+    "This is a fully remote role open to candidates across Europe. We build an app that "
+    "helps people living in Germany find a doctor.",
+    "This is a fully remote role, open to candidates living in Spain only. Our offices are "
+    "in Italy.",
+    "This is a fully remote role open to candidates across Europe. Our company is based in "
+    "Berlin, Germany.",
+    "This is a fully remote role across the EU. We cannot offer visa sponsorship.",
     "This is a fully remote role. Headquartered in Amsterdam, Netherlands, we need "
     "candidates who reside in the EU.",
 ])
