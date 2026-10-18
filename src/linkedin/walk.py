@@ -50,9 +50,10 @@ class WalkResult:
 
 def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
                     unfinished_only: bool = False) -> SliceRow | None:
-    """The next due slice of `source`: tier 1 first, oldest due first. One collector per
-    source, so no row lock. With `unfinished_only`, only slices whose last walk ended
-    unfinished (the resume timers) are considered."""
+    """The next due slice of `source`: the one due longest ago, whatever its tier, so
+    no tier can be starved; slices due at the same instant are taken in tier order
+    (tier 1 first). One collector per source, so no row lock. With `unfinished_only`,
+    only slices whose last walk ended unfinished (the resume timers) are considered."""
     query = (
         "SELECT id, role, area, tier, base_interval_seconds, interval_seconds, last_walked_at, "
         "consecutive_empty, resume_start FROM slices "
@@ -61,7 +62,7 @@ def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
     if unfinished_only:
         query += " AND stop_reason = ANY(%s)"
         params.append(list(RESUMABLE_STOPS))
-    query += " ORDER BY tier, due_at LIMIT 1"
+    query += " ORDER BY due_at, tier LIMIT 1"
     with conn.cursor() as cur:
         cur.execute(query, params)
         row = cur.fetchone()

@@ -182,7 +182,15 @@ def _slice_state(conn):
         return cur.fetchone()
 
 
-def test_claim_due_slice_orders_by_tier_then_due_time(store_conn):
+def _set_due(conn, hours_by_area: dict[str, float]) -> None:
+    with conn.cursor() as cur:
+        for area, hours in hours_by_area.items():
+            cur.execute("UPDATE slices SET due_at = %s WHERE area = %s",
+                        (NOW + timedelta(hours=hours), area))
+    conn.commit()
+
+
+def test_claim_due_slice_prefers_tier_one_at_equal_due_times(store_conn):
     sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Germany", 3, 12 * H),
                              SliceSpec("linkedin", "AI Engineer", "Italy", 1, 4 * H)], NOW)
     store_conn.commit()
@@ -190,6 +198,56 @@ def test_claim_due_slice_orders_by_tier_then_due_time(store_conn):
     with store_conn.cursor() as cur:
         cur.execute("UPDATE slices SET due_at = %s", (NOW + timedelta(hours=1),))
     assert claim_due_slice(store_conn, NOW) is None
+
+
+def test_claim_due_slice_takes_the_most_overdue_slice_across_tiers(store_conn):
+    # Never-walked tier 3 and tier 4 slices are older than a tier 1 slice that just
+    # became due; tier 1's 12 h cadence must not let it jump that backlog.
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
+                             SliceSpec("linkedin", "AI Engineer", "Austria", 3, 48 * H),
+                             SliceSpec("linkedin", "AI Engineer", "United Kingdom", 4, 24 * H)],
+                NOW)
+    store_conn.commit()
+    _set_due(store_conn, {"Austria": -72, "United Kingdom": -24, "Italy": -1})
+    assert claim_due_slice(store_conn, NOW).area == "Austria"
+    _set_due(store_conn, {"Austria": +47})
+    assert claim_due_slice(store_conn, NOW).area == "United Kingdom"
+    _set_due(store_conn, {"United Kingdom": +23})
+    assert claim_due_slice(store_conn, NOW).area == "Italy"
+
+
+def test_claim_due_slice_breaks_an_overdue_tie_by_tier(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "United Kingdom", 4, 24 * H),
+                             SliceSpec("linkedin", "AI Engineer", "Austria", 3, 48 * H),
+                             SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H)],
+                NOW)
+    store_conn.commit()
+    _set_due(store_conn, {"Austria": -48, "United Kingdom": -48, "Italy": -48})
+    assert claim_due_slice(store_conn, NOW).area == "Italy"
+    _set_due(store_conn, {"Italy": +12})
+    assert claim_due_slice(store_conn, NOW).area == "Austria"
+    _set_due(store_conn, {"Austria": +48})
+    assert claim_due_slice(store_conn, NOW).area == "United Kingdom"
+
+
+def test_claim_due_slice_with_unfinished_only_still_filters_and_orders_overdue_first(store_conn):
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
+                             SliceSpec("linkedin", "AI Engineer", "Austria", 3, 48 * H),
+                             SliceSpec("linkedin", "AI Engineer", "United Kingdom", 4, 24 * H)],
+                NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'rate_limited' WHERE area = 'Austria'")
+        cur.execute("UPDATE slices SET stop_reason = 'rate_limited' WHERE area = 'United Kingdom'")
+    store_conn.commit()
+    _set_due(store_conn, {"Austria": -48, "United Kingdom": -24, "Italy": -72})
+    row = claim_due_slice(store_conn, NOW, unfinished_only=True)
+    assert row.area == "Austria"  # Italy is the most overdue, but its walk finished
+    _set_due(store_conn, {"Austria": +48})
+    assert claim_due_slice(store_conn, NOW, unfinished_only=True).area == "United Kingdom"
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE slices SET stop_reason = 'end_of_results' WHERE area = 'United Kingdom'")
+    store_conn.commit()
+    assert claim_due_slice(store_conn, NOW, unfinished_only=True) is None
 
 
 def test_finishing_a_walk_schedules_the_next_one(store_conn):
