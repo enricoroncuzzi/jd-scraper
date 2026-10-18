@@ -230,6 +230,28 @@ def test_claim_due_slice_breaks_an_overdue_tie_by_tier(store_conn):
     assert claim_due_slice(store_conn, NOW).area == "United Kingdom"
 
 
+def test_claim_due_slice_lets_tiers_take_turns_through_a_backlog(store_conn):
+    # A tier 3 backlog all due before tier 1 and tier 4 must not hold them back until it
+    # drains: once tier 3 has been walked, the tier served longest ago goes next.
+    sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", area, 3, 48 * H)
+                             for area in ("Austria", "Belgium", "Croatia")]
+                + [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
+                   SliceSpec("linkedin", "AI Engineer", "United Kingdom", 4, 24 * H)], NOW)
+    store_conn.commit()
+    _set_due(store_conn, {"Austria": -96, "Belgium": -96, "Croatia": -96,
+                          "United Kingdom": -96, "Italy": -1})
+    done = WalkResult(pages=1, cards_seen=5, new_jobs=5, stop_reason="end_of_results",
+                      window=86400, next_start=0)
+    claimed = []
+    for minute in range(5):
+        at = NOW + timedelta(minutes=minute)
+        row = claim_due_slice(store_conn, at)
+        claimed.append(row.area)
+        finish_walk(store_conn, row, done, at, at)
+        store_conn.commit()
+    assert claimed == ["Austria", "United Kingdom", "Italy", "Belgium", "Croatia"]
+
+
 def test_claim_due_slice_with_unfinished_only_still_filters_and_orders_overdue_first(store_conn):
     sync_slices(store_conn, [SliceSpec("linkedin", "AI Engineer", "Italy", 1, 12 * H),
                              SliceSpec("linkedin", "AI Engineer", "Austria", 3, 48 * H),
