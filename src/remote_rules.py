@@ -36,12 +36,10 @@ from src.remote_verdicts import (
     CONFIRMED,
     NOT_STATED,
     REJECTED,
-    based_in_advice,
     country_in,
     limited_to_advice,
-    no_restriction_advice,
+    unrestricted_advice,
 )
-from src.tier_scope import resolve_country
 
 RULE_PREFIX = "rule: "
 # Below this the description is a fragment (a failed fetch, a title-only note),
@@ -49,8 +47,17 @@ RULE_PREFIX = "rule: "
 # about the posting. Those go to the model.
 _MIN_DESCRIPTION_CHARS = 200
 
+# "25 days of holiday, home office budget" is a benefits list, not office days:
+# the gap between the day count and the office word may not cross a leave word
+# or "home", and the office word may not be a budget or an allowance.
+_WORKPLACE_GAP = (r"(?:(?!holiday|leave|vacation|annual|ferie|vacanz|urlaub|vacaciones|cong[eé]|home)"
+                  r"[^.]){0,40}")
+_NOT_A_PERK = r"(?!\s*(?:budget|allowance|equipment|stipend))"
+
 # Confident hybrid / on-site. Every alternative is a workplace sentence, not a
-# word that only happens to be spelled the same way.
+# word that only happens to be spelled the same way: bare words such as
+# "presenza", "ibrido", "hybride", "Präsenz" or "vor Ort" also mean a market
+# presence, a hybrid cloud or a customer site, so they only reach the model.
 _CONFIDENT_HYBRID = re.compile(
     "|".join([
         r"#li-?hybrid",
@@ -64,24 +71,18 @@ _CONFIDENT_HYBRID = re.compile(
         r"(?:our|the|a)\s+hybrid\s+(?:model|approach|setup|set-?up|arrangement)\s+(?:to|of|for|where|with|in|is|means)\b",
         r"hybrid\s+(?:schedule|set-?up|basis|environment|arrangement)",
         r"work(?:ing)?\s+(?:in|on)\s+a\s+hybrid",
-        r"minimum\s+of\s+\w+\s+days?[^.]{0,40}(?:office|on-?site|ufficio|sede)",
+        rf"minimum\s+of\s+\w+\s+days?{_WORKPLACE_GAP}(?:office|on-?site|ufficio|sede){_NOT_A_PERK}",
         r"(?:\d+|two|three|four|five)\s*\+?\s*(?:days?|giorni|d[ií]as|jours|tage)"
-        r"[^.]{0,40}(?:office|ufficio|sede|oficina|bureau|b[uü]ro|on-?site)",
+        rf"{_WORKPLACE_GAP}(?:office|ufficio|sede|oficina|bureau|b[uü]ro|on-?site){_NOT_A_PERK}",
         r"(?:one|two|three|four|five)\s+days?\s+(?:a|per)\s+week\s+in\s+(?:the|our)\s+office",
-        r"presenza(?!\s+di)",
         r"in\s+ufficio",
         r"\bin\s+sede\b(?!\s+di)",
         r"modalit[aà]\s+ibrid",
         r"lavoro\s+ibrido",
-        r"\bibrid[oa]\b",
         r"modelo\s+h[ií]brido",
         r"modalidad\s+h[ií]brida",
-        r"\bhybride\b",
         r"\bsur\s+site\b",
         r"pr[eé]sentiel",
-        r"vor\s+ort",
-        r"pr[aä]senz(?:tag|tage|pflicht)?",
-        r"im\s+b[uü]ro",
     ]),
     re.IGNORECASE,
 )
@@ -252,6 +253,10 @@ def _eligibility(text: str, location: str, *, require_italy_eligibility: bool) -
             return CONFIRMED, ""
         if country:
             return ADVISED, limited_to_advice(country)
+    # An explicit open scope wins over a residency-looking sentence, which is
+    # often only the company HQ ("our company is based in Berlin").
+    if _OPEN_SCOPE.search(text):
+        return CONFIRMED, ""
     residency = _RESIDENCY.search(text)
     if residency:
         window = text[max(0, residency.start() - 60):residency.end() + 60]
@@ -260,22 +265,7 @@ def _eligibility(text: str, location: str, *, require_italy_eligibility: bool) -
             return CONFIRMED, ""
         if country:
             return ADVISED, limited_to_advice(country)
-        if _OPEN_SCOPE.search(window):
-            return CONFIRMED, ""
-        # "based in London" names a city, not a country; the location field does.
-        resolved = resolve_country(location)
-        localized = (country_in(resolved) if resolved else None) or country_in(location)
-        if localized and localized != "Italy":
-            return ADVISED, based_in_advice(localized)
-        return ADVISED, no_restriction_advice()
-    if _OPEN_SCOPE.search(text):
-        return CONFIRMED, ""
-    resolved = resolve_country(location)
-    country = (country_in(resolved) if resolved else None) or country_in(location)
-    if country and country != "Italy":
-        return ADVISED, based_in_advice(country)
-    return ADVISED, no_restriction_advice()
-
+    return ADVISED, unrestricted_advice(location)
 
 def classify(
     description: str,

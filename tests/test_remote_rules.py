@@ -86,7 +86,7 @@ def test_it_still_rejects_the_clear_hybrid_and_on_site_phrases():
     ("This is a fully on-site role in Milan.", REJECTED),
     ("Modelo híbrido de trabajo, 2 días en la oficina.", REJECTED),
     ("Présentiel, trois jours au bureau.", REJECTED),
-    ("Vor Ort in München, keine Remote-Option.", REJECTED),
+    ("Vor Ort in München, keine Remote-Option.", None),  # also a customer site: the model decides
     ("Lavoro in presenza, 5 giorni in ufficio.", REJECTED),
     ("Hybrid search and hybrid cloud infrastructure.", None),  # not a work mode
     ("Remote sensing engineer for satellite imagery.", None),
@@ -95,6 +95,23 @@ def test_it_still_rejects_the_clear_hybrid_and_on_site_phrases():
 def test_confident_phrases_in_five_languages(text, expected):
     result = classify(text, title="AI Engineer", location="Milan, Italy")
     assert (result.verdict if result else None) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Azienda leader con una forte presenza internazionale nel settore dell'energia.",
+    "We are a remote company. Benefits: 25 days of holiday, home office equipment budget.",
+    "Lavorerai su un'architettura cloud ibrida basata su Kubernetes.",
+    "Wir entwickeln hybride Cloud-Lösungen für den Mittelstand.",
+    "Starke Marktpräsenz in der DACH-Region.",
+    "Sie betreuen unsere Kunden vor Ort bei der Einführung.",
+    "Du arbeitest eng mit dem Team im Büro und remote zusammen.",
+    "Remote-first. Perks: 30 days of annual leave, a 500 EUR office allowance.",
+])
+def test_non_workplace_wording_is_never_rejected_by_rule(text):
+    filler = " We build retrieval pipelines in Python and evaluate language models daily." * 3
+    result = classify(text + filler, title="AI Engineer", location="Milan, Italy",
+                      require_italy_eligibility=True)
+    assert result is None or result.verdict != REJECTED
 
 
 def test_a_description_with_no_work_mode_word_is_not_stated_without_a_model():
@@ -120,6 +137,14 @@ def test_an_explicit_country_limit_is_advised_not_rejected_in_tiers_three_and_fo
 
 def test_an_open_scope_is_confirmed_even_when_the_office_is_in_a_foreign_country():
     result = classify("Fully remote. You may work from anywhere in Europe.",
+                      title="AI Engineer", location="Berlin, Germany",
+                      require_italy_eligibility=True)
+    assert result.verdict == CONFIRMED and result.advice == ""
+
+
+def test_a_company_hq_sentence_does_not_override_an_open_scope():
+    result = classify("This is a fully remote role open to candidates across Europe. "
+                      "Our company is based in Berlin, Germany.",
                       title="AI Engineer", location="Berlin, Germany",
                       require_italy_eligibility=True)
     assert result.verdict == CONFIRMED and result.advice == ""

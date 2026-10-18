@@ -16,7 +16,7 @@ from src.remote_verifier import (
     _GROQ_PROACTIVE_DAILY_TOKEN_LIMIT,
     _GROQ_TPD_HEADROOM_TOKENS,
     _MAX_DESC_CHARS,
-    _VerdictOutput,
+    _AnswerOutput,
     _extract_policy_excerpt,
     _is_daily_quota_exceeded,
     _openrouter_verification_daily_request_cap,
@@ -24,6 +24,13 @@ from src.remote_verifier import (
     verify_offers,
 )
 from src.llm_limits import Limit
+
+
+# Answers in the two-field shape. Each quote is text the default _offer shows.
+_REMOTE = {"work_mode": "remote", "eligibility": "open", "quote": "fully remote across the EU"}
+_HYBRID = {"work_mode": "hybrid", "eligibility": "not_stated", "quote": "across the EU"}
+_SILENT = {"work_mode": "not_stated", "eligibility": "not_stated", "quote": ""}
+_ANSWERS = {"confirmed": _REMOTE, "rejected": _HYBRID, "unconfirmed": _SILENT}
 
 
 def _offer(offer_id, description="We are fully remote across the EU.", status="ok"):
@@ -58,9 +65,9 @@ def _mock_groq(monkeypatch, payloads):
 
 def test_parses_all_three_verdicts(monkeypatch):
     _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "confirmed", "reason": "States remote anywhere in the EU."},
-        {"id": 2, "verdict": "rejected", "reason": "Requires two days per week on site."},
-        {"id": 3, "verdict": "unconfirmed", "reason": "Says remote without naming a country."},
+        {"id": 1, **_REMOTE, "reason": "States remote anywhere in the EU."},
+        {"id": 2, **_HYBRID, "reason": "Requires two days per week on site."},
+        {"id": 3, **_SILENT, "reason": "Says remote without naming a country."},
     ]}])
 
     verified, usage = verify_offers([_offer(1), _offer(2), _offer(3)], True, "key")
@@ -106,7 +113,7 @@ def test_missing_api_key_degrades_the_whole_stage(monkeypatch):
 
 def test_offer_missing_from_the_response_becomes_unconfirmed(monkeypatch):
     _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "confirmed", "reason": "Remote anywhere in the EU."},
+        {"id": 1, **_REMOTE, "reason": "Remote anywhere in the EU."},
     ]}])
 
     verified, _ = verify_offers([_offer(1), _offer(2)], True, "key")
@@ -118,7 +125,7 @@ def test_offer_missing_from_the_response_becomes_unconfirmed(monkeypatch):
 
 def test_italy_eligibility_flag_reaches_the_prompt(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "confirmed", "reason": "Remote anywhere in the EU."},
+        {"id": 1, **_REMOTE, "reason": "Remote anywhere in the EU."},
     ]}])
 
     verify_offers([_offer(1)], True, "key")
@@ -132,7 +139,7 @@ def test_italy_eligibility_flag_reaches_the_prompt(monkeypatch):
 def test_returns_every_offer_in_input_order(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     _mock_groq(monkeypatch, [{"offers": [
-        {"id": i, "verdict": "confirmed", "reason": "Remote."} for i in range(1, 13)
+        {"id": i, **_REMOTE, "reason": "Remote."} for i in range(1, 13)
     ]}])
 
     offers = [_offer(i) for i in range(1, 13)]
@@ -177,7 +184,8 @@ def test_content_free_fallback_description_short_circuits_without_a_call(monkeyp
 
 def test_a_real_partial_description_is_still_verified(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "rejected", "reason": "Requires three days on site."},
+        {"id": 1, "work_mode": "onsite", "quote": "three days a week on site",
+         "reason": "Requires three days on site."},
     ]}])
 
     offer = _offer(1, description="AI Engineer at Acme, three days a week on site.",
@@ -219,9 +227,10 @@ def test_client_construction_failure_with_nothing_to_check_is_not_degraded(monke
 
 def test_mixed_case_verdicts_are_normalized(monkeypatch):
     _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "Confirmed", "reason": "States remote anywhere in the EU."},
-        {"id": 2, "verdict": " REJECTED ", "reason": "Requires two days per week on site."},
-        {"id": 3, "verdict": "Unconfirmed", "reason": "Says remote without naming a country."},
+        {"id": 1, **_REMOTE, "work_mode": "Remote", "eligibility": " OPEN ",
+         "reason": "States remote anywhere in the EU."},
+        {"id": 2, **_HYBRID, "work_mode": " HYBRID ", "reason": "Requires two days per week on site."},
+        {"id": 3, **_SILENT, "work_mode": "Not_Stated", "reason": "Says remote without naming a country."},
     ]}])
 
     verified, _ = verify_offers([_offer(1), _offer(2), _offer(3)], True, "key")
@@ -235,7 +244,19 @@ def test_mixed_case_verdicts_are_normalized(monkeypatch):
 
 def test_an_unknown_verdict_word_still_falls_back_to_unconfirmed(monkeypatch):
     _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "maybe", "reason": "Who knows."},
+        {"id": 1, "work_mode": "maybe", "reason": "Who knows."},
+    ]}])
+
+    verified, _ = verify_offers([_offer(1)], True, "key")
+
+    assert verified[0].remote_verdict == "not_stated"
+    assert verified[0].remote_reason == _DEGRADED_REASON
+
+
+def test_an_old_one_field_answer_counts_as_missing_and_is_deferred(monkeypatch):
+    # The pre-2026-10-18 shape carries no quote, so it cannot be checked.
+    _mock_groq(monkeypatch, [{"offers": [
+        {"id": 1, "verdict": "rejected", "reason": "On site."},
     ]}])
 
     verified, _ = verify_offers([_offer(1)], True, "key")
@@ -316,7 +337,7 @@ def test_extract_policy_excerpt_never_exceeds_the_budget_including_joiners():
 def test_offers_are_verified_in_batches_of_batch_size(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     calls = _mock_groq(monkeypatch, [
-        {"offers": [{"id": i, "verdict": "confirmed", "reason": "Remote."} for i in range(1, 21)]}
+        {"offers": [{"id": i, **_REMOTE, "reason": "Remote."} for i in range(1, 21)]}
     ])
 
     offers = [_offer(i) for i in range(1, 21)]
@@ -384,7 +405,7 @@ def test_verify_batch_still_retries_a_transient_per_minute_throttle(monkeypatch)
     ok_response = MagicMock()
     ok_response.choices = [MagicMock()]
     ok_response.choices[0].message.content = json.dumps(
-        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]}
+        {"offers": [{"id": 1, **_REMOTE, "reason": "Remote."}]}
     )
     ok_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1, total_tokens=2)
     client.chat.completions.create.side_effect = [_rate_limit_error(_TPM_MESSAGE), ok_response]
@@ -405,7 +426,7 @@ def test_verify_batch_counts_tokens_from_a_malformed_response_before_retrying(mo
     valid = MagicMock()
     valid.choices = [MagicMock()]
     valid.choices[0].message.content = json.dumps(
-        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]}
+        {"offers": [{"id": 1, **_REMOTE, "reason": "Remote."}]}
     )
     valid.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
     client.chat.completions.create.side_effect = [malformed, valid]
@@ -429,7 +450,7 @@ def test_json_validate_failed_retries_groq_only_once_then_succeeds(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     calls = _mock_groq(monkeypatch, [
         _json_validate_error(),
-        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]},
+        {"offers": [{"id": 1, **_REMOTE, "reason": "Remote."}]},
     ])
 
     verified, usage = verify_offers([_offer(1)], True, "key")
@@ -442,7 +463,7 @@ def test_json_validate_failed_retries_groq_only_once_then_succeeds(monkeypatch):
 def test_openrouter_failure_falls_back_to_groq(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     calls = _mock_groq(monkeypatch, [
-        {"offers": [{"id": 1, "verdict": "rejected", "reason": "On site."}]},
+        {"offers": [{"id": 1, **_HYBRID, "reason": "On site."}]},
     ])
     or_chain = _mock_openrouter(monkeypatch, RuntimeError("openrouter down"))
 
@@ -460,7 +481,7 @@ def test_openrouter_failure_falls_back_to_groq(monkeypatch):
 def test_one_openrouter_batch_failure_does_not_stick(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     calls = _mock_groq(monkeypatch, [
-        {"offers": [{"id": i, "verdict": "confirmed", "reason": "Remote."} for i in range(1, 9)]},
+        {"offers": [{"id": i, **_REMOTE, "reason": "Remote."} for i in range(1, 9)]},
     ])
     or_chain = _mock_openrouter(monkeypatch, [
         RuntimeError("openrouter down"),
@@ -478,7 +499,7 @@ def test_one_openrouter_batch_failure_does_not_stick(monkeypatch):
 def test_two_consecutive_openrouter_failures_stop_openrouter(monkeypatch):
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     calls = _mock_groq(monkeypatch, [
-        {"offers": [{"id": i, "verdict": "rejected", "reason": "On site."} for i in range(1, 9)]},
+        {"offers": [{"id": i, **_HYBRID, "reason": "On site."} for i in range(1, 9)]},
     ])
     or_chain = _mock_openrouter(monkeypatch, RuntimeError("openrouter down"))
 
@@ -493,7 +514,7 @@ def test_two_consecutive_openrouter_failures_stop_openrouter(monkeypatch):
 # --- OpenRouter failover -----------------------------------------------------
 
 def _mock_openrouter(monkeypatch, side_effects):
-    """side_effects: list of _VerdictOutput instances or Exceptions returned by
+    """side_effects: list of _AnswerOutput instances or Exceptions returned by
     successive chain.invoke() calls, one per OpenRouter batch."""
     chain = MagicMock()
     chain.invoke.side_effect = side_effects
@@ -502,8 +523,8 @@ def _mock_openrouter(monkeypatch, side_effects):
 
 
 def _verdict_output(items):
-    return _VerdictOutput(offers=[
-        {"id": i, "verdict": v, "reason": "r"} for i, v in items
+    return _AnswerOutput(offers=[
+        {"id": i, **_ANSWERS[v], "reason": "r"} for i, v in items
     ])
 
 
@@ -517,7 +538,7 @@ def test_openrouter_quota_fails_over_the_rest_of_the_run_to_groq(monkeypatch):
         _openrouter_daily_cap_error(),
     ])
     calls = _mock_groq(monkeypatch, [
-        {"offers": [{"id": i, "verdict": "rejected", "reason": "r"} for i in range(9, 17)]},
+        {"offers": [{"id": i, **_HYBRID, "reason": "r"} for i in range(9, 17)]},
         _rate_limit_error(_TPD_MESSAGE),
     ])
 
@@ -553,7 +574,7 @@ def test_proactive_groq_ceiling_blocks_the_fallback(monkeypatch):
 
 def test_spent_openrouter_share_falls_back_to_groq(monkeypatch):
     calls = _mock_groq(monkeypatch, [
-        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "Remote."}]},
+        {"offers": [{"id": 1, **_REMOTE, "reason": "Remote."}]},
     ])
     or_chain = _mock_openrouter(monkeypatch, [])
 
@@ -768,7 +789,7 @@ def _mock_groq_selective(monkeypatch, should_fail):
         response = MagicMock()
         response.choices = [MagicMock()]
         response.choices[0].message.content = json.dumps(
-            {"offers": [{"id": i, "verdict": "confirmed", "reason": "r"} for i in ids]}
+            {"offers": [{"id": i, **_REMOTE, "reason": "r"} for i in ids]}
         )
         response.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
         return response
@@ -814,7 +835,7 @@ def test_a_single_stray_batch_failure_in_a_large_tier_does_not_flip_degraded(mon
 
 def test_healthy_run_uses_openrouter_and_does_not_call_groq(monkeypatch):
     calls = _mock_groq(monkeypatch, [{"offers": [
-        {"id": 1, "verdict": "confirmed", "reason": "r"},
+        {"id": 1, **_REMOTE, "reason": "r"},
     ]}])
     or_chain = _mock_openrouter(monkeypatch, [_verdict_output([(1, "confirmed")])])
 
@@ -832,7 +853,7 @@ def test_batch_pause_is_applied_between_consecutive_groq_batches(monkeypatch):
     sleeps = []
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: sleeps.append(s))
     _mock_groq(monkeypatch, [
-        {"offers": [{"id": i, "verdict": "confirmed", "reason": "r"} for i in range(1, 9)]},
+        {"offers": [{"id": i, **_REMOTE, "reason": "r"} for i in range(1, 9)]},
     ])
 
     verify_offers([_offer(i) for i in range(1, 17)], True, "key")  # 2 batches
@@ -903,7 +924,7 @@ def test_each_groq_verification_batch_is_recorded():
     response.model = "openai/gpt-oss-20b"
     response.choices = [MagicMock()]
     response.choices[0].message.content = json.dumps(
-        {"offers": [{"id": 1, "verdict": "confirmed", "reason": "States remote."}]}
+        {"offers": [{"id": 1, **_REMOTE, "reason": "States remote."}]}
     )
     response.usage = MagicMock(prompt_tokens=30, completion_tokens=5, total_tokens=35)
     client.chat.completions.create.return_value = response
@@ -1048,7 +1069,7 @@ def test_a_larger_batch_size_means_fewer_openrouter_requests(monkeypatch):
     def fake_openrouter(chain, batch, require_italy, usage, allowed):
         calls.append(len(batch))
         usage["openrouter_requests"] += 1
-        return {o.id: rv._VerdictItem(id=o.id, verdict="confirmed", reason="ok") for o in batch}
+        return {o.id: rv._ResolvedVerdict(verdict="confirmed", reason="ok") for o in batch}
 
     monkeypatch.setattr(rv, "_openrouter_chain", lambda key: object())
     monkeypatch.setattr(rv, "_verify_batch_openrouter", fake_openrouter)
@@ -1068,7 +1089,7 @@ def test_a_large_batch_that_falls_back_to_groq_is_sent_in_chunks_of_eight(monkey
 
     def fake_groq(client, batch, require_italy, usage=None):
         chunks.append(len(batch))
-        return {o.id: rv._VerdictItem(id=o.id, verdict="unconfirmed", reason="x") for o in batch}, usage
+        return {o.id: rv._ResolvedVerdict(verdict="not_stated", reason="x") for o in batch}, usage
 
     monkeypatch.setattr(rv, "_client", lambda key: object())
     monkeypatch.setattr(rv, "_verify_batch", fake_groq)

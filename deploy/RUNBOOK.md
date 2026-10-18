@@ -203,6 +203,12 @@ loses nothing.
   scan over the jobs table, a few seconds at production size) and adds `remote_advice`. The
   fingerprint then matches, so later starts do no DDL. The pacing change has its own order
   below.
+- Rolling back past the 2026-10-18 remote-verdict release is not a plain code rollback: older
+  code cannot read `advised` or `not_stated`, and `jds-deliver` would fail on the first such
+  row. Stop `jds-process` and `jds-deliver`, run
+  `psql jds -c "UPDATE jobs SET remote_verdict = 'unconfirmed' WHERE remote_verdict IN ('advised','not_stated');"`,
+  then check out the older commit and start the units again. The `remote_advice` column can
+  stay; older code ignores it.
 - Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
 
 ### The LinkedIn pace and schedule gate

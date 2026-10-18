@@ -11,7 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.models import JobOffer
-from src.remote_verifier import _description_for_prompt, _quote_found, verify_offers
+from src.remote_rules import classify
+from src.remote_verifier import (
+    _PROMPT_DESCRIPTION_BUDGET_CHARS,
+    _description_for_prompt,
+    _per_offer_budget,
+    _quote_found,
+    verify_offers,
+)
 
 DESCRIPTION = ("Acme builds developer tools. This role is fully remote across Europe. "
                "You will work with Python and PyTorch on retrieval pipelines every day.")
@@ -40,10 +47,11 @@ def _mock(monkeypatch, items):
     return seen
 
 
-def _run(monkeypatch, item, *, require_italy, description=DESCRIPTION):
+def _run(monkeypatch, item, *, require_italy, description=DESCRIPTION, offer=None):
     items = [{"id": 1, **item}]
     _mock(monkeypatch, items)
-    verified, _usage = verify_offers([_offer(description=description)], require_italy, "key")
+    verified, _usage = verify_offers([offer or _offer(description=description)],
+                                     require_italy, "key")
     return verified[0]
 
 
@@ -72,11 +80,53 @@ def test_remote_limited_to_another_country_is_advised_never_rejected(monkeypatch
 
 
 def test_remote_without_a_stated_restriction_is_advised_in_tier_three(monkeypatch):
+    offer = _offer()
+    offer.location = "Remote"
     job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
                              "quote": "fully remote across Europe"},
-               require_italy=True)
+               require_italy=True, offer=offer)
     assert job.remote_verdict == "advised"
     assert job.remote_advice == "remote, no stated country restriction - check eligibility"
+
+
+@pytest.mark.parametrize("require_italy", [True, False])
+def test_plain_remote_gets_the_same_verdict_from_the_rules_and_the_model(monkeypatch, require_italy):
+    """D3: plain 'Remote' with no country named is advised in tiers 3/4 and
+    confirmed in tier 1, whichever layer reaches it first."""
+    description = ("This is a fully remote role. You will build retrieval pipelines with "
+                   "Python and PyTorch and ship evaluation tooling for our product teams.")
+    offer = _offer(description=description)
+    offer.location = "London, United Kingdom"
+    ruled = classify(description, title=offer.title, location=offer.location,
+                     require_italy_eligibility=require_italy)
+    # The answer the prompt asks for on this posting: remote, no country stated.
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
+                             "quote": "fully remote role"},
+               require_italy=require_italy, offer=offer)
+    assert (job.remote_verdict, job.remote_advice) == (ruled.verdict, ruled.advice)
+    assert job.remote_verdict == ("advised" if require_italy else "confirmed")
+
+
+def test_a_remote_role_restricted_to_italy_is_confirmed(monkeypatch):
+    description = "Fully remote, open to residents of Italy only. Our HQ is in London, UK."
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": "open to residents of Italy only"},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
+def test_a_quote_taken_from_the_title_or_location_is_found(monkeypatch):
+    offer = JobOffer(id=1, title="Backend Engineer - REMOTE", company="Acme",
+                     location="Italy (Remote)", link="https://x/1",
+                     description="Great team, smart working and flexible hours. " * 5,
+                     description_status="ok")
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open", "quote": "REMOTE"},
+               require_italy=False, offer=offer)
+    assert job.remote_verdict == "confirmed"
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open",
+                             "quote": "Italy (Remote)"},
+               require_italy=True, offer=offer.model_copy(update={"remote_verdict": None}))
+    assert job.remote_verdict == "confirmed"
 
 
 def test_tier_one_does_not_need_the_eligibility_answer(monkeypatch):
@@ -142,14 +192,20 @@ def test_the_whole_description_reaches_the_model_not_a_1000_char_prefix(monkeypa
 
 def test_the_prompt_is_bounded_for_an_absurd_description():
     long = ("remote " * 5000) + "fully remote"
-    shown = _description_for_prompt(long)
-    assert len(shown) < 7500  # 6,000-char body plus a 1,000-char keyword appendix at most
+    assert len(_description_for_prompt(long)) <= 6000
+
+
+def test_a_full_batch_of_long_descriptions_stays_inside_the_shared_budget():
+    intro = "Acme builds developer tools for retrieval and evaluation. " * 60
+    late = " Work mode: this is a hybrid role with two days in the Milan office." * 3
+    budget = _per_offer_budget(8)
+    shown = [_description_for_prompt(intro + late + f" offer {n}", budget) for n in range(8)]
+    assert all("hybrid role" in text for text in shown)
+    assert sum(len(text) for text in shown) <= _PROMPT_DESCRIPTION_BUDGET_CHARS
 
 
 def test_a_full_batch_shares_one_description_budget_for_groq():
     """An 8-offer batch must stay inside Groq's 8,000-token/minute free plan."""
-    from src.remote_verifier import _per_offer_budget
-
     assert _per_offer_budget(8) == 3000
     assert _per_offer_budget(1) == 6000
     description = ("word " * 600) + "SENTINEL-LATE " + ("word " * 400)

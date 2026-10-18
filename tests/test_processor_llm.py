@@ -92,18 +92,13 @@ def test_tier_two_needs_no_remote_check(store_conn, cfg):
     assert _row(store_conn, job)[2:4] == ("not_checked", "")
 
 
-def test_only_the_hybrid_onsite_hint_shortcut_ships_on(cfg):
-    tier1, tier3 = cfg.policies[1], cfg.policies[3]
-    assert structured_verdict("onsite", "germany", tier3)[0] == "rejected"
-    assert structured_verdict("hybrid", "italy", tier1)[0] == "rejected"
-    # The confirm shortcuts measured 87.3% and 66.7%: below the project's 95% bar,
-    # so they stay off unless someone turns them on deliberately.
-    assert structured_verdict("remote_worldwide", None, tier3) is None
-    assert structured_verdict("remote", "italy", tier1) is None
-    assert structured_verdict(None, "italy", tier1) is None
-    assert structured_verdict("remote_worldwide", None, tier3, confirm_enabled=True)[0] == "confirmed"
-    assert structured_verdict("remote", "italy", tier1, confirm_enabled=True)[0] == "confirmed"
-    assert structured_verdict("remote", "italy", tier3, confirm_enabled=True) is None
+def test_only_the_hybrid_onsite_hint_is_a_shortcut():
+    assert structured_verdict("onsite")[0] == "rejected"
+    assert structured_verdict("hybrid")[0] == "rejected"
+    # The confirm cases measured 87.3% and 66.7%: below the project's 95% bar.
+    assert structured_verdict("remote_worldwide") is None
+    assert structured_verdict("remote") is None
+    assert structured_verdict(None) is None
 
 
 def test_the_hybrid_onsite_hint_settles_without_a_model_call(store_conn, cfg):

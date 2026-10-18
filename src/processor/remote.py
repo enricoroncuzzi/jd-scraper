@@ -15,7 +15,7 @@ with a warning (D3), `not_stated` is digest-only and never alerts (D1).
 from datetime import datetime
 
 from src.jobstore import budget
-from src.processor.config import ProcessorConfig, TierPolicy
+from src.processor.config import ProcessorConfig
 from src.processor.llm_stages import (
     LlmKeys, budget_open, due_batch, retry_delay, to_offers, waiting_rows,
 )
@@ -28,24 +28,16 @@ from src.remote_verifier import _DEGRADED_REASON, verify_offers
 STRUCTURED_REASON = "Source states the work mode."
 
 
-def structured_verdict(remote_hint: str | None, country: str | None,
-                       policy: TierPolicy, *, confirm_enabled: bool = False) -> tuple[str, str] | None:
+def structured_verdict(remote_hint: str | None) -> tuple[str, str] | None:
     """A verdict from the source's own work-mode field, or None to ask the model.
 
-    Rejected is safe in every tier that requires remote work, and the measured
-    agreement is 99.8% on 420 decided jobs. The confirm shortcuts stay behind a
-    separate switch: "remote_worldwide" agreed 87.3% and "remote" in Italy 66.7%,
-    both below the project's own 95% bar, so they are not used today.
+    Only hybrid/on-site is a shortcut: rejected is safe in every tier that
+    requires remote work, and the measured agreement is 99.8% on 420 decided
+    jobs. The confirm cases ("remote_worldwide" 87.3%, "remote" in Italy 66.7%)
+    are below the project's own 95% bar, so they always go to the model.
     """
     if remote_hint in ("hybrid", "onsite"):
-        return "rejected", f"{STRUCTURED_REASON} ({remote_hint})"
-    if not confirm_enabled:
-        return None
-    if remote_hint == "remote_worldwide":
-        # Remote with no country restriction satisfies both rules, Italy's included.
-        return "confirmed", f"{STRUCTURED_REASON} (remote, open worldwide)"
-    if remote_hint == "remote" and not policy.require_italy_eligibility and country == "italy":
-        return "confirmed", f"{STRUCTURED_REASON} (remote, located in Italy)"
+        return REJECTED, f"{STRUCTURED_REASON} ({remote_hint})"
     return None
 
 
@@ -62,9 +54,7 @@ def apply_deterministic_rules(conn, cfg: ProcessorConfig, now: datetime) -> int:
                 verdict = ("not_checked", "", "")
             else:
                 if cfg.structured_remote_enabled:
-                    structured = structured_verdict(
-                        row.remote_hint, row.country, policy,
-                        confirm_enabled=cfg.structured_remote_confirm_enabled)
+                    structured = structured_verdict(row.remote_hint)
                     if structured is not None:
                         verdict = (structured[0], structured[1], "")
                 if verdict is None and cfg.remote_rules_enabled:

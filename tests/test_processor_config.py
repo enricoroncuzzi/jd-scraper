@@ -23,9 +23,9 @@ def test_tiers_one_three_and_four_share_a_scoring_batch_but_tier_two_does_not():
 def test_the_shipped_switches_are_the_rule_pre_pass_and_the_reject_hint_shortcut():
     cfg = load_processor_config()
     # 2026-10-18: phrase rules and the hybrid/on-site source hint are on; the
-    # confirm shortcuts, the merged call and the paid/local model options stay off.
+    # merged call stays off.
     assert cfg.remote_rules_enabled is True and cfg.structured_remote_enabled is True
-    assert cfg.structured_remote_confirm_enabled is False and cfg.merged_call_enabled is False
+    assert cfg.merged_call_enabled is False
     assert all(policy.title_prefilter for policy in cfg.policies.values())
 
 
