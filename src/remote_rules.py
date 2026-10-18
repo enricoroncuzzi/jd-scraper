@@ -197,7 +197,8 @@ _RESIDENCY = re.compile(
         r"eligible\s+to\s+work\s+in",
         r"must\s+(?:be\s+)?(?:live|reside|residing|located|based)\s+in",
         r"reside(?:nt)?s?\s+(?:in|of)",
-        r"only\s+.{0,30}(?:uk|us|germany|france|spain|poland|netherlands)",
+        r"\bliv(?:e|ing)\s+in\b",
+        r"only\s+.{0,30}(?:uk|us|italy|germany|france|spain|poland|netherlands)",
         r"security\s+clearance",
         r"citizenship",
         r"work\s+permit",
@@ -234,6 +235,9 @@ def _first_confident(pattern: re.Pattern[str], text: str, *, suffix_guard: bool 
 
 
 _SENTENCE_ENDS = ".;!?\n"
+# "You must reside in one of:" followed by one country per line (Himalayas
+# descriptions keep their list items as lines): the list is part of the condition.
+_LIST_LINES = 5
 
 
 def stated_restriction(text: str) -> str | None:
@@ -246,8 +250,12 @@ def stated_restriction(text: str) -> str | None:
         left = max(text.rfind(end, 0, match.start()) for end in _SENTENCE_ENDS) + 1
         right = min((i for i in (text.find(end, match.end()) for end in _SENTENCE_ENDS)
                      if i != -1), default=len(text))
-        country = (country_in(text[match.start():right])
-                   or country_in(text[left:match.start()]))
+        after = text[match.start():right]
+        if (text[right:right + 1] == "\n"
+                and (after.rstrip().endswith(":") or not re.search(r"\w", text[match.end():right]))):
+            items = [line for line in text[right:].split("\n") if line.strip()][:_LIST_LINES]
+            after += "\n" + "\n".join(items)
+        country = country_in(after) or country_in(text[left:match.start()])
         if country:
             return country
     for match in _REMOTE_PAREN_COUNTRY.finditer(text):

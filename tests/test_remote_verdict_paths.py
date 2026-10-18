@@ -133,6 +133,20 @@ def test_a_restricted_answer_reads_the_country_from_the_restriction_sentence(
     assert (job.remote_verdict, job.remote_advice) == ("advised", advice)
 
 
+@pytest.mark.parametrize("description,verdict,advice", [
+    ("Remote. Open to candidates living in Italy only. We serve clients across Europe.",
+     "confirmed", ""),
+    ("Remote. Open to candidates living in Germany only. We serve clients across Europe.",
+     "advised", "remote, limited to Germany - check eligibility"),
+])
+def test_a_restricted_answer_confirms_italy_and_advises_another_country(
+        monkeypatch, description, verdict, advice):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+                             "quote": "Open to candidates living in"},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == (verdict, advice)
+
+
 def test_a_quote_taken_from_the_title_or_location_is_found(monkeypatch):
     offer = JobOffer(id=1, title="Backend Engineer - REMOTE", company="Acme",
                      location="Italy (Remote)", link="https://x/1",
