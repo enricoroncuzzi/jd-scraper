@@ -197,7 +197,7 @@ _RESIDENCY = re.compile(
         r"eligible\s+to\s+work\s+in",
         r"must\s+(?:be\s+)?(?:live|reside|residing|located|based)\s+in",
         r"reside(?:nt)?s?\s+(?:in|of)",
-        r"\bliv(?:e|ing)\s+in\b",
+        r"\b(?:candidates?|applicants?|you|those|people)\s+(?:who\s+)?(?:must\s+)?liv(?:e|ing)\s+in\b",
         r"only\s+.{0,30}(?:uk|us|italy|germany|france|spain|poland|netherlands)",
         r"security\s+clearance",
         r"citizenship",
@@ -238,6 +238,30 @@ _SENTENCE_ENDS = ".;!?\n"
 # "You must reside in one of:" followed by one country per line (Himalayas
 # descriptions keep their list items as lines): the list is part of the condition.
 _LIST_LINES = 5
+_LIST_ITEM_MAX_WORDS = 4
+
+
+def _list_items(text: str) -> str:
+    """The place names listed one per line at the start of `text`, stopping at
+    the first line that reads as prose ("About us", a sentence)."""
+    items = []
+    for line in (line.strip() for line in text.split("\n")):
+        if not line:
+            continue
+        if (len(items) == _LIST_LINES or line.endswith(".")
+                or len(line.split()) > _LIST_ITEM_MAX_WORDS
+                or not (country_in(line) or _OPEN_SCOPE.search(line))):
+            break
+        items.append(line)
+    return "\n".join(items)
+
+
+def _condition_country(window: str) -> str | None:
+    """Italy anywhere in a condition makes the role workable from Italy, even
+    when the condition also names other countries ("Germany or Italy")."""
+    if re.search(r"(?<![a-z])italy(?![a-z])", window.lower()):
+        return "Italy"
+    return country_in(window)
 
 
 def stated_restriction(text: str) -> str | None:
@@ -253,9 +277,8 @@ def stated_restriction(text: str) -> str | None:
         after = text[match.start():right]
         if (text[right:right + 1] == "\n"
                 and (after.rstrip().endswith(":") or not re.search(r"\w", text[match.end():right]))):
-            items = [line for line in text[right:].split("\n") if line.strip()][:_LIST_LINES]
-            after += "\n" + "\n".join(items)
-        country = country_in(after) or country_in(text[left:match.start()])
+            after += "\n" + _list_items(text[right:])
+        country = _condition_country(after) or _condition_country(text[left:match.start()])
         if country:
             return country
     for match in _REMOTE_PAREN_COUNTRY.finditer(text):

@@ -138,6 +138,10 @@ def test_a_restricted_answer_reads_the_country_from_the_restriction_sentence(
      "confirmed", ""),
     ("Remote. Open to candidates living in Germany only. We serve clients across Europe.",
      "advised", "remote, limited to Germany - check eligibility"),
+    ("Remote. Open to candidates living in Germany or Italy. Our HQ is in Berlin.",
+     "confirmed", ""),
+    ("Remote. Open to candidates living in one of:\nGermany\nItaly\nAbout us",
+     "confirmed", ""),
 ])
 def test_a_restricted_answer_confirms_italy_and_advises_another_country(
         monkeypatch, description, verdict, advice):

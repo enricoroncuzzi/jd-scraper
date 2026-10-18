@@ -163,6 +163,17 @@ def test_a_company_hq_sentence_does_not_override_an_open_scope():
      "Germany\nSpain\nWe ship tooling for engineers.", ADVISED,
      "remote, limited to Germany - check eligibility"),
     ("This is a fully remote role. Open to candidates living in Italy only.", CONFIRMED, ""),
+    ("This is a fully remote role open to candidates across Europe. Our team members live in "
+     "Germany, Spain and Portugal.", CONFIRMED, ""),
+    ("This is a fully remote role. Most of us live in Berlin, Germany, and we hire across "
+     "the EU.", CONFIRMED, ""),
+    ("This is a fully remote role. Candidates must live in Italy.", CONFIRMED, ""),
+    ("This is a fully remote role. Candidates must live in Germany.", ADVISED,
+     "remote, limited to Germany - check eligibility"),
+    ("This is a fully remote role. You must reside in Germany or Italy.", CONFIRMED, ""),
+    ("This is a fully remote role. You must reside in one of:\nItaly\nGermany", CONFIRMED, ""),
+    ("This is a fully remote role. You must be eligible to work in one of:\nthe EU\nthe EEA\n"
+     "About us\nOur HQ is in Berlin, Germany.", CONFIRMED, ""),
     ("Candidates must reside in Germany. This is a fully remote role. "
      "We serve customers across Europe.", ADVISED, "remote, limited to Germany - check eligibility"),
     ("We are a fully remote company headquartered in Amsterdam, Netherlands. "
