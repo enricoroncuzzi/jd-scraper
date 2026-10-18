@@ -217,9 +217,9 @@ def based_in_advice(country: str) -> str:
 
 
 def unrestricted_advice(location: str) -> str:
-    """The advice for a remote job that states no country restriction, shared by
-    the rule layer and the model path so both word the same posting the same way:
-    the location's country when it names one other than Italy, else the generic line."""
+    """The advice the model path gives a remote job that states no country
+    restriction: the location's country when it names one other than Italy, else
+    the generic line."""
     resolved = resolve_country(location)
     country = (country_in(resolved) if resolved else None) or country_in(location or "")
     if country and country != "Italy":
