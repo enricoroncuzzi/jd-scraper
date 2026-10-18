@@ -135,92 +135,56 @@ def test_an_explicit_country_limit_is_advised_not_rejected_in_tiers_three_and_fo
     assert result.advice == "remote, limited to the UK - check eligibility"
 
 
-def test_an_open_scope_is_confirmed_even_when_the_office_is_in_a_foreign_country():
-    result = classify("Fully remote. You may work from anywhere in Europe.",
-                      title="AI Engineer", location="Berlin, Germany",
-                      require_italy_eligibility=True)
-    assert result.verdict == CONFIRMED and result.advice == ""
-
-
-def test_a_title_word_containing_reside_is_not_a_condition():
-    result = classify("This is a fully remote role. Our Vice Presidents in Germany lead the team.",
-                      title="AI Engineer", location="Milan, Italy",
-                      require_italy_eligibility=True)
-    assert result.verdict == ADVISED
-    assert result.advice == "remote, no stated country restriction - check eligibility"
-
-
-@pytest.mark.parametrize("text,verdict,advice", [
-    ("This is a fully remote role. Candidates must reside in Germany and have the right to "
-     "work in Germany. We serve customers across Europe and comply with the EU AI Act.",
-     ADVISED, "remote, limited to Germany - check eligibility"),
-    ("ABOUT US: we build developer tools. This is a fully remote role. "
-     "Candidates must reside in Spain.", ADVISED, "remote, limited to Spain - check eligibility"),
-    ("Many of us work in Poland. This is a fully remote role. Offices in Italy. "
-     "You must reside in Poland.", ADVISED, "remote, limited to Poland - check eligibility"),
-    ("This is a fully remote role for residents of Italy. Our HQ is in London.", CONFIRMED, ""),
-    ("This is a fully remote role. Open to candidates living in Italy only.", CONFIRMED, ""),
-    ("This is a fully remote role. Candidates must live in Italy.", CONFIRMED, ""),
-    ("This is a fully remote role. Candidates must live in Germany.", ADVISED,
-     "remote, limited to Germany - check eligibility"),
-    ("This is a fully remote role. Candidates must live in Germany. We are a leading AI "
-     "company in Europe.", ADVISED, "remote, limited to Germany - check eligibility"),
-    ("This is a fully remote role. UK citizens only. We serve clients across Europe.", ADVISED,
-     "remote, limited to the UK - check eligibility"),
-    ("This is a fully remote role, open to candidates in Spain only. Our offices are in Italy.",
-     ADVISED, "remote, limited to Spain - check eligibility"),
-    ("This is a fully remote role. You must have the right to work in the UK.", ADVISED,
-     "remote, limited to the UK - check eligibility"),
-    ("This is a fully remote role. You must reside in Germany or Italy.", CONFIRMED, ""),
-    ("This is a fully remote role. You must reside in one of:\nItaly\nGermany", CONFIRMED, ""),
-    ("This is a fully remote role. You must be eligible to work in one of:\nthe EU\nthe EEA\n"
-     "About us\nOur HQ is in Berlin, Germany.", CONFIRMED, ""),
-    ("Candidates must reside in Germany. This is a fully remote role. "
-     "We serve customers across Europe.", ADVISED, "remote, limited to Germany - check eligibility"),
-    ("We are a fully remote company headquartered in Amsterdam, Netherlands. "
-     "Candidates must reside in the EU.", CONFIRMED, ""),
-    ("This is a fully remote role. You must be eligible to work in the EU. "
-     "Our HQ is in Berlin, Germany.", CONFIRMED, ""),
-    ("This is a fully remote role. Our people are spread across Germany and Spain. "
-     "Must live in Europe.", CONFIRMED, ""),
-    ("This is a fully remote role, open across Europe. We respect your right to work-life "
-     "balance; our office is in Berlin, Germany.", CONFIRMED, ""),
+@pytest.mark.parametrize("text", [
+    "This is a fully remote role. Remote - Italy.",
+    "This is a fully remote role in Italy.",
+    "This is a fully remote role. Location: Remote (Italy).",
 ])
-def test_a_residency_condition_decides_eligibility_before_any_incidental_scope(
-        text, verdict, advice):
+def test_an_explicit_italy_scope_is_confirmed(text):
     result = classify(text, title="AI Engineer", location="Berlin, Germany",
                       require_italy_eligibility=True)
-    assert (result.verdict, result.advice) == (verdict, advice)
+    assert (result.verdict, result.advice) == (CONFIRMED, "")
 
 
+# Residency wording is about the company, its team or its clients as often as it
+# is a condition on the candidate, so the rules never read it: in tiers 3 and 4
+# every one of these goes to the model, which answers eligibility itself.
 @pytest.mark.parametrize("text", [
-    "This is a fully remote role. You must reside in Germany, not Italy.",
-    "This is a fully remote role. Security clearance required.",
-    "This is a fully remote role across our Europe-wide team. You must reside in one of:\n"
-    "Germany\nSpain\nWe ship tooling for engineers.",
+    "This is a fully remote role open to candidates across the EU. We are one of the only AI "
+    "companies in the UK with a medical licence.",
+    "This is a fully remote role. Applicants from the EU are welcome. Our clients include the "
+    "only Spain-based neobank.",
+    "This is a fully remote role. We are proud corporate citizens in the UK.",
+    "This is a fully remote role. Candidates must live in Germany. We are a leading AI "
+    "company in Europe.",
+    "This is a fully remote role. UK citizens only. We serve clients across Europe.",
+    "This is a fully remote role, open to candidates living in Spain only. Our offices are "
+    "in Italy.",
     "This is a fully remote role open to candidates across Europe. Our team members live in "
     "Germany, Spain and Portugal.",
     "This is a fully remote role. Most of us live in Berlin, Germany, and we hire across the EU.",
     "This is a fully remote role open to candidates across Europe. We build an app that "
     "helps people living in Germany find a doctor.",
-    "This is a fully remote role, open to candidates living in Spain only. Our offices are "
-    "in Italy.",
     "This is a fully remote role open to candidates across Europe. Our company is based in "
     "Berlin, Germany.",
-    "This is a fully remote role across the EU. We cannot offer visa sponsorship.",
-    "This is a fully remote role. Headquartered in Amsterdam, Netherlands, we need "
-    "candidates who reside in the EU.",
+    "This is a fully remote role. You must reside in Germany, not Italy.",
+    "This is a fully remote role. Our Vice Presidents in Germany lead the team.",
+    "This is a fully remote role. You must reside in Germany or Italy.",
+    "This is a fully remote role. You must reside in one of:\nItaly\nGermany",
+    "This is a fully remote role across our Europe-wide team. You must reside in one of:\n"
+    "Germany\nSpain\nWe ship tooling for engineers.",
+    "This is a fully remote role. You must be eligible to work in one of:\nthe EU\nthe EEA\n"
+    "About us\nOur HQ is in Berlin, Germany.",
+    "This is a fully remote role. You must be eligible to work in the EU. "
+    "Our HQ is in Berlin, Germany.",
+    "This is a fully remote role, open across Europe. We respect your right to work-life "
+    "balance; our office is in Berlin, Germany.",
+    "This is a fully remote role. Open to candidates living in Italy only.",
+    "Fully remote.",
 ])
-def test_an_unclear_condition_is_left_to_the_model(text):
+def test_residency_wording_leaves_eligibility_to_the_model_in_tiers_three_and_four(text):
     assert classify(text, title="AI Engineer", location="Berlin, Germany",
                     require_italy_eligibility=True) is None
-
-
-def test_no_stated_restriction_in_tier_three_is_advised():
-    result = classify("Fully remote.", title="AI Engineer", location="Berlin, Germany",
-                      require_italy_eligibility=True)
-    assert result.verdict == ADVISED
-    assert result.advice == "remote, based in Germany - check eligibility"
 
 
 def test_tier_one_needs_no_eligibility_advice():

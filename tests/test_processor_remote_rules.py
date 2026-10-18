@@ -52,13 +52,20 @@ def test_a_clear_remote_phrase_confirms_in_tier_one(store_conn, cfg):
     assert (stage, verdict, advice) == ("described", "confirmed", "")
 
 
-def test_a_remote_job_without_italy_eligibility_is_advised_in_tier_three(store_conn, cfg):
+def test_a_plain_remote_job_in_tier_three_is_left_to_the_model(store_conn, cfg):
     job = _described(store_conn, cfg, 1, FILLER + "This role is fully remote.",
                      location="Berlin, Germany", tier_hint=3)
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 0
+    assert _row(store_conn, job)[2] is None
+
+
+def test_an_explicit_foreign_scope_is_advised_by_rule_in_tier_three(store_conn, cfg):
+    job = _described(store_conn, cfg, 1, FILLER + "This role is fully remote. Remote (UK).",
+                     location="London, United Kingdom", tier_hint=3)
     assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
     stage, _reason, verdict, _stored, advice = _row(store_conn, job)
     assert (stage, verdict) == ("described", "advised")
-    assert advice == "remote, based in Germany - check eligibility"
+    assert advice == "remote, limited to the UK - check eligibility"
 
 
 def test_a_silent_description_becomes_not_stated_without_a_model_call(store_conn, cfg):

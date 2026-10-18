@@ -89,70 +89,64 @@ def test_remote_without_a_stated_restriction_is_advised_in_tier_three(monkeypatc
     assert job.remote_advice == "remote, no stated country restriction - check eligibility"
 
 
-@pytest.mark.parametrize("require_italy", [True, False])
-def test_plain_remote_gets_the_same_verdict_from_the_rules_and_the_model(monkeypatch, require_italy):
-    """D3: plain 'Remote' with no country named is advised in tiers 3/4 and
-    confirmed in tier 1, whichever layer reaches it first."""
+def test_plain_remote_is_confirmed_by_either_layer_in_tier_one(monkeypatch):
+    description = ("This is a fully remote role. You will build retrieval pipelines with "
+                   "Python and PyTorch and ship evaluation tooling for our product teams.")
+    offer = _offer(description=description)
+    ruled = classify(description, title=offer.title, location=offer.location,
+                     require_italy_eligibility=False)
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
+                             "quote": "fully remote role"},
+               require_italy=False, offer=offer)
+    assert (job.remote_verdict, job.remote_advice) == (ruled.verdict, ruled.advice)
+    assert job.remote_verdict == "confirmed"
+
+
+def test_plain_remote_in_tier_three_goes_to_the_model_and_is_advised(monkeypatch):
+    """D3: plain 'Remote' with no country named is advised, never confirmed."""
     description = ("This is a fully remote role. You will build retrieval pipelines with "
                    "Python and PyTorch and ship evaluation tooling for our product teams.")
     offer = _offer(description=description)
     offer.location = "London, United Kingdom"
-    ruled = classify(description, title=offer.title, location=offer.location,
-                     require_italy_eligibility=require_italy)
-    # The answer the prompt asks for on this posting: remote, no country stated.
+    assert classify(description, title=offer.title, location=offer.location,
+                    require_italy_eligibility=True) is None
     job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "not_stated",
                              "quote": "fully remote role"},
-               require_italy=require_italy, offer=offer)
-    assert (job.remote_verdict, job.remote_advice) == (ruled.verdict, ruled.advice)
-    assert job.remote_verdict == ("advised" if require_italy else "confirmed")
+               require_italy=True, offer=offer)
+    assert (job.remote_verdict, job.remote_advice) == (
+        "advised", "remote, based in the UK - check eligibility")
 
 
-def test_a_remote_role_restricted_to_italy_is_confirmed(monkeypatch):
-    description = "Fully remote, open to residents of Italy only. Our HQ is in London, UK."
-    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
-                             "quote": "open to residents of Italy only"},
-               require_italy=True, description=description)
-    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
-
-
-@pytest.mark.parametrize("description,advice", [
-    ("ABOUT US: we build developer tools. Fully remote. Candidates must reside in Spain.",
-     "remote, limited to Spain - check eligibility"),
-    ("Many of us work in Poland. Fully remote. Offices in Italy. You must reside in Poland.",
-     "remote, limited to Poland - check eligibility"),
-    ("Fully remote. We serve clients in Germany and France. Eligibility is limited.",
-     "remote, based in Germany - check eligibility"),
-    ("Fully remote. Our HQ is in Amsterdam, Netherlands. You must be eligible to work in "
-     "the EU.", "remote, based in Germany - check eligibility"),
+@pytest.mark.parametrize("description,eligibility,verdict,advice", [
+    ("Fully remote. Remote - Italy. Our HQ is in London, UK.", "restricted", "confirmed", ""),
+    ("Fully remote. Location: Remote (UK). We serve clients across Europe.", "not_stated",
+     "advised", "remote, limited to the UK - check eligibility"),
 ])
-def test_a_restricted_answer_reads_the_country_from_the_restriction_sentence(
-        monkeypatch, description, advice):
-    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
+def test_an_explicit_remote_scope_settles_eligibility_on_the_model_path(
+        monkeypatch, description, eligibility, verdict, advice):
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": eligibility,
                              "quote": "Fully remote"},
                require_italy=True, description=description)
-    assert (job.remote_verdict, job.remote_advice) == ("advised", advice)
+    assert (job.remote_verdict, job.remote_advice) == (verdict, advice)
 
 
-@pytest.mark.parametrize("description,quote,verdict,advice", [
-    ("Remote. Open to candidates living in Italy only. We serve clients across Europe.",
-     "Open to candidates living in Italy only", "confirmed", ""),
-    ("Remote. Open to candidates living in Germany only. We serve clients across Europe.",
-     "Open to candidates living in Germany only", "advised",
-     "remote, limited to Germany - check eligibility"),
-    ("Remote. You must reside in Germany or Italy. Our HQ is in Berlin.",
-     "Remote", "confirmed", ""),
-    ("Remote. You must reside in one of:\nGermany\nItaly\nAbout us",
-     "Remote", "confirmed", ""),
-    # An exclusion is not parsed by rule: the model's "restricted" stands.
-    ("Remote. You must reside in Germany, not Italy.", "Remote", "advised",
-     "remote, based in Germany - check eligibility"),
+@pytest.mark.parametrize("description,quote,advice", [
+    ("Fully remote. Candidates must reside in Spain.", "Candidates must reside in Spain",
+     "remote, limited to Spain - check eligibility"),
+    ("Fully remote. You must reside in Germany, not Italy.",
+     "You must reside in Germany, not Italy", "remote, limited to Germany - check eligibility"),
+    ("Fully remote. Many of us work in Poland. Eligibility is limited.", "Fully remote",
+     "remote, eligibility to check"),
+    # The model's "restricted" stands; it is asked to answer "open" when Italy is allowed.
+    ("Fully remote. Open to candidates living in Italy only.",
+     "Open to candidates living in Italy only", "remote, eligibility to check"),
 ])
-def test_a_restricted_answer_confirms_italy_and_advises_another_country(
-        monkeypatch, description, quote, verdict, advice):
+def test_a_restricted_answer_is_advised_with_the_country_its_quote_names(
+        monkeypatch, description, quote, advice):
     job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "restricted",
                              "quote": quote},
                require_italy=True, description=description)
-    assert (job.remote_verdict, job.remote_advice) == (verdict, advice)
+    assert (job.remote_verdict, job.remote_advice) == ("advised", advice)
 
 
 @pytest.mark.parametrize("description", [

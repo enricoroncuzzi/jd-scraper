@@ -51,17 +51,13 @@ from pydantic import BaseModel, ValidationError, field_validator
 from src import telemetry
 from src.llm_limits import limit_for
 from src.models import JobOffer
-from src.remote_rules import (
-    RESTRICTION_OPEN,
-    RESTRICTION_UNCLEAR,
-    condition_countries,
-    stated_restriction,
-)
+from src.remote_rules import explicit_eligibility
 from src.remote_verdicts import (
     ADVISED,
     CONFIRMED,
     NOT_STATED,
     REJECTED,
+    countries_in,
     limited_to_advice,
     unrestricted_advice,
 )
@@ -394,21 +390,18 @@ def _resolve_verdict(item: _AnswerItem, offer: JobOffer,
     eligibility = item.eligibility or "not_stated"
     if eligibility == "open":
         return CONFIRMED, reason, ""
-    # The model's own answer stands unless the posting states a condition that
-    # parses cleanly: Italy among the countries named, or only foreign ones.
-    scope = stated_restriction(shown)
+    # The model's own answer stands, except for an explicit remote scope in the
+    # posting ("Remote - Italy", "Remote (UK)").
+    scope = explicit_eligibility(shown)
     if scope == "Italy":
         return CONFIRMED, reason, ""
-    if scope not in (None, RESTRICTION_UNCLEAR, RESTRICTION_OPEN):
+    if scope:
         return ADVISED, reason, limited_to_advice(scope)
     if eligibility == "restricted":
-        countries = condition_countries(quote) or ()
-        if "Italy" in countries:
-            return CONFIRMED, reason, ""
-        if countries:
-            return ADVISED, reason, limited_to_advice(" or ".join(countries))
-    elif scope == RESTRICTION_OPEN:
-        return CONFIRMED, reason, ""
+        foreign = [country for country in countries_in(quote) if country != "Italy"]
+        if foreign:
+            return ADVISED, reason, limited_to_advice(" or ".join(foreign))
+        return ADVISED, reason, "remote, eligibility to check"
     return ADVISED, reason, unrestricted_advice(offer.location or "")
 
 

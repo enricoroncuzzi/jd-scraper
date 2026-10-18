@@ -190,7 +190,9 @@ loses nothing.
   full-remote", "Remote, eligibility to check" (a short advice line says what to check) and
   "Work mode not stated". Only the last one is withheld from Telegram strong-match alerts; it
   still appears in the daily digest and the vault. `rejected.md` still carries every rejection,
-  now including remote-only-as-a-perk. Inspect the mix with
+  now including remote-only-as-a-perk. In tiers 3 and 4 the rule pre-pass settles eligibility
+  only for an explicit "Remote (UK)" or "Remote - Italy", so most remote-phrased jobs there
+  cost one verification call. Inspect the mix with
   `psql jds -c "SELECT remote_verdict, count(*) FROM jobs WHERE tier IN (1,3,4) AND first_seen_at > now() - interval '7 days' GROUP BY 1;"`.
 - Deploying new code: `git pull --ff-only && .venv/bin/pip install -r requirements.txt`, then
   restart one unit at a time (`sudo systemctl restart jds-process`; wait for `status` to show
