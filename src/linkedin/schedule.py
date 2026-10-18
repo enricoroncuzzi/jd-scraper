@@ -1,4 +1,4 @@
-"""The LinkedIn schedule: quiet hours, the shared daily request budget and the
+"""The LinkedIn schedule: the optional closed window, the shared daily request budget and the
 steady-pace policy, loaded from config/schedule.json (spec section 4).
 
 The collector and the processor share one PaceBudget on host `linkedin.com`, so
@@ -41,7 +41,7 @@ class RefusalPolicy:
 @dataclass(frozen=True)
 class ScheduleConfig:
     timezone: str = "Europe/Rome"
-    closed_hours: tuple[int, int] = (0, 6)
+    closed_hours: tuple[int, int] | None = None
     weekday_cap: int = 1400
     weekend_cap: int = 800
     pace: PacePolicy = PacePolicy()
@@ -135,11 +135,16 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
         raise ValueError(f"schedule.timezone {timezone_name!r} is not a known timezone: {exc}") from exc
 
     closed = data.get("closed_hours")
-    if (not isinstance(closed, list) or len(closed) != 2
-            or not all(isinstance(h, int) and not isinstance(h, bool) for h in closed)
-            or not 0 <= closed[0] < closed[1] <= 24 or closed[1] - closed[0] >= 24):
-        raise ValueError("schedule.closed_hours must be [start, end] with 0 <= start < end <= 24 "
-                         "and a window shorter than 24 hours")
+    if "closed_hours" not in data:
+        raise ValueError("schedule.closed_hours must be present; use null for no closed window")
+    closed_hours: tuple[int, int] | None = None
+    if closed is not None:
+        if (not isinstance(closed, list) or len(closed) != 2
+                or not all(isinstance(h, int) and not isinstance(h, bool) for h in closed)
+                or not 0 <= closed[0] < closed[1] <= 24 or closed[1] - closed[0] >= 24):
+            raise ValueError("schedule.closed_hours must be null (no closed window) or [start, end] "
+                             "with 0 <= start < end <= 24 and a window shorter than 24 hours")
+        closed_hours = (closed[0], closed[1])
 
     caps = data.get("daily_caps")
     if not isinstance(caps, dict):
@@ -155,7 +160,7 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
                          "(design 2026-10-16); delete it")
     return ScheduleConfig(
         timezone=timezone_name,
-        closed_hours=(closed[0], closed[1]),
+        closed_hours=closed_hours,
         weekday_cap=weekday_cap,
         weekend_cap=weekend_cap,
         pace=_load_pace(data),
@@ -186,7 +191,10 @@ def daily_cap(schedule: ScheduleConfig, now: datetime | None = None) -> int:
 
 
 def in_closed_window(schedule: ScheduleConfig, now: datetime | None = None) -> bool:
-    """Rome hours [start, end). 00:00-06:00 ships in config/schedule.json."""
+    """Rome hours [start, end) when config sets a closed window, else False.
+    The shipped config sets none, so LinkedIn runs around the clock."""
+    if schedule.closed_hours is None:
+        return False
     start, end = schedule.closed_hours
     return start <= local_now(schedule, now).hour < end
 
@@ -198,7 +206,9 @@ def requests_today_for(day: date | None, count: int, schedule: ScheduleConfig,
 
 
 def open_hours_per_day(schedule: ScheduleConfig) -> int:
-    """Hours of every day the gate is open, from the quiet window in config."""
+    """Hours of every day the gate is open: all 24 unless config sets a closed window."""
+    if schedule.closed_hours is None:
+        return HOURS_PER_DAY
     start, end = schedule.closed_hours
     return HOURS_PER_DAY - (end - start)
 
@@ -218,11 +228,14 @@ def start_spacing_seconds(schedule: ScheduleConfig, window: str) -> float:
 
 
 def open_seconds_between(schedule: ScheduleConfig, start: datetime, end: datetime) -> float:
-    """Open seconds in [start, end): the elapsed time minus the quiet window each day
-    it falls in. Each day's open spans are [0, closed_start) and [closed_end, 24), built
-    with `datetime.combine(day, time(h), tzinfo=zone)` so DST is handled by zoneinfo."""
+    """Elapsed seconds in [start, end) minus the closed window each day it falls in.
+    With no closed window that is simply the wall time. A closed window's open spans are
+    [0, closed_start) and [closed_end, 24), built with
+    `datetime.combine(day, time(h), tzinfo=zone)` so DST is handled by zoneinfo."""
     if end <= start:
         return 0.0
+    if schedule.closed_hours is None:
+        return (end - start).total_seconds()
     zone = schedule.zone
     closed_start, closed_end = schedule.closed_hours
     local_start, local_end = start.astimezone(zone), end.astimezone(zone)

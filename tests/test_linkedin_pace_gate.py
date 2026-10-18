@@ -10,7 +10,7 @@ from src.linkedin.schedule import ScheduleConfig, local_day
 
 WED = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)  # Rome 14:00, weekday
 NIGHT = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
-SAT = datetime(2026, 10, 17, 12, 0, tzinfo=timezone.utc)
+WINDOWED = ScheduleConfig(closed_hours=(0, 6))
 
 
 class FakeTime:
@@ -51,7 +51,7 @@ def _event_count(budget) -> int:
 
 def test_the_quiet_window_closes_the_gate_and_the_slot_makes_no_request(make_budget):
     fake = FakeTime(NIGHT)
-    budget = make_budget(fake)
+    budget = make_budget(fake, WINDOWED)
     gate = budget.gate()
     assert not gate.open and gate.reason == "closed_hours"
     with pytest.raises(PaceGateClosed) as excinfo:
@@ -59,6 +59,16 @@ def test_the_quiet_window_closes_the_gate_and_the_slot_makes_no_request(make_bud
             raise AssertionError("no request may run while the window is closed")
     assert excinfo.value.gate.reason == "closed_hours"
     assert _row(budget)[0] == 0 and _event_count(budget) == 0
+
+
+def test_without_a_closed_window_the_gate_is_open_at_night(make_budget):
+    fake = FakeTime(NIGHT)
+    budget = make_budget(fake)
+    gate = budget.gate()
+    assert gate.open and gate.reason == "open"
+    with budget.slot("search") as slot:
+        slot.clean(200)
+    assert _row(budget)[0] == 1 and _event_count(budget) == 1
 
 
 # -- the shared daily cap ---------------------------------------------------------------
@@ -83,7 +93,9 @@ def test_search_and_descriptions_share_one_cap_and_it_blocks_at_the_limit(make_b
 
 
 def test_the_weekend_uses_the_smaller_cap(make_budget):
-    fake = FakeTime(SAT)
+    # Start at Rome midnight: the cap-derived floor for two requests is 12 h, so both fit
+    # inside the same Rome weekend day.
+    fake = FakeTime(datetime(2026, 10, 16, 22, 0, tzinfo=timezone.utc))  # Sat 00:00 Rome
     budget = make_budget(fake, ScheduleConfig(weekend_cap=2))
     for _ in range(2):
         with budget.slot("search") as slot:
@@ -102,6 +114,17 @@ def test_the_counter_resets_on_the_next_rome_day(make_budget):
     fake.now += timedelta(days=1)  # Thursday, Rome
     gate = budget.gate()
     assert gate.open and gate.requests_today == 0
+
+
+def test_the_counter_resets_at_rome_midnight_with_the_gate_open(make_budget):
+    fake = FakeTime(datetime(2026, 10, 14, 21, 58, tzinfo=timezone.utc))  # 23:58 Rome
+    budget = make_budget(fake, ScheduleConfig(weekday_cap=1))
+    with budget.slot("search") as slot:
+        slot.clean(200)
+    assert budget.gate().reason == "daily_cap"
+    fake.now += timedelta(minutes=10)  # 00:08 Rome, the next day
+    gate = budget.gate()
+    assert gate.open and gate.reason == "open" and gate.requests_today == 0
 
 
 def test_every_request_is_logged_with_service_kind_outcome_and_status(make_budget):
@@ -128,7 +151,7 @@ def test_evaluate_gate_reports_open_when_everything_is_fine():
 def test_a_request_granted_before_the_window_cannot_fire_inside_it(make_budget):
     # 21:58 UTC = 23:58 Rome and the pacer says the next slot is five minutes away.
     fake = FakeTime(datetime(2026, 10, 14, 21, 58, tzinfo=timezone.utc))
-    budget = make_budget(fake)
+    budget = make_budget(fake, WINDOWED)
     budget.snapshot()
     with budget.conn.cursor() as cur:
         cur.execute("UPDATE pace_budgets SET next_slot_at = %s WHERE host = 'linkedin.com'",
@@ -157,7 +180,8 @@ def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_refusal_wait
 
 
 def test_two_services_share_one_cap_row(make_budget, store_conn):
-    fake = FakeTime(WED)
+    # Rome midnight again: the 12 h floor for a cap of two keeps both requests in one day.
+    fake = FakeTime(datetime(2026, 10, 13, 22, 0, tzinfo=timezone.utc))  # Wed 00:00 Rome
     schedule = ScheduleConfig(weekday_cap=2)
     collector = make_budget(fake, schedule, service="collect-linkedin")
     processor = make_budget(fake, schedule, service="process")

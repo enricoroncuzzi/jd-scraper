@@ -8,6 +8,7 @@ from src.linkedin.pace import ManagedPace, PaceBudget, PaceBusy, PaceGateClosed
 from src.linkedin.schedule import ScheduleConfig
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
+WINDOWED = ScheduleConfig(closed_hours=(0, 6))
 
 
 class FakeTime:
@@ -389,7 +390,7 @@ def test_giving_up_writes_only_the_markers_so_another_services_refusal_survives(
 
 def test_a_closed_gate_writes_only_the_markers(make_budget):
     fake = FakeTime(datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc))  # 01:00 Rome: window closed
-    budget = make_budget(fake)
+    budget = make_budget(fake, WINDOWED)
     budget.snapshot()
     _set(budget, last_kind="search", requests_today=7, day=date(2026, 10, 14))
     with pytest.raises(PaceGateClosed):

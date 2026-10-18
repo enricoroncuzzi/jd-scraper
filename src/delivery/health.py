@@ -8,7 +8,8 @@ open time. A fired alert repeats on its own cadence and says so once when it
 clears; the ledger lives in kv_state.
 
 The old all-source "nothing collected for six hours" check is gone. The LinkedIn
-silence counts only open time, so the night window never has to suppress it.
+silence counts only open time: with the shipped config there is no closed window,
+so open time is wall time; a restored window is subtracted as before.
 """
 import json
 from dataclasses import dataclass
@@ -97,8 +98,8 @@ def last_linkedin_success(conn) -> datetime | None:
 def linkedin_blocked_issue(conn, settings: DeliverySettings, now: datetime,
                            schedule: ScheduleConfig | None = None) -> HealthIssue | None:
     """The one alert this design adds: a full day of open time with no successful
-    LinkedIn request. None when no LinkedIn request has ever succeeded (the service
-    check covers that)."""
+    LinkedIn request. With no closed window, open time is wall time. None when no
+    LinkedIn request has ever succeeded (the service check covers that)."""
     last = last_linkedin_success(conn)
     if last is None:
         return None

@@ -1,6 +1,6 @@
 {
   "timezone": "Europe/Rome",
-  "closed_hours": [0, 6],
+  "closed_hours": null,
   "daily_caps": {
     "weekday": 1400,
     "weekend": 800

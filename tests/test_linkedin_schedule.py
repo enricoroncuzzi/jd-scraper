@@ -18,8 +18,14 @@ SUN = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 def test_the_shipped_schedule_loads():
     cfg = load_schedule_config()
     assert cfg.timezone == "Europe/Rome"
-    assert cfg.closed_hours == (0, 6)
+    assert cfg.closed_hours is None
     assert (cfg.weekday_cap, cfg.weekend_cap) == (1400, 800)
+
+
+def test_the_shipped_schedule_has_no_closed_window():
+    cfg = load_schedule_config()
+    assert not in_closed_window(cfg, datetime(2026, 10, 13, 22, 30, tzinfo=timezone.utc))  # Rome 00:30
+    assert open_hours_per_day(cfg) == 24
 
 
 def test_a_leftover_breaker_block_is_rejected(tmp_path):
@@ -55,26 +61,48 @@ def test_a_leftover_day_verdict_key_is_rejected(tmp_path):
 
 
 def test_the_floor_is_the_open_hours_over_the_cap():
-    cfg = load_schedule_config()
+    cfg = ScheduleConfig(closed_hours=(0, 6))
     assert open_hours_per_day(cfg) == 18
     assert floor_spacing_seconds(cfg, "weekday") == pytest.approx(18 * 3600 / 1400)  # 46.29 s
     assert floor_spacing_seconds(cfg, "weekend") == pytest.approx(81.0)
 
 
-def test_open_time_skips_the_quiet_window():
+def test_without_a_closed_window_the_floor_is_twenty_four_hours_over_the_cap():
     cfg = ScheduleConfig()
+    assert open_hours_per_day(cfg) == 24
+    assert floor_spacing_seconds(cfg, "weekday") == pytest.approx(24 * 3600 / 1400)
+    assert floor_spacing_seconds(cfg, "weekend") == pytest.approx(108.0)
+
+
+def test_open_time_skips_the_quiet_window():
+    cfg = ScheduleConfig(closed_hours=(0, 6))
     # Wed 22:00 Rome (CEST, UTC+2) to Thu 08:00 Rome: 2 h before midnight + 2 h after 06:00
     start = datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc)
     assert open_seconds_between(cfg, start, start + timedelta(hours=10)) == 4 * 3600
     assert open_seconds_between(cfg, start, start) == 0
 
 
-def test_open_time_is_dst_correct():
+def test_without_a_closed_window_open_time_is_wall_time():
     cfg = ScheduleConfig()
+    start = datetime(2026, 10, 14, 20, 0, tzinfo=timezone.utc)
+    assert open_seconds_between(cfg, start, start + timedelta(hours=10)) == 10 * 3600
+    assert open_seconds_between(cfg, start, start) == 0
+
+
+def test_open_time_is_dst_correct():
+    cfg = ScheduleConfig(closed_hours=(0, 6))
     # Sat 24 Oct 06:00 Rome (UTC+2) to Mon 26 Oct 06:00 Rome (UTC+1): the extra hour is at 03:00, inside the window
     start = datetime(2026, 10, 24, 4, 0, tzinfo=timezone.utc)
     end = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)
     assert open_seconds_between(cfg, start, end) == 36 * 3600
+
+
+def test_open_time_without_a_window_is_dst_correct():
+    cfg = ScheduleConfig()
+    # The same 49 h of wall time, including the extra hour at 03:00 Rome.
+    start = datetime(2026, 10, 24, 4, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)
+    assert open_seconds_between(cfg, start, end) == 49 * 3600
 
 
 def test_start_spacing_seconds_returns_the_window_start():
@@ -93,7 +121,7 @@ def test_the_weekday_and_the_weekend_get_their_own_caps():
 
 
 def test_the_quiet_window_is_rome_0000_to_0600():
-    cfg = ScheduleConfig()
+    cfg = ScheduleConfig(closed_hours=(0, 6))
     # 2026-10-14 00:30 Rome = 2026-10-13 22:30 UTC (CEST, UTC+2).
     assert in_closed_window(cfg, datetime(2026, 10, 13, 22, 30, tzinfo=timezone.utc))
     assert in_closed_window(cfg, datetime(2026, 10, 14, 3, 59, tzinfo=timezone.utc))
@@ -114,7 +142,7 @@ def test_the_quiet_window_is_rome_0000_to_0600():
     (datetime(2026, 3, 29, 4, 0, tzinfo=timezone.utc), False),
 ])
 def test_the_quiet_window_is_dst_correct(utc, closed):
-    assert in_closed_window(ScheduleConfig(), utc) is closed
+    assert in_closed_window(ScheduleConfig(closed_hours=(0, 6)), utc) is closed
 
 
 def test_the_budget_day_is_dst_correct():
@@ -145,7 +173,7 @@ def _write(tmp_path, data) -> str:
 
 DEFAULTS = {
     "timezone": "Europe/Rome",
-    "closed_hours": [0, 6],
+    "closed_hours": None,
     "daily_caps": {"weekday": 1400, "weekend": 800},
     "pace": {
         "start_spacing_seconds": {"weekday": 75, "weekend": 110},
@@ -169,6 +197,8 @@ TIGHTEN = {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.1
     {"closed_hours": [0]},
     {"closed_hours": [0, 25]},
     {"closed_hours": [0, 24]},
+    {"closed_hours": "off"},
+    {"closed_hours": {}},
     {"daily_caps": {"weekday": 0, "weekend": 800}},
     {"daily_caps": {"weekday": 1400}},
     {"pace": {**PACE, "jitter": 0.6}},
@@ -181,3 +211,19 @@ TIGHTEN = {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.1
 def test_a_malformed_schedule_raises(tmp_path, override):
     with pytest.raises(ValueError):
         load_schedule_config(_write(tmp_path, {**DEFAULTS, **override}))
+
+
+def test_a_null_closed_window_is_accepted(tmp_path):
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "closed_hours": None}))
+    assert cfg.closed_hours is None
+
+
+def test_a_configured_closed_window_is_still_accepted(tmp_path):
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "closed_hours": [0, 6]}))
+    assert cfg.closed_hours == (0, 6)
+
+
+def test_a_missing_closed_hours_key_is_rejected(tmp_path):
+    data = {key: value for key, value in DEFAULTS.items() if key != "closed_hours"}
+    with pytest.raises(ValueError, match="closed_hours"):
+        load_schedule_config(_write(tmp_path, data))

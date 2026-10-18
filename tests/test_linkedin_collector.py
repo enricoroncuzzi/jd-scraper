@@ -73,10 +73,10 @@ def test_a_poison_slice_is_isolated_and_the_next_slice_is_walked(store_conn):
 
 def test_a_closed_schedule_gate_makes_the_tick_idle_without_a_request(store_conn):
     _slices(store_conn, SliceSpec("linkedin", "AI Engineer", "Italy", 1, 14400))
-    gate = Gate(open=False, reason="closed_hours", requests_today=0, cap=1400, window="weekday")
+    gate = Gate(open=False, reason="daily_cap", requests_today=0, cap=1400, window="weekday")
     get = ScriptedGet()
     tick = collect_once(store_conn, FakePace(gate=gate), CFG, now=NOW, get=get, sleep=lambda _s: None)
-    assert not tick.did_work and tick.detail["waiting"] == "linkedin closed_hours"
+    assert not tick.did_work and tick.detail["waiting"] == "linkedin daily_cap"
     assert get.calls == []
 
 

@@ -10,6 +10,7 @@ from src.delivery.health import (
 from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore import heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
+from src.linkedin.schedule import ScheduleConfig
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 
@@ -67,19 +68,27 @@ def test_a_service_that_never_reported_is_an_issue(store_conn, settings):
 # -- the 24 h-of-open-time LinkedIn alert ------------------------------------------------
 
 def test_no_linkedin_success_for_24_open_hours_alerts(store_conn, settings):
-    _last_clean(store_conn, datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc))  # Wed 08:00 Rome
-    thu_14 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)                # Thu 14:00 Rome
+    _last_clean(store_conn, datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc))  # Wed 14:00 Rome
+    thu_14 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)                # Thu 14:00 Rome, +24 h
     issue = linkedin_blocked_issue(store_conn, settings, thu_14)
     assert issue.key == "linkedin_blocked" and "24h00m of open time" in issue.message
     assert linkedin_blocked_issue(store_conn, settings, thu_14 - timedelta(minutes=1)) is None
 
 
-def test_the_night_window_does_not_count_toward_the_block(store_conn, settings):
+def test_without_a_closed_window_open_time_is_wall_time(store_conn, settings):
     _last_clean(store_conn, datetime(2026, 10, 14, 21, 0, tzinfo=timezone.utc))  # Wed 23:00 Rome
-    # 24.5 h of wall clock, but only 18.5 h open (Wed 23-24 and Thu 06-23:30): counting the
-    # night would alert here, so this fails if the night window is counted.
+    # 24.5 h of wall clock is 24.5 h of open time: the night no longer pauses LinkedIn.
     thu_2330 = datetime(2026, 10, 15, 21, 30, tzinfo=timezone.utc)               # Thu 23:30 Rome
-    assert linkedin_blocked_issue(store_conn, settings, thu_2330) is None
+    issue = linkedin_blocked_issue(store_conn, settings, thu_2330)
+    assert issue is not None and "24h30m of open time" in issue.message
+
+
+def test_a_restored_closed_window_does_not_count_toward_the_block(store_conn, settings):
+    _last_clean(store_conn, datetime(2026, 10, 14, 21, 0, tzinfo=timezone.utc))  # Wed 23:00 Rome
+    # The revert path: 24.5 h of wall clock, but only 18.5 h open (Wed 23-24, Thu 06-23:30).
+    thu_2330 = datetime(2026, 10, 15, 21, 30, tzinfo=timezone.utc)               # Thu 23:30 Rome
+    assert linkedin_blocked_issue(store_conn, settings, thu_2330,
+                                  ScheduleConfig(closed_hours=(0, 6))) is None
 
 
 def test_the_block_alert_is_sent_at_most_once_a_day(store_conn, settings):
