@@ -62,6 +62,8 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
              last_clean_at, description_run) = pace
             state = PaceState(next_slot, kind, dict(wanting or {}), today, refusals, day, wait_until,
                               streak, last_clean_at, description_run or 0)
+            today = requests_today_for(day, today, schedule, now)
+            refusals = requests_today_for(day, refusals, schedule, now)
             wd = start_spacing_seconds(schedule, "weekday")
             we = start_spacing_seconds(schedule, "weekend")
             success = (f", last success {rome(last_clean_at, schedule)}" if last_clean_at else "")
@@ -71,7 +73,7 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
                          f"{refusals}/{today} refused today, {state.refusal_streak} refusals in a row, "
                          f"last request: {state.last_kind}{success}{waiting}")
             gate = evaluate_gate(schedule, now,
-                                 requests_today=requests_today_for(day, today, schedule, now))
+                                 requests_today=today)
             lines.append(_gate_line(gate, schedule))
     for provider in ("openrouter", "groq"):
         usage = budget.used_today(conn, provider, now)

@@ -166,6 +166,19 @@ def test_status_shows_a_closed_quiet_window(store_conn):
     assert "window closed until 06:00 Rome" in text
 
 
+def test_status_does_not_show_yesterdays_refusals_as_today(store_conn):
+    schedule = ScheduleConfig()
+    night = datetime(2026, 10, 13, 23, 0, tzinfo=timezone.utc)  # Rome 01:00
+    yesterday = local_day(schedule, night) - timedelta(days=1)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, requests_today, refusals_today, day) "
+                    "VALUES ('linkedin.com', %s, 830, 120, %s)", (night, yesterday))
+    store_conn.commit()
+    text = status.render(store_conn, night, schedule)
+    assert "0/0 refused today" in text
+    assert "LinkedIn gate: 0/1400 requests today" in text
+
+
 
 def test_every_status_time_is_converted_to_rome_and_labelled(store_conn):
     import re
