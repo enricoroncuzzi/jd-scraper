@@ -50,18 +50,23 @@ class WalkResult:
 
 def claim_due_slice(conn, now: datetime, source: str = SOURCE, *,
                     unfinished_only: bool = False) -> SliceRow | None:
-    """The next due slice of `source`: tier 1 first, oldest due first. One collector per
-    source, so no row lock. With `unfinished_only`, only slices whose last walk ended
-    unfinished (the resume timers) are considered."""
+    """The next due slice of `source`. Tiers with a due slice take turns: the tier whose
+    last walk (finished or not, from `slice_walks`) is oldest goes first, so a backlog
+    in one tier cannot starve the others, then that tier's slice due longest ago; ties
+    go to tier 1. One collector per source, so no row lock. With `unfinished_only`,
+    only slices whose last walk ended unfinished (the resume timers) are considered."""
     query = (
+        "WITH served AS (SELECT t.tier, max(w.at) AS at FROM slices t CROSS JOIN LATERAL "
+        "(SELECT max(walked_at) AS at FROM slice_walks WHERE slice_id = t.id) w "
+        "WHERE t.source = %s GROUP BY t.tier) "
         "SELECT id, role, area, tier, base_interval_seconds, interval_seconds, last_walked_at, "
-        "consecutive_empty, resume_start FROM slices "
+        "consecutive_empty, resume_start FROM slices LEFT JOIN served USING (tier) "
         "WHERE active AND source = %s AND due_at <= %s")
-    params: list = [source, now]
+    params: list = [source, source, now]
     if unfinished_only:
         query += " AND stop_reason = ANY(%s)"
         params.append(list(RESUMABLE_STOPS))
-    query += " ORDER BY tier, due_at LIMIT 1"
+    query += " ORDER BY served.at NULLS FIRST, due_at, tier LIMIT 1"
     with conn.cursor() as cur:
         cur.execute(query, params)
         row = cur.fetchone()
