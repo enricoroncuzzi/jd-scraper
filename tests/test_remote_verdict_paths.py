@@ -130,6 +130,18 @@ def test_an_explicit_remote_scope_settles_eligibility_on_the_model_path(
     assert (job.remote_verdict, job.remote_advice) == (verdict, advice)
 
 
+@pytest.mark.parametrize("description,quote", [
+    ("Fully remote. Open to candidates living in Italy only.",
+     "Open to candidates living in Italy only"),
+    ("Fully remote. You must reside in Germany or Italy.", "You must reside in Germany or Italy"),
+])
+def test_an_italy_inclusive_restriction_answered_open_is_confirmed(monkeypatch, description, quote):
+    # The tier 3/4 prompt defines a restriction that includes Italy as open.
+    job = _run(monkeypatch, {"work_mode": "remote", "eligibility": "open", "quote": quote},
+               require_italy=True, description=description)
+    assert (job.remote_verdict, job.remote_advice) == ("confirmed", "")
+
+
 @pytest.mark.parametrize("description,quote,advice", [
     ("Fully remote. Candidates must reside in Spain.", "Candidates must reside in Spain",
      "remote, limited to Spain - check eligibility"),
@@ -137,9 +149,6 @@ def test_an_explicit_remote_scope_settles_eligibility_on_the_model_path(
      "You must reside in Germany, not Italy", "remote, limited to Germany - check eligibility"),
     ("Fully remote. Many of us work in Poland. Eligibility is limited.", "Fully remote",
      "remote, eligibility to check"),
-    # The model's "restricted" stands; it is asked to answer "open" when Italy is allowed.
-    ("Fully remote. Open to candidates living in Italy only.",
-     "Open to candidates living in Italy only", "remote, eligibility to check"),
 ])
 def test_a_restricted_answer_is_advised_with_the_country_its_quote_names(
         monkeypatch, description, quote, advice):

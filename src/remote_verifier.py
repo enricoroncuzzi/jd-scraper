@@ -281,14 +281,20 @@ _NO_DESCRIPTION_REASON = "Description unavailable, could not verify."
 _DEGRADED_REASON = "Verification unavailable, treated as not stated."
 
 _ITALY_RULE = (
-    "Someone living in Italy must be able to hold the role from Italy. Only an "
-    "explicit Italy, EU/EEA, Europe, EMEA or worldwide scope counts as open; plain "
-    "'Remote' with no country named is not_stated. This does NOT change the "
-    "work_mode answer: a remote role limited to another country is still remote."
+    "eligibility is about whether someone living in Italy may hold the role, and "
+    "only matters when work_mode is remote:\n"
+    "- open: worldwide, Europe/EU/EEA/EMEA, or any stated restriction that includes "
+    "Italy ('Italy only', 'Germany or Italy', 'remote from Italy').\n"
+    "- restricted: a stated restriction that excludes Italy ('Germany only', 'must "
+    "reside in the UK').\n"
+    "- not_stated: no country restriction stated (plain 'Remote' is not_stated, not "
+    "open), or work_mode is not remote.\n"
+    "This does NOT change the work_mode answer: a remote role limited to another "
+    "country is still remote."
 )
 
 _REMOTE_ONLY_RULE = (
-    "This tier judges the work mode only; eligibility is not part of the answer."
+    "This tier judges the work mode only: answer eligibility not_stated."
 )
 
 _WORK_MODE_VALUES = ("remote", "hybrid", "onsite", "flexible", "not_stated")
@@ -398,6 +404,7 @@ def _resolve_verdict(item: _AnswerItem, offer: JobOffer,
     if scope:
         return ADVISED, reason, limited_to_advice(scope)
     if eligibility == "restricted":
+        # The quote only words the advice line; the model decided the verdict.
         foreign = [country for country in countries_in(quote) if country != "Italy"]
         if foreign:
             return ADVISED, reason, limited_to_advice(" or ".join(foreign))
@@ -488,13 +495,6 @@ def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str
         "- not_stated: the description is silent or too vague to settle it.\n"
         "Never infer on-site from an office address, a city name or a company HQ; "
         "use not_stated instead.\n\n"
-        "eligibility is about where the person may live, and only matters when "
-        "work_mode is remote:\n"
-        "- open: the posting explicitly allows worldwide or Europe/EU/EEA/EMEA.\n"
-        "- restricted: limited to residents or right-to-work holders of one "
-        "specific country.\n"
-        "- not_stated: remote with no country restriction stated (plain 'Remote' "
-        "is not_stated, not open), or work_mode is not remote.\n"
         f"{rule}\n\n"
         "quote must be a short phrase copied exactly from the title, location or "
         "description (at most 15 words) that states the work mode: 'fully remote', "
