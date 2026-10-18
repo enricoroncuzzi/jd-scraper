@@ -57,7 +57,6 @@ from src.remote_verdicts import (
     CONFIRMED,
     NOT_STATED,
     REJECTED,
-    country_in,
     limited_to_advice,
     unrestricted_advice,
 )
@@ -391,9 +390,9 @@ def _resolve_verdict(item: _AnswerItem, offer: JobOffer,
     if eligibility == "open":
         return CONFIRMED, reason, ""
     if eligibility == "restricted":
-        # The quote is the sentence that decided it ("Remote (UK)"); otherwise
-        # only a residency or right-to-work sentence names the country.
-        country = country_in(quote) or stated_restriction(shown)
+        # Only a residency, right-to-work or "Remote (UK)" sentence names the
+        # country; a quote that names none adds nothing the posting lacks.
+        country = stated_restriction(shown)
         if country == "Italy":
             return CONFIRMED, reason, ""
         if country:

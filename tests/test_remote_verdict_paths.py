@@ -122,6 +122,8 @@ def test_a_remote_role_restricted_to_italy_is_confirmed(monkeypatch):
      "remote, limited to Poland - check eligibility"),
     ("Fully remote. We serve clients in Germany and France. Eligibility is limited.",
      "remote, based in Germany - check eligibility"),
+    ("Fully remote. Our HQ is in Amsterdam, Netherlands. You must be eligible to work in "
+     "the EU.", "remote, based in Germany - check eligibility"),
 ])
 def test_a_restricted_answer_reads_the_country_from_the_restriction_sentence(
         monkeypatch, description, advice):

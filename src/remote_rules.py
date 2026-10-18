@@ -192,7 +192,7 @@ _REMOTE_PAREN_COUNTRY = re.compile(r"remote\s*\(\s*([^)]{2,24})\)", re.IGNORECAS
 # is not a condition: it is usually the company HQ.
 _RESIDENCY = re.compile(
     "|".join([
-        r"right\s+to\s+work",
+        r"right\s+to\s+work\b(?!-)",
         r"work\s+authori[sz]ation",
         r"eligible\s+to\s+work\s+in",
         r"must\s+(?:be\s+)?(?:live|reside|residing|located|based)\s+in",
@@ -233,14 +233,21 @@ def _first_confident(pattern: re.Pattern[str], text: str, *, suffix_guard: bool 
     return None
 
 
+_SENTENCE_ENDS = ".;!?\n"
+
+
 def stated_restriction(text: str) -> str | None:
     """The country a residency or right-to-work condition names, or a
-    "Remote (UK)" scope names, or None. The country is read next to the condition
-    (after it first, then before it), never from anywhere in the posting, so an
-    HQ, a client list or an "offices in Italy" line cannot stand in for it."""
+    "Remote (UK)" scope names, or None. The country is read only from the
+    sentence that holds the condition (after it first, then before it), so an
+    HQ, a client list or an "offices in Italy" line cannot stand in for it, and
+    "must reside in the EU" names no country at all."""
     for match in _RESIDENCY.finditer(text):
-        country = (country_in(text[match.start():match.end() + 60])
-                   or country_in(text[max(0, match.start() - 60):match.start()]))
+        left = max(text.rfind(end, 0, match.start()) for end in _SENTENCE_ENDS) + 1
+        right = min((i for i in (text.find(end, match.end()) for end in _SENTENCE_ENDS)
+                     if i != -1), default=len(text))
+        country = (country_in(text[match.start():right])
+                   or country_in(text[left:match.start()]))
         if country:
             return country
     for match in _REMOTE_PAREN_COUNTRY.finditer(text):
