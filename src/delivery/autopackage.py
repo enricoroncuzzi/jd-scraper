@@ -59,6 +59,29 @@ def check_cv_sources(pkg: PackagingConfig) -> None:
         raise FileNotFoundError(f"CV CSS source not found at {pkg.css_path!r} - set CV_CSS_PATH")
 
 
+def package_day(job: DeliveryJob, settings: DeliverySettings) -> str:
+    """The day folder a package belongs in: the day whose digest lists the job, the
+    tree the captain opens each morning. A delivered job already knows that day
+    (`delivery_day`), which also covers a job alerted and delivered in the same
+    08:00 tick. Before delivery it is the first 08:00 delivery at or after the
+    alert: the same local day when the alert went out before that day's delivery,
+    the next one when it went out after. That is exactly how `deliver_tier` assigns
+    `delivery_day`, so predicting here writes where `delivery_day` will confirm and
+    nothing has to move later. A job delivered without an alert has no `alerted_at`
+    (the failed-alert path); its note day is the delivery day, so it is used."""
+    if job.delivery_day is not None:
+        return job.delivery_day.isoformat()
+    if job.alerted_at is not None:
+        alerted = job.alerted_at.astimezone(settings.timezone)
+        day = alerted.date()
+        if alerted.time() >= settings.delivery_time:
+            day += timedelta(days=1)
+        return day.isoformat()
+    if job.note_day is not None:
+        return job.note_day.isoformat()
+    raise ValueError(f"job {job.id} has no note day")
+
+
 def _package_failures(cur) -> dict:
     cur.execute("SELECT key, value FROM kv_state WHERE key LIKE 'package_fail:%%'")
     return {key[len("package_fail:"):]: value for key, value in cur.fetchall()}
@@ -130,8 +153,9 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
                   pace, *, now: datetime, tailor_run, classify=classify_channel,
                   notify=notify_package) -> list[dict]:
     """Package every due candidate. `tailor_run(note_path, output_root, cv_master,
-    css, api_key)` is tailor.run. An OpenRouter daily-quota error ends the loop;
-    any other failure skips that job (it is retried on the next pass)."""
+    css, api_key, package_day=None)` is tailor.run; `package_day` is the day folder
+    the package belongs in (see `package_day`). An OpenRouter daily-quota error ends
+    the loop; any other failure skips that job (it is retried on the next pass)."""
     due = candidates(conn, cfg, now)
     if not due:
         return []
@@ -157,7 +181,7 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
         path = note_path(settings, job, job.note_day)
         try:
             directory = tailor_run(path, settings.output_path, pkg.cv_master_path, pkg.css_path,
-                                   pkg.llm_api_key)
+                                   pkg.llm_api_key, package_day=package_day(job, settings))
         except Exception as exc:  # noqa: BLE001 - one bad job must not stop the rest
             print(f"[deliver] tailoring failed for {job.company}: {exc}")
             if _openrouter_quota_exhausted(exc):

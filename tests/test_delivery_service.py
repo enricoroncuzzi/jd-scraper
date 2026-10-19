@@ -175,7 +175,7 @@ def test_a_halted_tailoring_is_retried_with_backoff_and_stops(store_conn, tmp_pa
     scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY)
     calls = []
 
-    def tailor(note, *a):
+    def tailor(note, *a, **kw):
         calls.append(note)
         raise ValueError("HALTED: cover-letter bridge is not concrete")
 
@@ -189,7 +189,7 @@ def test_a_halted_tailoring_is_retried_with_backoff_and_stops(store_conn, tmp_pa
 
 def test_a_missing_cv_source_sends_one_failure_message_a_day(store_conn, tmp_path):
     scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY)
-    service = _packaging_service(tmp_path, lambda *a: None, tmp_path / "nope.md")
+    service = _packaging_service(tmp_path, lambda *a, **kw: None, tmp_path / "nope.md")
     start = datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc)  # 08:00 Rome
     for minute in range(8 * 60):  # stays inside one local day
         service.tick(store_conn, start + timedelta(minutes=minute))

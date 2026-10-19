@@ -2,7 +2,7 @@ import json
 import os
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -10,8 +10,9 @@ import openai
 import pytest
 
 from src.delivery.autopackage import (
-    PackagingConfig, candidates, classify_through_pace, run_packaging,
+    PackagingConfig, candidates, classify_through_pace, package_day, run_packaging,
 )
+from src.delivery.jobs import load_jobs
 from src.delivery.settings import DeliverySettings
 from src.linkedin.pace import Gate, PaceGateClosed
 from src.processor.config import load_processor_config
@@ -38,10 +39,11 @@ def env(tmp_path):
 
 class Tailor:
     def __init__(self, tmp_path, fail=None):
-        self.calls, self.fail, self.tmp_path = [], fail or {}, tmp_path
+        self.calls, self.days, self.fail, self.tmp_path = [], [], fail or {}, tmp_path
 
-    def __call__(self, note, root, master, css, key):
+    def __call__(self, note, root, master, css, key, package_day=None):
         self.calls.append(note)
+        self.days.append(package_day)
         if note in self.fail:
             raise self.fail[note]
         directory = self.tmp_path / f"pkg{len(self.calls)}"
@@ -51,6 +53,53 @@ class Tailor:
 
 def _delivered(conn, n, score=9, **kw):
     return scored_job(conn, n, score, stage="delivered", note_day=DAY, **kw)
+
+
+def test_package_day_predicts_the_digest_day_from_the_alert(store_conn, env):
+    # A job alerted before its day's 08:00 delivery lands in that day's digest; one
+    # alerted after lands in the next morning's, whatever time packaging later runs.
+    settings, _ = env
+    before = scored_job(store_conn, 1, 9, note_day=DAY,
+                        alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))  # 07:00 Rome
+    after = scored_job(store_conn, 2, 9, note_day=DAY, alerted_at=NOW)  # 08:30 Rome
+    jobs = {j.id: j for j in load_jobs(store_conn, "j.id = ANY(%s::uuid[])", ([before, after],))}
+    assert package_day(jobs[before], settings) == "2026-10-14"
+    assert package_day(jobs[after], settings) == "2026-10-15"
+
+
+def test_package_day_prefers_the_delivered_day(store_conn, env):
+    # Once delivered, the actual digest day wins, covering the same-tick alert whose
+    # alert time is at/after 08:00 but which delivery still put in that day's digest.
+    settings, _ = env
+    job_id = scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY,
+                        delivery_day=date(2026, 10, 14), alerted_at=NOW)
+    job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
+    assert package_day(job, settings) == "2026-10-14"
+
+
+def test_run_packaging_passes_the_digest_day_to_the_tailor(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    before = scored_job(store_conn, 1, 10, note_day=DAY,
+                        alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))
+    after = scored_job(store_conn, 2, 9, note_day=DAY, alerted_at=NOW)
+    store_conn.commit()
+    tailor = Tailor(tmp_path)
+    results = run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                            classify=lambda link: "external_ats")
+    assert [r["job_id"] for r in results] == [before, after]
+    assert tailor.days == ["2026-10-14", "2026-10-15"]
+
+
+def test_existing_packages_under_another_day_are_untouched(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    keep = tmp_path / "out" / "2026-10-13" / "tier1" / "tailored" / "acme_1_ai_engineer_1"
+    keep.mkdir(parents=True)
+    (keep / "KEEP").write_text("already packaged")
+    scored_job(store_conn, 1, 9, note_day=DAY, alerted_at=NOW)
+    store_conn.commit()
+    run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=Tailor(tmp_path),
+                  classify=lambda link: "external_ats")
+    assert (keep / "KEEP").read_text() == "already packaged"
 
 
 def test_candidates_are_confirmed_above_threshold_with_a_note_and_no_package_yet(store_conn, cfg):
@@ -130,7 +179,7 @@ def test_an_openrouter_daily_quota_stops_the_loop(store_conn, cfg, env, tmp_path
         "quota", response=httpx.Response(429, request=httpx.Request("POST", "https://openrouter.ai")),
         body={"code": "token_quota_exceeded"})
 
-    def tailor(note, *args):
+    def tailor(note, *args, **kwargs):
         raise quota
 
     assert run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,

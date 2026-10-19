@@ -10,6 +10,7 @@ _COLUMNS = (
     "id", "note_no", "title", "company", "location_raw", "canonical_url", "description",
     "description_status", "work_mode", "remote_verdict", "remote_reason", "score", "comment",
     "summary", "tier", "note_day", "alerted_at", "stage", "stage_changed_at", "remote_advice",
+    "delivery_day",
 )
 SELECT_DELIVERY_JOB = f"SELECT {', '.join('j.' + c for c in _COLUMNS)} FROM jobs j"
 
@@ -36,6 +37,7 @@ class DeliveryJob:
     stage: str = "scored"
     stage_changed_at: datetime | None = None
     remote_advice: str = ""
+    delivery_day: date | None = None
     source: str = "linkedin"
     also_seen_on: list[str] = field(default_factory=list)
 

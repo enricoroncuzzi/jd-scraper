@@ -9,9 +9,13 @@ def _package_dirname(jd: JobDescription) -> str:
     return f"{_slugify(jd.company)}_{_slugify(jd.title)}_{jd.offer_id}"
 
 
-def artifact_dir(jd: JobDescription, jd_output_root: str) -> str:
+def artifact_dir(jd: JobDescription, jd_output_root: str, package_day: str | None = None) -> str:
+    """Where one offer's package lives. `package_day` overrides the note's own day
+    for auto-tailoring: the package belongs to the day whose digest lists the job
+    (see src.delivery.autopackage.package_day), not the day the note was written.
+    The manual `tailor:` flow keeps the note's day, where the note actually is."""
     directory = os.path.join(
-        jd_output_root, jd.date, f"tier{jd.tier}", "tailored", _package_dirname(jd)
+        jd_output_root, package_day or jd.date, f"tier{jd.tier}", "tailored", _package_dirname(jd)
     )
     os.makedirs(directory, exist_ok=True)
     return directory
