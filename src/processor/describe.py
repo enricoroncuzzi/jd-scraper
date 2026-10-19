@@ -7,6 +7,9 @@ per-job penalty; job-specific refusals (401/403/503/504) and the unreadable-mark
 path keep the 30 minutes doubling to 12 hours backoff. The job expires after 7
 days of host refusals, or when the posting is over 30 days old. The title+company
 fallback is never used as a description.
+
+The queue is not swept tier by tier: a job past `description_urgent_after_hours`
+goes first whatever its tier, and otherwise the tiers take turns. See `_next_job`.
 """
 import time
 from datetime import datetime, timedelta
@@ -21,6 +24,17 @@ from src.services.pulse import pulse
 
 UNREADABLE_ATTEMPTS = 3
 
+# The filters a description pick applies. Shared so `_next_job` and
+# `oldest_waiting_description` (hence `description_overdue`) cannot drift apart.
+_WAITING = ("stage = 'seen' AND tier IS NOT NULL "
+            "AND description_status IN ('pending', 'rate_limited') "
+            "AND next_attempt_at <= %s")
+# One kv_state row per tier holding when that tier last had a description fetch
+# attempt. A timestamp column would need a schema change (and its
+# AccessExclusiveLock); the jobs table has no description-fetch time to derive it
+# from, because stage_changed_at moves on with every later stage.
+TURN_KEY = "description_turn:"
+
 
 def refusal_delay(attempts: int, cfg: ProcessorConfig) -> timedelta:
     """Wait after the `attempts`-th refusal: 30 min, 1 h, 2 h ... capped at 12 h."""
@@ -30,17 +44,19 @@ def refusal_delay(attempts: int, cfg: ProcessorConfig) -> timedelta:
 
 def oldest_waiting_description(cur, now: datetime) -> datetime | None:
     """The `first_seen_at` of the oldest job fetchable for a description right now
-    (the same predicate as `_next_job`), or None when none is waiting."""
-    cur.execute(
-        "SELECT min(first_seen_at) FROM jobs WHERE stage = 'seen' AND tier IS NOT NULL "
-        "AND description_status IN ('pending', 'rate_limited') AND next_attempt_at <= %s", (now,))
+    (the same `_WAITING` filters as `_next_job`), or None when none is waiting."""
+    cur.execute(f"SELECT min(first_seen_at) FROM jobs WHERE {_WAITING}", (now,))
     return cur.fetchone()[0]
 
 
 def description_overdue(cur, cfg: ProcessorConfig, now: datetime) -> bool:
     """True when the oldest waiting job was first seen more than
     `description_deadline_hours` ago: an overdue description may spend more than one
-    processor tick waiting for its turn."""
+    processor tick waiting for its turn.
+
+    This is the pace's guard, not the queue order: it keeps its meaning (a description
+    that is late may wait out the tick budget) and stays independent of
+    `description_urgent_after_hours`, which only decides who goes first."""
     oldest = oldest_waiting_description(cur, now)
     return oldest is not None and now - oldest > timedelta(hours=cfg.description_deadline_hours)
 
@@ -68,13 +84,54 @@ def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
     return total
 
 
-def _next_job(cur, now: datetime) -> JobRow | None:
+def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> JobRow | None:
+    """The next job to fetch a description for, in two cheap queries.
+
+    1. A job past `description_urgent_after_hours` goes first whatever its tier,
+       oldest first, so nothing can miss the digest's 4-day target behind a backlog
+       in a busier tier.
+    2. Otherwise the tiers take turns: the tier whose last fetch attempt is oldest
+       goes first (a tier never served yet is oldest of all), then that tier's oldest
+       job; ties go to tier 1. This mirrors `claim_due_slice` in
+       `src/linkedin/walk.py`, so no tier can starve.
+
+    `ORDER BY tier, first_seen_at` gave tier 3 and tier 4 a turn only once tiers 1 and 2
+    were empty: on 2026-10-19 that left 936 tier-3 descriptions waiting, the oldest past
+    the 4-day target. The pace and the number of requests are unaffected.
+
+    Ties break on `note_no`, the insertion-order identity column, so the pick is stable
+    for jobs recorded in the same second (the previous query got that order from the
+    index scan, and a random UUID would reshuffle it on every call)."""
+    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
     cur.execute(
-        "SELECT id FROM jobs WHERE stage = 'seen' AND tier IS NOT NULL "
-        "AND description_status IN ('pending', 'rate_limited') AND next_attempt_at <= %s "
-        "ORDER BY tier, first_seen_at LIMIT 1", (now,))
+        f"SELECT id FROM jobs WHERE {_WAITING} AND first_seen_at < %s "
+        "ORDER BY first_seen_at, tier, note_no LIMIT 1", (now, cutoff))
     row = cur.fetchone()
+    if row is None:
+        cur.execute(
+            f"WITH waiting AS (SELECT id, tier, first_seen_at, note_no FROM jobs "
+            f"WHERE {_WAITING} AND first_seen_at >= %s) "
+            "SELECT w.id FROM waiting w "
+            "LEFT JOIN kv_state k ON k.key = %s || w.tier "
+            "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier, w.first_seen_at, "
+            "w.note_no LIMIT 1", (now, cutoff, TURN_KEY))
+        row = cur.fetchone()
     return load_job(cur, row[0]) if row else None
+
+
+def _record_turn(cur, tier: int) -> None:
+    """Remember that `tier` just had a description fetch attempt, so the next pick
+    starts with the tier served longest ago. Plain upsert on one kv_state row per
+    tier: no new column, so no table rewrite or AccessExclusiveLock to take.
+
+    The time is the store's `clock_timestamp()`, not the tick's `now`: every fetch in a
+    tick shares one `now`, so tiers served in the same tick would tie and the lowest
+    tier would win every tie, drifting back to tier order."""
+    cur.execute(
+        "INSERT INTO kv_state (key, value, updated_at) "
+        "VALUES (%s, jsonb_build_object('at', clock_timestamp()), clock_timestamp()) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
+        (f"{TURN_KEY}{tier}",))
 
 
 def _linkedin_id(cur, job_id) -> str | None:
@@ -89,7 +146,7 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     """Fetch one description. Returns None when no job is waiting for one, else one
     of 'described', 'throttled', 'refused', 'gone' or 'unreadable'."""
     with conn.cursor() as cur:
-        job = _next_job(cur, now)
+        job = _next_job(cur, cfg, now)
         if job is None:
             return None
         overdue = description_overdue(cur, cfg, now)
@@ -100,6 +157,13 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
             return "gone"
     result = fetch_description(pace, linkedin_id, overdue=overdue, get=get, sleep=sleep)
     with conn.cursor() as cur:
+        if result.status == "deferred":
+            # The schedule gate closed (a configured closed window or the daily cap) between
+            # requests. Leave the job exactly as it is; the next tick retries it.
+            return "deferred"
+        # Any attempt is this tier's turn in the rotation, whatever the outcome: a tier
+        # whose fetches keep being throttled must not keep taking the next turn.
+        _record_turn(cur, job.tier)
         if result.status == "ok":
             cur.execute(
                 "UPDATE jobs SET description = %s, description_status = 'ok', "
@@ -109,10 +173,6 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
             job.description = result.text
             finish_with_description(cur, job, now)
             outcome = "described"
-        elif result.status == "deferred":
-            # The schedule gate closed (a configured closed window or the daily cap) between
-            # requests. Leave the job exactly as it is; the next tick retries it.
-            return "deferred"
         elif result.status == "throttled":
             # A host refusal (429/999): back to the queue with no per-job penalty. The
             # 7-day expiry still applies; attempts and next_attempt_at are untouched.

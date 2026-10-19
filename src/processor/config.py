@@ -37,6 +37,7 @@ class ProcessorConfig:
     descriptions_per_tick: int = 20
     description_seconds_per_tick: int = 120
     description_deadline_hours: int = 24
+    description_urgent_after_hours: int = 60
     cheap_checks_per_tick: int = 200
     refusal_expiry_days: int = 7
     posting_max_age_days: int = 30
@@ -76,6 +77,15 @@ def load_policies(paths: list[str], title_prefilter: dict[int, bool]) -> dict[in
     return policies
 
 
+def _require_hours(data: dict, key: str, default: int, where: str = "processor") -> int:
+    """A whole number of hours >= 1: a non-positive or non-integer deadline would
+    silently disable (or invert) the guard that reads it."""
+    value = data.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{where}.{key} must be an integer >= 1, got {value!r}")
+    return value
+
+
 def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
                           tier_paths: list[str] = TIER_CONFIG_PATHS) -> ProcessorConfig:
     with open(path) as handle:
@@ -88,7 +98,8 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         flush_after_minutes=int(data["flush_after_minutes"]),
         descriptions_per_tick=int(data["descriptions_per_tick"]),
         description_seconds_per_tick=int(data.get("description_seconds_per_tick", 120)),
-        description_deadline_hours=int(data.get("description_deadline_hours", 24)),
+        description_deadline_hours=_require_hours(data, "description_deadline_hours", 24),
+        description_urgent_after_hours=_require_hours(data, "description_urgent_after_hours", 60),
         cheap_checks_per_tick=int(data["cheap_checks_per_tick"]),
         refusal_expiry_days=int(data["refusal_expiry_days"]),
         posting_max_age_days=int(data["posting_max_age_days"]),

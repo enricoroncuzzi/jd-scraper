@@ -242,7 +242,9 @@ configured in `config/schedule.json`:
 | `refused_pages_to_defer` | `3` | refusals in a row before a walk defers its slice |
 
 Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
-point where an overdue description may spend more than one tick), `config/deliver.json`
+point where an overdue description may spend more than one tick) and
+`description_urgent_after_hours` (`60`, the point where a waiting job goes ahead of the tier
+rotation so it still reaches the digest inside the 4-day target), `config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
 repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2]` freehire,
 `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
@@ -262,6 +264,14 @@ job is over `description_deadline_hours` old, an overdue description that the sh
 the next turn may spend more than one processor tick waiting for it. If a walk is refused three
 times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
 The gate now closes only for the daily cap: there is no night window as shipped.
+
+Which description goes next is decided by `src/processor/describe.py` `_next_job`, and it does
+not sweep the tiers in order: a job past `description_urgent_after_hours` (60 h) goes first
+whatever its tier, oldest first, and otherwise the tiers take turns (the tier whose last fetch
+attempt is oldest goes next, then that tier's oldest job, ties to tier 1). The per-tier
+"last served" times are one `kv_state` row per tier (`description_turn:<tier>`), not a new
+column; deleting those rows just restarts the rotation from tier 1. The pace and the
+number of requests are unaffected, only who gets the turn.
 
 A flat 110 s over 24 h would be about 785 requests. The 108 s floor clamps the low jitter draws
 (110 x 0.8 = 88 s becomes 108 s), so the realised mean spacing is about 114.5 s and the weekend
@@ -387,7 +397,9 @@ a hang.
    75s weekday / 110s weekend`. Expect one "OK again: collection is healthy"
    Telegram note on the first watchdog run (the old `health:collection` ledger row clears once).
    LinkedIn jobs penalised by old 429s keep their `next_attempt_at` (up to 12 h) once after
-   deploy, so the first day's description lag is not misread as a new bug.
+   deploy, so the first day's description lag is not misread as a new bug. `init_store` also
+   builds `jobs_description_queue_idx`, the partial index the new description pick reads; on a
+   300k-row store it builds in well under a second.
 
 ### Week one review (design 4.6 C and section 8)
 
