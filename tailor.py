@@ -53,6 +53,7 @@ def run(
     cv_master_path: str,
     css_path: str,
     api_key: str,
+    package_day: str | None = None,
 ) -> str:
     jd = parse_note(note_path)
     canonical = load_canonical(cv_master_path)
@@ -78,12 +79,12 @@ def run(
         )
 
     if cv_violations or cl_violations:
-        directory = artifact_dir(jd, jd_output_root)
+        directory = artifact_dir(jd, jd_output_root, package_day)
         write_review(directory, jd.company, cv_violations, cl_violations, claims)
         reason = "; ".join(cv_violations + cl_violations)
         raise ValueError(f"HALTED: {reason}")
 
-    directory = artifact_dir(jd, jd_output_root)
+    directory = artifact_dir(jd, jd_output_root, package_day)
     css = open(css_path).read() if css_path and os.path.exists(css_path) else ""
 
     cv_pdf_path = os.path.join(directory, "Roncuzzi_CV.pdf")

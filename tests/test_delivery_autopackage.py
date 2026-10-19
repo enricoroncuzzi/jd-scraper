@@ -2,7 +2,7 @@ import json
 import os
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -10,8 +10,9 @@ import openai
 import pytest
 
 from src.delivery.autopackage import (
-    PackagingConfig, candidates, classify_through_pace, run_packaging,
+    PackagingConfig, candidates, classify_through_pace, package_day, run_packaging,
 )
+from src.delivery.jobs import load_jobs
 from src.delivery.settings import DeliverySettings
 from src.linkedin.pace import Gate, PaceGateClosed
 from src.processor.config import load_processor_config
@@ -38,10 +39,11 @@ def env(tmp_path):
 
 class Tailor:
     def __init__(self, tmp_path, fail=None):
-        self.calls, self.fail, self.tmp_path = [], fail or {}, tmp_path
+        self.calls, self.days, self.fail, self.tmp_path = [], [], fail or {}, tmp_path
 
-    def __call__(self, note, root, master, css, key):
+    def __call__(self, note, root, master, css, key, package_day=None):
         self.calls.append(note)
+        self.days.append(package_day)
         if note in self.fail:
             raise self.fail[note]
         directory = self.tmp_path / f"pkg{len(self.calls)}"
@@ -51,6 +53,50 @@ class Tailor:
 
 def _delivered(conn, n, score=9, **kw):
     return scored_job(conn, n, score, stage="delivered", note_day=DAY, **kw)
+
+
+def test_package_day_predicts_the_next_digest_day_before_delivery(store_conn, env):
+    # An undelivered job lands in today's digest while today's 08:00 delivery has not
+    # started, and in tomorrow's once it has.
+    settings, _ = env
+    job_id = scored_job(store_conn, 1, 9, note_day=DAY,
+                        alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))  # 07:00 Rome
+    job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
+    assert package_day(job, settings, datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc)) == "2026-10-14"
+    assert package_day(job, settings, NOW) == "2026-10-15"
+
+
+def test_package_day_of_a_failed_alert_is_the_next_digest_not_the_note_day(store_conn, env):
+    # The alert send failed at 10:00 Rome: the note is written under its note day but
+    # the job is only delivered by the next morning's digest.
+    settings, _ = env
+    job_id = scored_job(store_conn, 1, 9, note_day=DAY)
+    job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
+    assert job.alerted_at is None
+    assert package_day(job, settings, datetime(2026, 10, 14, 8, 0, tzinfo=timezone.utc)) == "2026-10-15"
+
+
+def test_package_day_prefers_the_delivered_day(store_conn, env):
+    # Once delivered, the actual digest day wins, covering the same-tick alert whose
+    # alert time is at/after 08:00 but which delivery still put in that day's digest.
+    settings, _ = env
+    job_id = scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY,
+                        delivery_day=date(2026, 10, 14), alerted_at=NOW)
+    job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
+    assert package_day(job, settings, NOW + timedelta(days=1)) == "2026-10-14"
+
+
+def test_run_packaging_passes_the_digest_day_to_the_tailor(store_conn, cfg, env, tmp_path):
+    settings, pkg = env
+    delivered = scored_job(store_conn, 1, 10, stage="delivered", note_day=DAY,
+                           delivery_day=DAY, alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))
+    alerted = scored_job(store_conn, 2, 9, note_day=DAY, alerted_at=NOW)
+    store_conn.commit()
+    tailor = Tailor(tmp_path)
+    results = run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                            classify=lambda link: "external_ats")
+    assert [r["job_id"] for r in results] == [delivered, alerted]
+    assert tailor.days == ["2026-10-14", "2026-10-15"]
 
 
 def test_candidates_are_confirmed_above_threshold_with_a_note_and_no_package_yet(store_conn, cfg):
@@ -130,7 +176,7 @@ def test_an_openrouter_daily_quota_stops_the_loop(store_conn, cfg, env, tmp_path
         "quota", response=httpx.Response(429, request=httpx.Request("POST", "https://openrouter.ai")),
         body={"code": "token_quota_exceeded"})
 
-    def tailor(note, *args):
+    def tailor(note, *args, **kwargs):
         raise quota
 
     assert run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,

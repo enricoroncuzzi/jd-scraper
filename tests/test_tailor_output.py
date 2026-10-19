@@ -20,6 +20,36 @@ def test_artifact_dir_path_and_creation(tmp_path):
     assert os.path.isdir(d)
 
 
+def test_artifact_dir_honours_an_explicit_package_day(tmp_path):
+    # Auto-tailoring passes the digest day, not the note's day (option 1).
+    d = artifact_dir(_jd(), str(tmp_path), package_day="2026-10-19")
+    assert d == os.path.join(
+        str(tmp_path), "2026-10-19", "tier1", "tailored",
+        "logicalis_spain_ai_engineer_63",
+    )
+    assert os.path.isdir(d)
+
+
+def test_artifact_dir_keeps_the_tier_segment_for_a_tier2_package(tmp_path):
+    tier2 = _jd().model_copy(update={"tier": 2})
+    d = artifact_dir(tier2, str(tmp_path), package_day="2026-10-19")
+    assert d == os.path.join(
+        str(tmp_path), "2026-10-19", "tier2", "tailored",
+        "logicalis_spain_ai_engineer_63",
+    )
+
+
+def test_artifact_dir_keeps_every_other_day_folder_untouched(tmp_path):
+    existing = os.path.join(
+        str(tmp_path), "2026-07-02", "tier1", "tailored", "logicalis_spain_ai_engineer_63",
+    )
+    os.makedirs(existing)
+    with open(os.path.join(existing, "KEEP"), "w") as f:
+        f.write("already packaged")
+    artifact_dir(_jd(), str(tmp_path), package_day="2026-07-03")
+    assert open(os.path.join(existing, "KEEP")).read() == "already packaged"
+
+
 def test_same_company_offers_in_one_tier_keep_separate_packages(tmp_path):
     first = _jd(company="Alignerr").model_copy(update={
         "title": "AI Tutor", "offer_id": 101,

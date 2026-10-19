@@ -100,6 +100,25 @@ def test_run_assembles_verbatim_and_writes_all(tmp_path, monkeypatch):
     assert open(os.path.join(out_dir, "hr_message.txt")).read().strip() != ""
 
 
+def test_run_writes_the_package_under_the_day_the_digest_names(tmp_path, monkeypatch):
+    # The auto-tailoring caller passes the digest day; the note's own day is only
+    # the default for the manual `tailor:` flow.
+    master, note = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: _full_selection(master))
+    monkeypatch.setattr(tailor_cli, "render_pdf", lambda md, css, out: open(out, "w").write("PDF"))
+    monkeypatch.setattr(tailor_cli, "render_cover_letter_pdf", lambda text, out: open(out, "w").write("PDF"))
+    monkeypatch.setattr(tailor_cli, "pdf_page_count", lambda path: 1)
+
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", package_day="2026-07-03")
+
+    assert out_dir == os.path.join(
+        str(root), "2026-07-03", "tier1", "tailored", "acme_ai_engineer_5"
+    )
+    assert os.path.exists(os.path.join(out_dir, "Roncuzzi_CV.pdf"))
+    assert not os.path.exists(os.path.join(str(root), "2026-07-02", "tier1", "tailored"))
+
+
 def _note(company: str, title: str) -> str:
     return NOTE.replace("company: Acme", f"company: {company}").replace(
         "# AI Engineer - Acme", f"# {title} - {company}"
