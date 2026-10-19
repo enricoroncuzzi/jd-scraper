@@ -269,8 +269,8 @@ Which description goes next is decided by `src/processor/describe.py` `_next_job
 not sweep the tiers in order: a job past `description_urgent_after_hours` (60 h) goes first
 whatever its tier, oldest first, and otherwise the tiers take turns (the tier whose last fetch
 attempt is oldest goes next, then that tier's oldest job, ties to tier 1). The per-tier
-"last served" times are one `kv_state` row per tier (`description_turn:<tier>`), so there is no
-schema change; deleting those rows just restarts the rotation from tier 1. The pace and the
+"last served" times are one `kv_state` row per tier (`description_turn:<tier>`), not a new
+column; deleting those rows just restarts the rotation from tier 1. The pace and the
 number of requests are unaffected, only who gets the turn.
 
 A flat 110 s over 24 h would be about 785 requests. The 108 s floor clamps the low jitter draws

@@ -122,7 +122,7 @@ def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> JobRow | None:
 def _record_turn(cur, tier: int) -> None:
     """Remember that `tier` just had a description fetch attempt, so the next pick
     starts with the tier served longest ago. Plain upsert on one kv_state row per
-    tier: no DDL, so no schema fingerprint change and nothing to migrate on deploy.
+    tier: no new column, so no table rewrite or AccessExclusiveLock to take.
 
     The time is the store's `clock_timestamp()`, not the tick's `now`: every fetch in a
     tick shares one `now`, so tiers served in the same tick would tie and the lowest
