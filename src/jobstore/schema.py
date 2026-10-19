@@ -102,6 +102,12 @@ DDL: list[str] = [
     "CREATE INDEX IF NOT EXISTS jobs_identity_idx ON jobs (company_norm, title_norm, country)",
     """CREATE INDEX IF NOT EXISTS jobs_next_attempt_idx ON jobs (next_attempt_at)
        WHERE stage IN ('seen', 'described')""",
+    # The description queue (src/processor/describe.py `_next_job`): both picks read the
+    # waiting set in first_seen_at order, and without this they fell back to a full scan
+    # (23 ms on 200k rows, every fetch). The partial predicate matches the query exactly.
+    """CREATE INDEX IF NOT EXISTS jobs_description_queue_idx ON jobs (first_seen_at, tier, note_no)
+       WHERE stage = 'seen' AND tier IS NOT NULL
+         AND description_status IN ('pending', 'rate_limited')""",
     """CREATE INDEX IF NOT EXISTS jobs_unarchived_idx ON jobs (stage)
        WHERE archived_at IS NULL AND stage IN ('scored', 'delivered', 'expired')""",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_text TEXT",

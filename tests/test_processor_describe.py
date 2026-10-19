@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -158,7 +159,7 @@ def test_gone_postings_expire_and_unreadable_ones_expire_after_three_tries(store
     assert _state(store_conn, bad)[:3] == ("expired", "description_unreadable", "failed")
 
 
-def test_tier_one_is_described_before_tier_three(store_conn, cfg):
+def test_a_tie_between_tiers_goes_to_tier_one(store_conn, cfg):
     three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
     one = _tiered_job(store_conn, cfg, "3900000001")
     describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)), sleep=lambda _s: None)
@@ -398,6 +399,123 @@ def test_fetch_description_reports_a_busy_pace_as_deferred():
 
 def test_the_shipped_processor_config_has_a_24_hour_description_deadline():
     assert load_processor_config().description_deadline_hours == 24
+
+
+# -- the queue order: an urgent band, then the tiers take turns --------------------------
+
+def _age(conn, hours_by_job: dict, now: datetime = NOW) -> None:
+    """Backdate `first_seen_at` by the given hours."""
+    with conn.cursor() as cur:
+        for job_id, hours in hours_by_job.items():
+            cur.execute("UPDATE jobs SET first_seen_at = %s WHERE id = %s",
+                        (now - timedelta(hours=hours), job_id))
+    conn.commit()
+
+
+def _describe_in_order(store_conn, cfg, count: int, start: datetime = NOW) -> list:
+    """Run `count` description fetches and return the job ids in the order fetched."""
+    fetched: list = []
+    for minute in range(count):
+        before = set(fetched)
+        assert describe_next(store_conn, FakePace(), cfg, start + timedelta(minutes=minute),
+                             get=ScriptedGet(response(200, FRAGMENT)), sleep=lambda _s: None) == "described"
+        with store_conn.cursor() as cur:
+            cur.execute("SELECT id FROM jobs WHERE stage = 'described'")
+            picked = {row[0] for row in cur.fetchall()} - before
+        assert len(picked) == 1
+        fetched.extend(picked)
+    return fetched
+
+
+def test_tiers_take_turns_so_tier_three_and_four_are_not_starved(store_conn, cfg):
+    # "ORDER BY tier, first_seen_at" gave tier 3 and tier 4 a turn only once tiers 1 and 2
+    # were empty (2026-10-19: 936 tier-3 jobs waiting, the oldest four days old).
+    first = _tiered_job(store_conn, cfg, "3900000001")
+    second = _tiered_job(store_conn, cfg, "3900000002")
+    two = _tiered_job(store_conn, cfg, "3900000003", location="Zurich, Switzerland", tier_hint=2)
+    three = _tiered_job(store_conn, cfg, "3900000004", location="Berlin, Germany", tier_hint=3)
+    four = _tiered_job(store_conn, cfg, "3900000005", location="London, United Kingdom", tier_hint=4)
+    assert _describe_in_order(store_conn, cfg, 5) == [first, two, three, four, second]
+
+
+def test_a_job_past_the_urgency_threshold_goes_first_whatever_its_tier(store_conn, cfg):
+    _tiered_job(store_conn, cfg, "3900000001")  # the rotation would serve tier 1 first
+    old_three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
+    _age(store_conn, {old_three: 61})
+    assert _describe_in_order(store_conn, cfg, 1) == [old_three]
+
+
+def test_urgent_jobs_go_oldest_first_across_tiers(store_conn, cfg):
+    four = _tiered_job(store_conn, cfg, "3900000004", location="London, United Kingdom", tier_hint=4)
+    three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
+    one = _tiered_job(store_conn, cfg, "3900000001")
+    # Exactly at the threshold is not past it, so tier 1 stays in the rotation.
+    _age(store_conn, {four: 96, three: 72, one: 60})
+    assert _describe_in_order(store_conn, cfg, 3) == [four, three, one]
+
+
+def test_the_urgent_band_keeps_the_stage_tier_status_and_backoff_filters(store_conn, cfg):
+    in_backoff = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
+    described = _tiered_job(store_conn, cfg, "3900000002", location="Zurich, Switzerland", tier_hint=2)
+    untiered = record_sighting(store_conn, CardInput(
+        source="linkedin", source_job_id="3900000009",
+        source_url="https://www.linkedin.com/jobs/view/ai-3900000009", title="AI 3900000009",
+        company="Acme", location="Milan, Italy", tier_hint=1), NOW).job_id
+    waiting = _tiered_job(store_conn, cfg, "3900000004", location="London, United Kingdom", tier_hint=4)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET next_attempt_at = %s WHERE id = %s",
+                    (NOW + timedelta(hours=1), in_backoff))
+        cur.execute("UPDATE jobs SET description_status = 'ok', description = 'text' WHERE id = %s",
+                    (described,))
+    store_conn.commit()
+    _age(store_conn, {in_backoff: 100, described: 90, untiered: 80})
+    assert _describe_in_order(store_conn, cfg, 1) == [waiting]
+
+
+def test_a_deferred_fetch_does_not_use_up_the_tier_turn(store_conn, cfg):
+    # A deferral is no attempt at all (the gate closed between requests), so the tier must
+    # keep its place in the rotation instead of being rotated to the back.
+    three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
+    one = _tiered_job(store_conn, cfg, "3900000001")
+    assert describe_next(store_conn, BusyPace(), cfg, NOW, get=ScriptedGet(),
+                         sleep=lambda _s: None) == "deferred"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM kv_state WHERE key LIKE 'description_turn:%%'")
+        assert cur.fetchone()[0] == 0
+    assert _describe_in_order(store_conn, cfg, 1) == [one]
+    assert _state(store_conn, three)[0] == "seen"
+
+
+def test_the_rotation_state_is_one_kv_state_row_per_tier(store_conn, cfg):
+    one = _tiered_job(store_conn, cfg, "3900000001")
+    three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
+    _describe_in_order(store_conn, cfg, 2)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT key FROM kv_state WHERE key LIKE 'description_turn:%%' ORDER BY key")
+        assert [row[0] for row in cur.fetchall()] == ["description_turn:1", "description_turn:3"]
+    assert {_state(store_conn, one)[0], _state(store_conn, three)[0]} == {"described"}
+
+
+def test_the_shipped_config_puts_a_job_ahead_of_the_rotation_after_60_hours():
+    assert load_processor_config().description_urgent_after_hours == 60
+
+
+@pytest.mark.parametrize("value", [0, -1, "60", 60.5, True, None])
+def test_an_invalid_urgency_threshold_is_rejected(tmp_path, value):
+    data = json.load(open("config/processor.json"))
+    data["description_urgent_after_hours"] = value
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="description_urgent_after_hours"):
+        load_processor_config(str(path))
+
+
+def test_a_missing_urgency_threshold_defaults_to_60_hours(tmp_path):
+    data = json.load(open("config/processor.json"))
+    del data["description_urgent_after_hours"]
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).description_urgent_after_hours == 60
 
 
 def test_the_processor_and_deliver_paces_give_up_after_the_description_budget(cfg):
