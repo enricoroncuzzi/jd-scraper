@@ -438,6 +438,29 @@ def test_tiers_take_turns_so_tier_three_and_four_are_not_starved(store_conn, cfg
     assert _describe_in_order(store_conn, cfg, 5) == [first, two, three, four, second]
 
 
+def test_tiers_take_turns_when_one_tick_fetches_several_descriptions(store_conn, cfg):
+    # One processor tick passes the same `now` to every fetch it makes. The turn must
+    # still move on with each fetch, or tiers served in the same tick tie and tier 1/2
+    # win every tie, drifting back to "ORDER BY tier".
+    two = [_tiered_job(store_conn, cfg, f"390000002{i}", location="Zurich, Switzerland", tier_hint=2)
+           for i in range(3)]
+    three = [_tiered_job(store_conn, cfg, f"390000003{i}", location="Berlin, Germany", tier_hint=3)
+             for i in range(3)]
+    four = [_tiered_job(store_conn, cfg, f"390000004{i}", location="London, United Kingdom", tier_hint=4)
+            for i in range(3)]
+    fetched: list = []
+    for _tick in range(3):
+        for _fetch in range(3):
+            before = set(fetched)
+            assert describe_next(store_conn, FakePace(), cfg, NOW, get=ScriptedGet(response(200, FRAGMENT)),
+                                 sleep=lambda _s: None) == "described"
+            with store_conn.cursor() as cur:
+                cur.execute("SELECT id FROM jobs WHERE stage = 'described'")
+                fetched.extend({row[0] for row in cur.fetchall()} - before)
+    tier_of = {job: tier for tier, jobs in ((2, two), (3, three), (4, four)) for job in jobs}
+    assert [tier_of[job] for job in fetched] == [2, 3, 4] * 3
+
+
 def test_a_job_past_the_urgency_threshold_goes_first_whatever_its_tier(store_conn, cfg):
     _tiered_job(store_conn, cfg, "3900000001")  # the rotation would serve tier 1 first
     old_three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)

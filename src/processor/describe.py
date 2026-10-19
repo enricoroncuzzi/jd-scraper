@@ -11,7 +11,6 @@ fallback is never used as a description.
 The queue is not swept tier by tier: a job past `description_urgent_after_hours`
 goes first whatever its tier, and otherwise the tiers take turns. See `_next_job`.
 """
-import json
 import time
 from datetime import datetime, timedelta
 
@@ -120,14 +119,19 @@ def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> JobRow | None:
     return load_job(cur, row[0]) if row else None
 
 
-def _record_turn(cur, tier: int, now: datetime) -> None:
+def _record_turn(cur, tier: int) -> None:
     """Remember that `tier` just had a description fetch attempt, so the next pick
     starts with the tier served longest ago. Plain upsert on one kv_state row per
-    tier: no DDL, so no schema fingerprint change and nothing to migrate on deploy."""
+    tier: no DDL, so no schema fingerprint change and nothing to migrate on deploy.
+
+    The time is the store's `clock_timestamp()`, not the tick's `now`: every fetch in a
+    tick shares one `now`, so tiers served in the same tick would tie and the lowest
+    tier would win every tie, drifting back to tier order."""
     cur.execute(
-        "INSERT INTO kv_state (key, value, updated_at) VALUES (%s, %s::jsonb, %s) "
+        "INSERT INTO kv_state (key, value, updated_at) "
+        "VALUES (%s, jsonb_build_object('at', clock_timestamp()), clock_timestamp()) "
         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
-        (f"{TURN_KEY}{tier}", json.dumps({"at": now.isoformat()}), now))
+        (f"{TURN_KEY}{tier}",))
 
 
 def _linkedin_id(cur, job_id) -> str | None:
@@ -159,7 +163,7 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
             return "deferred"
         # Any attempt is this tier's turn in the rotation, whatever the outcome: a tier
         # whose fetches keep being throttled must not keep taking the next turn.
-        _record_turn(cur, job.tier, now)
+        _record_turn(cur, job.tier)
         if result.status == "ok":
             cur.execute(
                 "UPDATE jobs SET description = %s, description_status = 'ok', "
