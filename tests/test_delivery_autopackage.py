@@ -55,16 +55,25 @@ def _delivered(conn, n, score=9, **kw):
     return scored_job(conn, n, score, stage="delivered", note_day=DAY, **kw)
 
 
-def test_package_day_predicts_the_digest_day_from_the_alert(store_conn, env):
-    # A job alerted before its day's 08:00 delivery lands in that day's digest; one
-    # alerted after lands in the next morning's, whatever time packaging later runs.
+def test_package_day_predicts_the_next_digest_day_before_delivery(store_conn, env):
+    # An undelivered job lands in today's digest while today's 08:00 delivery has not
+    # started, and in tomorrow's once it has.
     settings, _ = env
-    before = scored_job(store_conn, 1, 9, note_day=DAY,
+    job_id = scored_job(store_conn, 1, 9, note_day=DAY,
                         alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))  # 07:00 Rome
-    after = scored_job(store_conn, 2, 9, note_day=DAY, alerted_at=NOW)  # 08:30 Rome
-    jobs = {j.id: j for j in load_jobs(store_conn, "j.id = ANY(%s::uuid[])", ([before, after],))}
-    assert package_day(jobs[before], settings) == "2026-10-14"
-    assert package_day(jobs[after], settings) == "2026-10-15"
+    job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
+    assert package_day(job, settings, datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc)) == "2026-10-14"
+    assert package_day(job, settings, NOW) == "2026-10-15"
+
+
+def test_package_day_of_a_failed_alert_is_the_next_digest_not_the_note_day(store_conn, env):
+    # The alert send failed at 10:00 Rome: the note is written under its note day but
+    # the job is only delivered by the next morning's digest.
+    settings, _ = env
+    job_id = scored_job(store_conn, 1, 9, note_day=DAY)
+    job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
+    assert job.alerted_at is None
+    assert package_day(job, settings, datetime(2026, 10, 14, 8, 0, tzinfo=timezone.utc)) == "2026-10-15"
 
 
 def test_package_day_prefers_the_delivered_day(store_conn, env):
@@ -74,19 +83,19 @@ def test_package_day_prefers_the_delivered_day(store_conn, env):
     job_id = scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY,
                         delivery_day=date(2026, 10, 14), alerted_at=NOW)
     job = load_jobs(store_conn, "j.id = %s", (job_id,))[0]
-    assert package_day(job, settings) == "2026-10-14"
+    assert package_day(job, settings, NOW + timedelta(days=1)) == "2026-10-14"
 
 
 def test_run_packaging_passes_the_digest_day_to_the_tailor(store_conn, cfg, env, tmp_path):
     settings, pkg = env
-    before = scored_job(store_conn, 1, 10, note_day=DAY,
-                        alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))
-    after = scored_job(store_conn, 2, 9, note_day=DAY, alerted_at=NOW)
+    delivered = scored_job(store_conn, 1, 10, stage="delivered", note_day=DAY,
+                           delivery_day=DAY, alerted_at=datetime(2026, 10, 14, 5, 0, tzinfo=timezone.utc))
+    alerted = scored_job(store_conn, 2, 9, note_day=DAY, alerted_at=NOW)
     store_conn.commit()
     tailor = Tailor(tmp_path)
     results = run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
                             classify=lambda link: "external_ats")
-    assert [r["job_id"] for r in results] == [before, after]
+    assert [r["job_id"] for r in results] == [delivered, alerted]
     assert tailor.days == ["2026-10-14", "2026-10-15"]
 
 

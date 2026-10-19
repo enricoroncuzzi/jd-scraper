@@ -59,27 +59,19 @@ def check_cv_sources(pkg: PackagingConfig) -> None:
         raise FileNotFoundError(f"CV CSS source not found at {pkg.css_path!r} - set CV_CSS_PATH")
 
 
-def package_day(job: DeliveryJob, settings: DeliverySettings) -> str:
+def package_day(job: DeliveryJob, settings: DeliverySettings, now: datetime) -> str:
     """The day folder a package belongs in: the day whose digest lists the job, the
     tree the captain opens each morning. A delivered job already knows that day
-    (`delivery_day`), which also covers a job alerted and delivered in the same
-    08:00 tick. Before delivery it is the first 08:00 delivery at or after the
-    alert: the same local day when the alert went out before that day's delivery,
-    the next one when it went out after. That is exactly how `deliver_tier` assigns
-    `delivery_day`, so predicting here writes where `delivery_day` will confirm and
-    nothing has to move later. A job delivered without an alert has no `alerted_at`
-    (the failed-alert path); its note day is the delivery day, so it is used."""
+    (`delivery_day`). An undelivered one goes into the next 08:00 delivery: `tick`
+    delivers before it packages, so that is today's while today's delivery has not
+    started and tomorrow's once it has. That covers an alerted job and one whose
+    alert failed alike, and `delivery_day` will confirm the same day later."""
     if job.delivery_day is not None:
         return job.delivery_day.isoformat()
-    if job.alerted_at is not None:
-        alerted = job.alerted_at.astimezone(settings.timezone)
-        day = alerted.date()
-        if alerted.time() >= settings.delivery_time:
-            day += timedelta(days=1)
-        return day.isoformat()
-    if job.note_day is not None:
-        return job.note_day.isoformat()
-    raise ValueError(f"job {job.id} has no note day")
+    day = settings.local_day(now)
+    if settings.delivery_started(now):
+        day += timedelta(days=1)
+    return day.isoformat()
 
 
 def _package_failures(cur) -> dict:
@@ -181,7 +173,7 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
         path = note_path(settings, job, job.note_day)
         try:
             directory = tailor_run(path, settings.output_path, pkg.cv_master_path, pkg.css_path,
-                                   pkg.llm_api_key, package_day=package_day(job, settings))
+                                   pkg.llm_api_key, package_day=package_day(job, settings, now))
         except Exception as exc:  # noqa: BLE001 - one bad job must not stop the rest
             print(f"[deliver] tailoring failed for {job.company}: {exc}")
             if _openrouter_quota_exhausted(exc):
