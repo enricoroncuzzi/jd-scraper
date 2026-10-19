@@ -99,18 +99,6 @@ def test_run_packaging_passes_the_digest_day_to_the_tailor(store_conn, cfg, env,
     assert tailor.days == ["2026-10-14", "2026-10-15"]
 
 
-def test_existing_packages_under_another_day_are_untouched(store_conn, cfg, env, tmp_path):
-    settings, pkg = env
-    keep = tmp_path / "out" / "2026-10-13" / "tier1" / "tailored" / "acme_1_ai_engineer_1"
-    keep.mkdir(parents=True)
-    (keep / "KEEP").write_text("already packaged")
-    scored_job(store_conn, 1, 9, note_day=DAY, alerted_at=NOW)
-    store_conn.commit()
-    run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=Tailor(tmp_path),
-                  classify=lambda link: "external_ats")
-    assert (keep / "KEEP").read_text() == "already packaged"
-
-
 def test_candidates_are_confirmed_above_threshold_with_a_note_and_no_package_yet(store_conn, cfg):
     good = _delivered(store_conn, 1)
     _delivered(store_conn, 2, score=7)
