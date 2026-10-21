@@ -8,9 +8,8 @@ import pytest
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.description import extract_description, extract_posted_text, fetch_description
-from src.linkedin.pace import Gate, PaceBusy, PaceGateClosed, linkedin_pace
+from src.linkedin.pace import Gate, PaceGateClosed, linkedin_pace
 from src.linkedin.schedule import ScheduleConfig
-from src.linkedin.search import RETRY_WAITS
 from src.processor import describe
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config

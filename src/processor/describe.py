@@ -154,7 +154,7 @@ def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
     return total
 
 
-def _head_tier(cur, cfg: ProcessorConfig, now: datetime) -> int | None:
+def _head_tier(cur, now: datetime) -> int | None:
     """The tier whose turn it is, or None when nothing is waiting for a description."""
     cur.execute(_HEAD_TIER_SQL, (now, TURN_KEY))
     row = cur.fetchone()
@@ -186,7 +186,7 @@ def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> Pick | None:
     second. With the order disabled every pick is a floor pick, i.e. exactly the
     behaviour before this order existed.
     """
-    head = _head_tier(cur, cfg, now)
+    head = _head_tier(cur, now)
     if head is None:
         return None
     kind = "quota" if cfg.fetch_order.quota_turn(_picks_done(cur, head)) else "class"
@@ -200,7 +200,8 @@ def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> Pick | None:
         row = cur.fetchone()
     if row is None:
         return None
-    return Pick(load_job(cur, row[0]), kind, head)
+    job = load_job(cur, row[0])
+    return Pick(job, kind, head) if job is not None else None
 
 
 def _record_turn(cur, tier: int) -> None:
