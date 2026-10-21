@@ -4,6 +4,10 @@ threshold), so the scoring behavior has one source of truth."""
 import json
 from dataclasses import dataclass
 
+from src.processor.fetch_order import (
+    DEFAULT_FETCH_ORDER, FetchOrder, load_fetch_order,
+)
+
 PROCESSOR_CONFIG_PATH = "config/processor.json"
 TIER_CONFIG_PATHS = [f"config/config_tier{n}.json" for n in (1, 2, 3, 4)]
 
@@ -51,6 +55,8 @@ class ProcessorConfig:
     # model. See that module for what they will and will not decide.
     remote_rules_enabled: bool = True
     merged_call_enabled: bool = False
+    # Which waiting description is worth fetching next (src/processor/fetch_order.py).
+    fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
 
 
 def load_policies(paths: list[str], title_prefilter: dict[int, bool]) -> dict[int, TierPolicy]:
@@ -110,4 +116,5 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
             data.get("structured_remote", {}).get("enabled", True)),
         remote_rules_enabled=bool(data.get("remote_rules", {}).get("enabled", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
+        fetch_order=load_fetch_order(data.get("description_order")),
     )

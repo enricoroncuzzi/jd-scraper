@@ -15,5 +15,28 @@
   "title_prefilter": {"1": true, "2": true, "3": true, "4": true},
   "remote_rules": {"enabled": true},
   "structured_remote": {"enabled": true},
-  "merged_call": {"enabled": false}
+  "merged_call": {"enabled": false},
+  "description_order": {
+    "enabled": true,
+    "quota_one_in": 4,
+    "backfill_per_tick": 500,
+    "ai_title_keywords": ["AI", "GenAI", "generative AI", "artificial intelligence",
+                          "machine learning", "ML", "MLOps", "deep learning", "LLM", "LLMs",
+                          "NLP", "data scientist", "data scientists", "data science",
+                          "computer vision"],
+    "senior_title_keywords": ["Senior", "Sr", "Lead", "Principal", "Staff", "Head",
+                              "Director", "VP", "Vice President", "Chief", "Manager"],
+    "classes": {
+      "default": [
+        {"name": "ai_country", "title": "ai", "location": "country_only"},
+        {"name": "ai_city", "title": "ai", "location": "other"},
+        {"name": "other_country", "title": "other", "location": "country_only"},
+        {"name": "other_city", "title": "other", "location": "other"}
+      ],
+      "2": [
+        {"name": "ai", "title": "ai"},
+        {"name": "other", "title": "other"}
+      ]
+    }
+  }
 }

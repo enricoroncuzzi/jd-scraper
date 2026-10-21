@@ -24,7 +24,7 @@ from src.linkedin.schedule import load_schedule_config
 from src.processor.cheap import run_cheap_checks
 from src.processor.combined import run_combined_batches
 from src.processor.config import ProcessorConfig, load_processor_config
-from src.processor.describe import expire_stale, run_descriptions
+from src.processor.describe import classify_waiting, expire_stale, run_descriptions
 from src.processor.llm_sink import StoreLlmSink
 from src.processor.llm_stages import LlmKeys
 from src.processor.remote import apply_deterministic_rules, run_remote_batches
@@ -55,12 +55,16 @@ def process_once(conn, pace, cfg: ProcessorConfig, keys: LlmKeys, *, now: dateti
     else:
         checked = run_remote_batches(conn, cfg, now, keys, verify=verify)
     scored = run_scoring_batches(conn, cfg, now, keys, score=score)
+    # The priority class backlog is filled in before any pick, and independently of the
+    # LinkedIn gate: a waiting job with no class yet would only be reached by a floor pick.
+    classified = classify_waiting(conn, cfg, now, cfg.fetch_order.backfill_per_tick)
     # LinkedIn last: when the pace is slow, a tick with other work must not sit in its queue.
     busy = any((cheap, settled, checked, scored))
     fetched = run_descriptions(conn, pace, cfg, now, get=get, sleep=sleep,
                                skip_if_wait_over=cfg.description_seconds_per_tick if busy else None)
     detail = {"expired": expired, "cheap": cheap, "settled": settled, "described": fetched,
-              "checked": checked, "scored": scored, "waiting": waiting_counts(conn)}
+              "checked": checked, "scored": scored, "classified": classified,
+              "waiting": waiting_counts(conn)}
     return Tick(any((cheap, settled, fetched, checked, scored)), detail)
 
 

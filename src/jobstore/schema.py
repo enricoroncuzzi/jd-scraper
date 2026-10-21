@@ -102,14 +102,21 @@ DDL: list[str] = [
     "CREATE INDEX IF NOT EXISTS jobs_identity_idx ON jobs (company_norm, title_norm, country)",
     """CREATE INDEX IF NOT EXISTS jobs_next_attempt_idx ON jobs (next_attempt_at)
        WHERE stage IN ('seen', 'described')""",
-    # The description queue (src/processor/describe.py `_next_job`): both picks read the
-    # waiting set in first_seen_at order, and without this they fell back to a full scan
-    # (23 ms on 200k rows, every fetch). The partial predicate matches the query exactly.
+    # The description queue (src/processor/describe.py `_next_job`): the floor pick reads the
+    # waiting set in first_seen_at order, the class pick reads it with the priority class
+    # first. Without this they fell back to a full scan (23 ms on 200k rows, every fetch).
+    # The partial predicate matches the queries exactly.
     """CREATE INDEX IF NOT EXISTS jobs_description_queue_idx ON jobs (first_seen_at, tier, note_no)
        WHERE stage = 'seen' AND tier IS NOT NULL
          AND description_status IN ('pending', 'rate_limited')""",
     """CREATE INDEX IF NOT EXISTS jobs_unarchived_idx ON jobs (stage)
        WHERE archived_at IS NULL AND stage IN ('scored', 'delivered', 'expired')""",
+    # The per-tier priority rank of the description fetch order
+    # (src/processor/fetch_order.py): written when the tier is assigned, read by the
+    # description pick. NULL = not classified yet; the pick orders NULL last and the
+    # processor's per-tick backfill fills it in. No index: the pick sorts the waiting
+    # set anyway (measured in data/jdscraper-smart-fetch-order/plan.md).
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS description_class SMALLINT",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS posted_text TEXT",
     "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS remote_advice TEXT NOT NULL DEFAULT ''",
     # 2026-10-18 verdict split: the existing constraint only allowed the four old

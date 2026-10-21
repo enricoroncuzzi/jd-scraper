@@ -2,6 +2,7 @@ import pytest
 
 from src.tier_scope import (
     TIER3_ALLOWED_COUNTRIES,
+    is_country_only,
     is_in_scope,
     resolve_allowed_countries,
     resolve_country,
@@ -121,3 +122,13 @@ def test_unambiguous_us_state_tails_still_resolve():
     for location in ("El Segundo, CA", "Austin, TX", "Seattle, WA",
                      "Washington, DC", "Boston, MA"):
         assert resolve_country(location) == "united states"
+
+
+@pytest.mark.parametrize("location, expected", [
+    ("Italy", True), ("United Kingdom", True), ("UK", True), ("United States", True),
+    ("San Marino", True), ("Italy ", True),
+    ("Milan, Lombardy, Italy", False), ("Greater Milan Metropolitan Area", False),
+    ("Europe", False), ("Remote", False), ("N/A", False), ("", False),
+])
+def test_a_location_is_country_only_only_when_it_names_a_country_and_nothing_else(location, expected):
+    assert is_country_only(location) is expected

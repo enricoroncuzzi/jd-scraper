@@ -7,6 +7,8 @@ from src.delivery.settings import DeliverySettings
 from src.jobstore import budget, heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.schedule import ScheduleConfig, local_day
+from src.processor.cheap import check_one
+from src.processor.config import load_processor_config
 from src.services import status, watchdog
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -209,3 +211,51 @@ def test_every_status_time_is_converted_to_rome_and_labelled(store_conn):
     assert "2026-10-14 14:00 Rome" in text and "2026-10-14 14:00:05 Rome" in text
     assert "waiting until 14:04:00 Rome" in text
     assert all(zone == "Rome" for zone in re.findall(r"\d{2}:\d{2}(?::\d{2})? (\w+)", text))
+
+
+def test_status_shows_the_description_queue_split_by_priority_class(store_conn):
+    cfg = load_processor_config()
+    for n, (title, location) in enumerate([("AI Engineer", "Italy"), ("AI Engineer", "Milan, Italy"),
+                                           ("Python Developer", "Italy"), ("Python Developer", "Milan, Italy")]):
+        job = record_sighting(store_conn, CardInput(source="linkedin", source_job_id=str(n),
+                                                    source_url=f"https://l/{n}", title=title, company="c",
+                                                    location=location, tier_hint=1), NOW).job_id
+        check_one(store_conn, job, cfg, NOW)
+        if n == 0:
+            with store_conn.cursor() as cur:
+                cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "1 pick in 4 is oldest-first" in text
+    assert "ai_country 0" in text and "unclassified 1" in text
+    assert "other_city 1" in text and "(no waiting descriptions)" in text
+
+
+def test_status_shows_a_rank_left_over_from_an_older_class_list(store_conn):
+    # A config change (a shorter class list) leaves ranks that no class covers. They must
+    # stay visible, or the reclassification step in the RUNBOOK looks like it worked.
+    cfg = load_processor_config()
+    job = record_sighting(store_conn, CardInput(source="linkedin", source_job_id="9",
+                                                source_url="https://l/9", title="AI Engineer",
+                                                company="c", location="Italy", tier_hint=1), NOW).job_id
+    check_one(store_conn, job, cfg, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = 9 WHERE id = %s", (job,))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "class9 1" in text
+
+
+def test_status_keeps_the_dashboard_when_the_processor_config_is_broken(store_conn, monkeypatch):
+    # A malformed description_order block stops jds-process and jds-deliver at start; the
+    # operator view must still show the gate, the budgets and the heartbeats.
+    def _broken():
+        raise ValueError("description_order.quota_one_in must be an integer >= 1, got 0")
+    monkeypatch.setattr(status, "load_processor_config", _broken)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at) VALUES ('linkedin.com', %s)", (NOW,))
+    heartbeat.start(store_conn, "process", now=NOW)
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "description_order.quota_one_in" in text
+    assert "LinkedIn gate:" in text and "Services:" in text and "process" in text

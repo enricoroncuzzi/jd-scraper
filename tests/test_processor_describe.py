@@ -1,4 +1,6 @@
 import json
+import re
+from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -6,12 +8,13 @@ import pytest
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.description import extract_description, extract_posted_text, fetch_description
-from src.linkedin.pace import Gate, PaceBusy, PaceGateClosed, linkedin_pace
+from src.linkedin.pace import Gate, PaceGateClosed, linkedin_pace
 from src.linkedin.schedule import ScheduleConfig
-from src.linkedin.search import RETRY_WAITS
+from src.processor import describe
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
-from src.processor.describe import describe_next, expire_stale, refusal_delay, run_descriptions
+from src.processor.describe import (classify_waiting, describe_next, expire_stale, refusal_delay,
+                                    run_descriptions)
 from tests.linkedin_fakes import BusyPace, FakePace, ScriptedGet, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -468,13 +471,15 @@ def test_a_job_past_the_urgency_threshold_goes_first_whatever_its_tier(store_con
     assert _describe_in_order(store_conn, cfg, 1) == [old_three]
 
 
-def test_urgent_jobs_go_oldest_first_across_tiers(store_conn, cfg):
+def test_urgent_jobs_take_the_floor_picks_oldest_first_across_tiers(store_conn, cfg):
+    # The 60-hour rule is a share now: the two aged jobs go on floor picks, and the fresh
+    # tier-1 job takes the class pick in between instead of waiting behind the whole band.
+    # Exactly at the threshold is not past it.
     four = _tiered_job(store_conn, cfg, "3900000004", location="London, United Kingdom", tier_hint=4)
     three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
     one = _tiered_job(store_conn, cfg, "3900000001")
-    # Exactly at the threshold is not past it, so tier 1 stays in the rotation.
     _age(store_conn, {four: 96, three: 72, one: 60})
-    assert _describe_in_order(store_conn, cfg, 3) == [four, three, one]
+    assert _describe_in_order(store_conn, cfg, 3) == [four, one, three]
 
 
 def test_the_urgent_band_keeps_the_stage_tier_status_and_backoff_filters(store_conn, cfg):
@@ -552,3 +557,256 @@ def test_a_job_specific_refusal_also_ends_the_round(store_conn, cfg):
     get = ScriptedGet(*[response(403)] * 4)
     assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
     assert len(get.calls) == 4
+
+
+# -- the priority class backlog: classified without a deploy script ---------------------
+
+def test_waiting_jobs_without_a_class_are_classified_in_batches(store_conn, cfg):
+    for n, location in enumerate(("Italy", "Milan, Italy", "Europe")):
+        _tiered_job(store_conn, cfg, f"390000000{n}", title="AI Engineer", location=location)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = NULL")
+    store_conn.commit()
+    assert classify_waiting(store_conn, cfg, NOW, limit=2) == 2
+    assert classify_waiting(store_conn, cfg, NOW) == 1
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT description_class FROM jobs ORDER BY note_no")
+        assert [row[0] for row in cur.fetchall()] == [0, 1, 1]
+
+
+def test_classification_skips_jobs_that_are_not_waiting(store_conn, cfg):
+    described = _tiered_job(store_conn, cfg, "3900000001")
+    backoff = _tiered_job(store_conn, cfg, "3900000002")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = NULL, description_status = 'ok', "
+                    "description = 'text' WHERE id = %s", (described,))
+        cur.execute("UPDATE jobs SET description_class = NULL, next_attempt_at = %s WHERE id = %s",
+                    (NOW + timedelta(hours=1), backoff))
+    store_conn.commit()
+    assert classify_waiting(store_conn, cfg, NOW) == 0
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE description_class IS NULL")
+        assert cur.fetchone()[0] == 2
+
+
+# -- the priority class inside the tier turn, and the floor share ------------------------
+
+def _set_picks(conn, n: int, tier: int = 1) -> None:
+    """Set one tier's pick counter, i.e. the phase of its floor share."""
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO kv_state (key, value, updated_at) VALUES (%s, jsonb_build_object('n', %s), "
+                    "clock_timestamp()) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    (f"description_pick_count:{tier}", n))
+    conn.commit()
+
+
+def _describe_one(store_conn, cfg, now, done: set):
+    """One fetch at `now`; returns the id it described. `done` is updated in place, so a
+    loop of fetches works (`_describe_in_order` starts from an empty local set each call)."""
+    assert describe_next(store_conn, FakePace(), cfg, now,
+                         get=ScriptedGet(response(200, FRAGMENT)), sleep=lambda _s: None) == "described"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE stage = 'described'")
+        picked = {row[0] for row in cur.fetchall()} - done
+    assert len(picked) == 1
+    done |= picked
+    return next(iter(picked))
+
+
+def test_a_class_pick_takes_a_fresh_high_value_job_ahead_of_an_aged_low_value_one(store_conn, cfg):
+    aged = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer", location="Milan, Italy")
+    good = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
+    _age(store_conn, {aged: 70})
+    _set_picks(store_conn, 1)                      # a class pick, not the floor pick
+    assert _describe_in_order(store_conn, cfg, 1) == [good]
+
+
+def test_a_quota_pick_takes_the_oldest_urgent_job_whatever_its_class(store_conn, cfg):
+    aged = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer", location="Milan, Italy")
+    _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
+    _age(store_conn, {aged: 70})
+    _set_picks(store_conn, 0)                      # the floor pick
+    assert _describe_in_order(store_conn, cfg, 1) == [aged]
+
+
+def test_one_pick_in_four_is_the_floor_and_the_rest_are_class_picks(store_conn, cfg):
+    old = [_tiered_job(store_conn, cfg, f"390000000{n}", title="Python Developer",
+                       location="Milan, Italy") for n in (1, 2)]
+    good = [_tiered_job(store_conn, cfg, f"390000001{n}", title="AI Engineer", location="Italy")
+            for n in range(1, 7)]
+    _age(store_conn, {old[0]: 9, old[1]: 8})
+    _set_picks(store_conn, 0)
+    assert _describe_in_order(store_conn, cfg, 8) == [old[0], good[0], good[1], good[2],
+                                                      old[1], good[3], good[4], good[5]]
+
+
+def test_no_tier_can_starve_behind_a_stream_of_better_class_jobs(store_conn, cfg):
+    tiers = ((1, "Milan, Italy", 1), (2, "Zurich, Switzerland", 2),
+             (3, "Berlin, Germany", 3), (4, "London, United Kingdom", 4))
+    worst = {tier: _tiered_job(store_conn, cfg, f"390000000{tier}", title="Python Developer",
+                              location=location, tier_hint=hint)
+             for tier, location, hint in tiers}
+    done: set = set()
+    fetched = []
+    for round_no in range(4 * cfg.fetch_order.quota_one_in):
+        for tier, location, hint in tiers:
+            _tiered_job(store_conn, cfg, f"39000001{round_no}{tier}", title="AI Engineer",
+                        location=location, tier_hint=hint)
+        fetched.append(_describe_one(store_conn, cfg, NOW + timedelta(minutes=round_no), done))
+    assert set(worst.values()) <= set(fetched[:4 * len(tiers)])   # each tier's floor pick reaches it
+    assert sum(1 for job in fetched if job not in worst.values()) >= len(fetched) - 2 * len(tiers)
+
+
+@pytest.mark.parametrize("arrivals_per_hour", [1, 2])
+def test_a_sustained_backlog_meets_the_four_and_eight_day_targets(store_conn, cfg, arrivals_per_hour):
+    """The captain's acceptance (2026-10-20), over the real `describe_next`.
+
+    One arrival and one fetch an hour models capacity keeping up with the low-value inflow:
+    there the high-value classes must be fetched well inside 4 days in every tier and the
+    low-value worst wait must stay under 8 days. Two arrivals and one fetch an hour models the
+    evidence's real 2:1 overload: there only the 4-day high-value bound and "low-value jobs keep
+    being fetched" are asserted, because no ordering creates capacity (the low-value tail then
+    ages out at the 30-day expiry, as it does today). Seeded jobs count towards the 4-day max but
+    not towards the p90: they were already 9-48 h old when the clock started."""
+    days = 12
+    tiers = ((1, "Milan, Italy", 1), (2, "Zurich, Switzerland", 2),
+             (3, "Berlin, Germany", 3), (4, "London, United Kingdom", 4))
+    pattern = ["high"] * 4 + ["low"] * 20          # a day's 24 arrivals: 4 AI titles, 20 other
+    is_high: dict = {}
+    tier_of: dict = {}
+
+    def _insert(stamp, slot, tag):
+        tier, location, hint = tiers[slot % len(tiers)]
+        high = pattern[slot % len(pattern)] == "high"
+        job_id = _tiered_job(store_conn, cfg, tag,
+                             title="AI Engineer" if high else "Python Developer",
+                             location=location, tier_hint=hint)
+        with store_conn.cursor() as cur:
+            cur.execute("UPDATE jobs SET first_seen_at = %s WHERE id = %s", (stamp, job_id))
+        store_conn.commit()
+        is_high[job_id], tier_of[job_id] = high, tier
+        return job_id
+
+    seeded = [_insert(NOW - timedelta(hours=(120 - n) * 48 // 120), n, f"39000000{n:03d}")
+              for n in range(120)]
+    seeded_set = set(seeded)
+    done: set = set()
+    waits = []                                          # (job id, wait)
+    for hour in range(24 * days):
+        now = NOW + timedelta(hours=hour)
+        for slot in range(arrivals_per_hour):
+            _insert(now, hour * arrivals_per_hour + slot, f"3900001{hour:03d}{slot}")
+        job_id = _describe_one(store_conn, cfg, now, done)
+        with store_conn.cursor() as cur:
+            cur.execute("SELECT first_seen_at FROM jobs WHERE id = %s", (job_id,))
+            seen = cur.fetchone()[0]
+        waits.append((job_id, now - seen))
+    arrivals_high = sorted(wait for job, wait in waits if is_high[job] and job not in seeded_set)
+    all_high = [wait for job, wait in waits if is_high[job]]
+    low = [wait for job, wait in waits if not is_high[job]]
+    assert len(arrivals_high) >= 10 and low
+    assert arrivals_high[int(len(arrivals_high) * 0.9)] < timedelta(days=1)     # arrivals-only p90
+    per_tier_high = [[wait for job, wait in waits if is_high[job] and tier_of[job] == tier]
+                     for tier, _loc, _hint in tiers]
+    assert all(tier_waits and max(tier_waits) < timedelta(days=4) for tier_waits in per_tier_high)
+    assert max(all_high) < timedelta(days=4)
+    assert low                                              # low-value jobs keep being fetched
+    # a floor-level guard only; the per-tier max(low) below is the real 8-day check
+    assert len(low) >= len(waits) / cfg.fetch_order.quota_one_in
+    if arrivals_per_hour == 1:                              # capacity keeps up: the 8-day target holds
+        assert max(low) < timedelta(days=8)
+        assert {job for job in seeded if not is_high[job]} <= {job for job, _wait in waits}
+
+
+def test_every_tier_keeps_its_turn_under_the_class_order(store_conn, cfg):
+    one = [_tiered_job(store_conn, cfg, f"390000001{i}", title="Python Developer",
+                       location="Milan, Italy") for i in range(2)]
+    two = [_tiered_job(store_conn, cfg, f"390000002{i}", title="Python Developer",
+                       location="Zurich, Switzerland", tier_hint=2) for i in range(2)]
+    three = [_tiered_job(store_conn, cfg, f"390000003{i}", title="Python Developer",
+                         location="Berlin, Germany", tier_hint=3) for i in range(2)]
+    four = [_tiered_job(store_conn, cfg, f"390000004{i}", title="Python Developer",
+                        location="London, United Kingdom", tier_hint=4) for i in range(2)]
+    tier_of = {job: tier for tier, jobs in ((1, one), (2, two), (3, three), (4, four)) for job in jobs}
+    assert [tier_of[job] for job in _describe_in_order(store_conn, cfg, 8)] == [1, 2, 3, 4] * 2
+
+
+def test_a_waiting_job_without_a_class_is_still_reachable(store_conn, cfg):
+    blank = _tiered_job(store_conn, cfg, "3900000001", title="AI Engineer", location="Italy")
+    _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (blank,))
+    store_conn.commit()
+    _set_picks(store_conn, 0)                      # the floor pick reaches it; NULL sorts last otherwise
+    assert _describe_in_order(store_conn, cfg, 1) == [blank]
+
+
+def test_disabled_reproduces_the_current_order(store_conn, cfg):
+    off = replace(cfg, fetch_order=replace(cfg.fetch_order, enabled=False))
+    old = _tiered_job(store_conn, off, "3900000001", title="Python Developer", location="Milan, Italy")
+    fresh = _tiered_job(store_conn, off, "3900000002", title="AI Engineer", location="Italy")
+    _tiered_job(store_conn, off, "3900000003")
+    _age(store_conn, {old: 5})
+    assert _describe_in_order(store_conn, off, 2) == [old, fresh]
+
+
+def test_a_quota_of_one_makes_every_pick_the_floor(store_conn, cfg):
+    one = replace(cfg, fetch_order=replace(cfg.fetch_order, quota_one_in=1))
+    old = _tiered_job(store_conn, one, "3900000001", title="Python Developer", location="Milan, Italy")
+    fresh = _tiered_job(store_conn, one, "3900000002", title="AI Engineer", location="Italy")
+    _age(store_conn, {old: 5})
+    assert _describe_in_order(store_conn, one, 2) == [old, fresh]
+
+
+def test_a_deferred_fetch_consumes_no_pick_and_no_turn(store_conn, cfg):
+    _tiered_job(store_conn, cfg)
+    assert describe_next(store_conn, BusyPace(), cfg, NOW, get=ScriptedGet(),
+                         sleep=lambda _s: None) == "deferred"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM kv_state WHERE key LIKE 'description_pick_count:%%'")
+        assert cur.fetchone()[0] == 0
+
+
+def test_the_pick_counter_is_one_kv_state_row_per_tier(store_conn, cfg):
+    for n in range(5):
+        _tiered_job(store_conn, cfg, f"390000000{n}")
+    _describe_in_order(store_conn, cfg, 5)          # one tier waiting
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT key, value->>'n' FROM kv_state WHERE key LIKE 'description_pick_count:%%'")
+        assert cur.fetchall() == [("description_pick_count:1", "5")]
+
+
+
+# -- the pick stays index-backed and cheap at a 3,000-row waiting queue ------------------
+
+def test_the_description_pick_stays_index_backed_on_a_three_thousand_row_queue(store_conn, cfg):
+    with store_conn.cursor() as cur:
+        cur.execute("""INSERT INTO jobs (canonical_url, title, company, company_norm, title_norm,
+                       location_raw, first_seen_at, next_attempt_at, tier, stage, description_status)
+                       SELECT 'https://l/w'||g, 'AI Engineer '||g, 'Acme', 'acme', 'ai engineer',
+                              CASE WHEN g %% 9 = 0 THEN 'Italy' ELSE 'Milan, Italy' END,
+                              %s - (g * 3 || ' minutes')::interval, %s - interval '1 day',
+                              1 + (g %% 4), 'seen', 'pending'
+                       FROM generate_series(1, 3000) g""", (NOW, NOW))
+        cur.execute("""INSERT INTO jobs (canonical_url, title, company, company_norm, title_norm,
+                       location_raw, first_seen_at, tier, stage, description_status)
+                       SELECT 'https://l/x'||g, 'AI Engineer '||g, 'Acme', 'acme', 'ai engineer',
+                              'Italy', %s - interval '10 days', 1, 'scored', 'ok'
+                       FROM generate_series(1, 30000) g""", (NOW,))
+        cur.execute("UPDATE jobs SET description_class = abs(hashtext(id::text)) % 4 WHERE stage = 'seen'")
+        cur.execute("ANALYZE jobs")
+        # the dataset must actually be the one this test claims: 3,000 waiting, 1,800 past the floor
+        cur.execute("SELECT count(*) FROM jobs WHERE " + describe._WAITING, (NOW,))
+        assert cur.fetchone()[0] == 3000
+        cur.execute("SELECT count(*) FROM jobs WHERE " + describe._WAITING + " AND first_seen_at < %s",
+                    (NOW, NOW - timedelta(hours=cfg.description_urgent_after_hours)))
+        assert cur.fetchone()[0] == 1800
+        for label, sql, params in describe.pick_queries(cfg, NOW):
+            cur.execute("EXPLAIN (ANALYZE) " + sql, params)
+            plan = "\n".join(row[0] for row in cur.fetchall())
+            assert "Seq Scan on jobs" not in plan
+            # which of the two partial indexes the planner picks depends on statistics; it must be one
+            assert "jobs_description_queue_idx" in plan or "jobs_next_attempt_idx" in plan
+            if label != "urgent":   # the urgent query stops at the oldest row: rows=1 is correct
+                assert any(int(n) > 1000
+                           for n in re.findall(r"actual time=[\d.]+\.[\d.]+ rows=(\d+)", plan))

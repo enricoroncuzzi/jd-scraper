@@ -4,6 +4,7 @@ import pytest
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.pace import Gate
+from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
 from src.processor.llm_stages import LlmKeys
 from src.processor.runner import process_once, waiting_counts
@@ -133,3 +134,19 @@ def test_a_processor_tick_reuses_one_session(monkeypatch, store_conn, cfg):
     tick(store_conn)
     tick(store_conn)
     assert len(made) == 1
+
+
+def test_a_tick_classifies_a_waiting_backlog_even_with_the_gate_closed(store_conn, cfg):
+    job = record_sighting(store_conn, _linkedin_card("3900000001", location="Italy"), NOW).job_id
+    check_one(store_conn, job, cfg, NOW)          # tiers it and stores its class
+    with store_conn.cursor() as cur:              # then the class is lost, as after a config change
+        cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
+    store_conn.commit()
+    gate = Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
+    get = ScriptedGet()
+    tick = process_once(store_conn, FakePace(gate=gate), cfg, KEYS, now=NOW, get=get,
+                        sleep=lambda _s: None, verify=FakeVerify(), score=FakeScore())
+    assert tick.detail["classified"] == 1 and get.calls == []
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT description_class FROM jobs WHERE id = %s", (job,))
+        assert cur.fetchone()[0] == 0
