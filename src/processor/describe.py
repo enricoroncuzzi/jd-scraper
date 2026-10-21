@@ -228,6 +228,19 @@ def _record_pick(cur, tier: int) -> None:
         (f"{PICKS_KEY}{tier}",))
 
 
+def pick_queries(cfg: ProcessorConfig, now: datetime) -> list[tuple[str, str, tuple]]:
+    """Every SQL statement a description pick can run: (label, sql, bound parameters).
+
+    For the EXPLAIN test in `tests/test_processor_describe.py`, so the queries that
+    are measured are the ones the pick really runs.
+    """
+    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
+    return [("head", _HEAD_TIER_SQL, (now, TURN_KEY)),
+            ("urgent", _URGENT_SQL, (now, cutoff)),
+            ("rotation_quota", _ROTATION_SQL.format(order=_ROTATION_ORDER["quota"]), (now, TURN_KEY)),
+            ("rotation_class", _ROTATION_SQL.format(order=_ROTATION_ORDER["class"]), (now, TURN_KEY))]
+
+
 def _linkedin_id(cur, job_id) -> str | None:
     cur.execute("SELECT source_job_id FROM sightings WHERE job_id = %s AND source = 'linkedin' "
                 "ORDER BY seen_at LIMIT 1", (job_id,))

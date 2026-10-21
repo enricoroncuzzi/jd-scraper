@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from src.linkedin.description import extract_description, extract_posted_text, f
 from src.linkedin.pace import Gate, PaceBusy, PaceGateClosed, linkedin_pace
 from src.linkedin.schedule import ScheduleConfig
 from src.linkedin.search import RETRY_WAITS
+from src.processor import describe
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
 from src.processor.describe import (classify_waiting, describe_next, expire_stale, refusal_delay,
@@ -774,3 +776,38 @@ def test_the_pick_counter_is_one_kv_state_row_per_tier(store_conn, cfg):
         cur.execute("SELECT key, value->>'n' FROM kv_state WHERE key LIKE 'description_pick_count:%%'")
         assert cur.fetchall() == [("description_pick_count:1", "5")]
 
+
+
+# -- the pick stays index-backed and cheap at a 3,000-row waiting queue ------------------
+
+def test_the_description_pick_stays_index_backed_on_a_three_thousand_row_queue(store_conn, cfg):
+    with store_conn.cursor() as cur:
+        cur.execute("""INSERT INTO jobs (canonical_url, title, company, company_norm, title_norm,
+                       location_raw, first_seen_at, next_attempt_at, tier, stage, description_status)
+                       SELECT 'https://l/w'||g, 'AI Engineer '||g, 'Acme', 'acme', 'ai engineer',
+                              CASE WHEN g %% 9 = 0 THEN 'Italy' ELSE 'Milan, Italy' END,
+                              %s - (g * 3 || ' minutes')::interval, %s - interval '1 day',
+                              1 + (g %% 4), 'seen', 'pending'
+                       FROM generate_series(1, 3000) g""", (NOW, NOW))
+        cur.execute("""INSERT INTO jobs (canonical_url, title, company, company_norm, title_norm,
+                       location_raw, first_seen_at, tier, stage, description_status)
+                       SELECT 'https://l/x'||g, 'AI Engineer '||g, 'Acme', 'acme', 'ai engineer',
+                              'Italy', %s - interval '10 days', 1, 'scored', 'ok'
+                       FROM generate_series(1, 30000) g""", (NOW,))
+        cur.execute("UPDATE jobs SET description_class = abs(hashtext(id::text)) % 4 WHERE stage = 'seen'")
+        cur.execute("ANALYZE jobs")
+        # the dataset must actually be the one this test claims: 3,000 waiting, 1,800 past the floor
+        cur.execute("SELECT count(*) FROM jobs WHERE " + describe._WAITING, (NOW,))
+        assert cur.fetchone()[0] == 3000
+        cur.execute("SELECT count(*) FROM jobs WHERE " + describe._WAITING + " AND first_seen_at < %s",
+                    (NOW, NOW - timedelta(hours=cfg.description_urgent_after_hours)))
+        assert cur.fetchone()[0] == 1800
+        for label, sql, params in describe.pick_queries(cfg, NOW):
+            cur.execute("EXPLAIN (ANALYZE) " + sql, params)
+            plan = "\n".join(row[0] for row in cur.fetchall())
+            assert "Seq Scan on jobs" not in plan
+            # which of the two partial indexes the planner picks depends on statistics; it must be one
+            assert "jobs_description_queue_idx" in plan or "jobs_next_attempt_idx" in plan
+            if label != "urgent":   # the urgent query stops at the oldest row: rows=1 is correct
+                assert any(int(n) > 1000
+                           for n in re.findall(r"actual time=[\d.]+\.[\d.]+ rows=(\d+)", plan))
