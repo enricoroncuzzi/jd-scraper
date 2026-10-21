@@ -39,13 +39,18 @@ def test_init_store_records_the_schema_fingerprint(store_conn):
 
 
 def test_the_description_queue_index_exists_and_is_partial(store_conn):
-    """`_next_job` reads the waiting set in first_seen_at order on every fetch, so the
-    index has to cover exactly that predicate or the pick becomes a full table scan."""
+    """`_next_job` reads the waiting set on every fetch (the floor pick in
+    first_seen_at order, the class pick with the priority class first), so the index
+    has to cover exactly that predicate or the pick becomes a full table scan."""
     with store_conn.cursor() as cur:
         cur.execute("SELECT indexdef FROM pg_indexes WHERE indexname = 'jobs_description_queue_idx'")
         definition = cur.fetchone()[0]
     assert "first_seen_at, tier, note_no" in definition
     assert "WHERE" in definition and "description_status" in definition
+
+
+def test_the_description_class_column_exists(store_conn):
+    assert "description_class" in _columns(store_conn, "jobs")
 
 
 @pytest.mark.parametrize("invalidate", [

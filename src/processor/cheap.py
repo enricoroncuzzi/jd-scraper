@@ -69,7 +69,8 @@ def check_one(conn, job_id, cfg: ProcessorConfig, now: datetime) -> str:
             if keyword:
                 set_stage(cur, job_id, "filtered_out", f"title_prefilter:{keyword}", now)
                 return "filtered"
-        cur.execute("UPDATE jobs SET tier = %s WHERE id = %s", (tier, job_id))
+        cur.execute("UPDATE jobs SET tier = %s, description_class = %s WHERE id = %s",
+                    (tier, cfg.fetch_order.classify(tier, job.title, job.location_raw), job_id))
         job.tier = tier
         if job.description_status == "ok" and job.description.strip():
             finish_with_description(cur, job, now)

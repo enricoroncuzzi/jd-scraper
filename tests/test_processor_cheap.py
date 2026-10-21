@@ -35,6 +35,12 @@ def _job(conn, job_id):
         return cur.fetchone()
 
 
+def _job_class(conn, job_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT description_class FROM jobs WHERE id = %s", (job_id,))
+        return cur.fetchone()[0]
+
+
 def test_the_country_to_tier_map_covers_every_tier():
     assert TIER_BY_COUNTRY["italy"] == 1 and TIER_BY_COUNTRY["switzerland"] == 2
     assert TIER_BY_COUNTRY["san marino"] == 2 and TIER_BY_COUNTRY["united kingdom"] == 4
@@ -170,3 +176,29 @@ def test_an_expired_described_twin_keeps_its_model_rows_and_verdict(store_conn, 
         assert cur.fetchone()[0] == 1
         cur.execute("SELECT remote_verdict FROM jobs WHERE id = %s", (fresh,))
         assert cur.fetchone()[0] == "confirmed"
+
+
+@pytest.mark.parametrize("title, location, tier_hint, expected", [
+    ("AI Engineer", "Italy", 1, 0),
+    ("AI Engineer", "Milan, Italy", 1, 1),
+    ("Python Developer", "Italy", 1, 2),
+    ("Python Developer", "Milan, Italy", 1, 3),
+    ("Senior AI Engineer", "Italy", 1, 2),
+    ("AI Engineer", "Europe", 1, 1),
+    ("AI Engineer", "Zurich, Switzerland", 2, 0),
+    ("AI Engineer", "Switzerland", 2, 0),
+    ("Python Developer", "Zurich, Switzerland", 2, 1),
+])
+def test_a_tiered_job_is_given_its_tier_s_priority_class(store_conn, cfg, title, location,
+                                                        tier_hint, expected):
+    job_id = record_sighting(store_conn, _card("222222", title=title, location=location,
+                                               tier_hint=tier_hint), NOW).job_id
+    assert check_one(store_conn, job_id, cfg, NOW) == "tiered"
+    assert _job_class(store_conn, job_id) == expected
+
+
+def test_an_out_of_scope_job_is_never_classified(store_conn, cfg):
+    job_id = record_sighting(store_conn, _card("333333", location="Austin, Texas, United States"),
+                             NOW).job_id
+    assert check_one(store_conn, job_id, cfg, NOW) == "filtered"
+    assert _job_class(store_conn, job_id) is None
