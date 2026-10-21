@@ -91,3 +91,14 @@ def test_the_remote_hint_advice_is_on_and_configurable(tmp_path):
     path = tmp_path / "processor.json"
     path.write_text(json.dumps(data))
     assert load_processor_config(str(path)).remote_hint_advice is False
+
+
+def test_the_explicit_full_remote_override_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().explicit_remote_wins is True
+    data = json.load(open("config/processor.json"))
+    data["structured_remote"]["explicit_remote_wins"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).explicit_remote_wins is False

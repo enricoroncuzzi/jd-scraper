@@ -63,6 +63,9 @@ class ProcessorConfig:
     # A source "remote"/"remote_worldwide" hint plus a silent description is
     # advised, not not_stated: the source's own field is evidence.
     remote_hint_advice: bool = True
+    # An explicit "full remote" in the title or text beats the source's
+    # hybrid/on-site shortcut and hands the job to the model.
+    explicit_remote_wins: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -123,6 +126,8 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         llm_stop_at_requests=int(data["llm_stop_at_requests"]),
         structured_remote_enabled=bool(
             data.get("structured_remote", {}).get("enabled", True)),
+        explicit_remote_wins=bool(
+            data.get("structured_remote", {}).get("explicit_remote_wins", True)),
         remote_rules_enabled=bool(data.get("remote_rules", {}).get("enabled", True)),
         occasional_presence_guard=bool(
             data.get("remote_rules", {}).get("occasional_presence", True)),

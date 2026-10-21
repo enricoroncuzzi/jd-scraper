@@ -21,7 +21,7 @@ from src.processor.llm_stages import (
 )
 from src.processor.llm_sink import batch_context
 from src.processor.state import defer, set_stage
-from src.remote_rules import RULE_PREFIX, classify
+from src.remote_rules import RULE_PREFIX, classify, confident_remote_phrase
 from src.remote_verdicts import ADVISED, NOT_STATED, REJECTED
 from src.remote_verifier import _DEGRADED_REASON, verify_offers
 
@@ -35,8 +35,12 @@ def source_hint_advice(require_italy_eligibility: bool) -> str:
             else "the source marks it remote")
 
 
-def structured_verdict(remote_hint: str | None) -> tuple[str, str] | None:
+def structured_verdict(remote_hint: str | None, *,
+                       explicit_remote: str | None = None) -> tuple[str, str] | None:
     """A verdict from the source's own work-mode field, or None to ask the model.
+
+    An explicit full-remote phrase in the title or text drops the shortcut (see
+    `explicit_remote`); the model then decides, in every tier.
 
     Only hybrid/on-site is a shortcut: rejected is safe in every tier that
     requires remote work, and the measured agreement is 99.8% on 420 decided
@@ -44,6 +48,8 @@ def structured_verdict(remote_hint: str | None) -> tuple[str, str] | None:
     are below the project's own 95% bar, so they always go to the model.
     """
     if remote_hint in ("hybrid", "onsite"):
+        if explicit_remote:
+            return None
         return REJECTED, f"{STRUCTURED_REASON} ({remote_hint})"
     return None
 
@@ -60,11 +66,16 @@ def apply_deterministic_rules(conn, cfg: ProcessorConfig, now: datetime) -> int:
             if not policy.remote_check_enabled:
                 verdict = ("not_checked", "", "")
             else:
-                if cfg.structured_remote_enabled:
-                    structured = structured_verdict(row.remote_hint)
+                overrode_hint = False
+                if cfg.structured_remote_enabled and row.remote_hint in ("hybrid", "onsite"):
+                    explicit_remote = (confident_remote_phrase(f"{row.title}\n{row.description}")
+                                       if cfg.explicit_remote_wins else None)
+                    overrode_hint = bool(explicit_remote)
+                    structured = structured_verdict(row.remote_hint,
+                                                    explicit_remote=explicit_remote)
                     if structured is not None:
                         verdict = (structured[0], structured[1], "")
-                if verdict is None and cfg.remote_rules_enabled:
+                if verdict is None and cfg.remote_rules_enabled and not overrode_hint:
                     ruled = classify(
                         row.description, title=row.title, location=row.location_raw,
                         remote_hint=row.remote_hint,

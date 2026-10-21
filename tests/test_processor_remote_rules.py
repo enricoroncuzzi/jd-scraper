@@ -122,6 +122,37 @@ def test_a_short_description_with_a_hint_still_goes_to_the_model(store_conn, cfg
     assert _row(store_conn, job)[2] is None
 
 
+def test_an_explicit_full_remote_title_is_not_rejected_by_a_hybrid_hint(store_conn, cfg):
+    job = _described(store_conn, cfg, 11, FILLER, location="Madrid, Spain", tier_hint=3,
+                     title="Junior AI Engineer - Pharma (Full remote)", remote_hint="hybrid")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 0
+    assert _row(store_conn, job)[:3] == ("described", "", None)
+
+
+def test_a_hybrid_hint_without_an_explicit_full_remote_still_rejects(store_conn, cfg):
+    job = _described(store_conn, cfg, 12, FILLER, location="Madrid, Spain", tier_hint=3,
+                     title="Junior AI Engineer - Pharma", remote_hint="hybrid")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
+    assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected_structured", "rejected")
+
+
+def test_in_tier_one_a_source_text_conflict_goes_to_the_model_not_to_confirmed(store_conn, cfg):
+    # A loose "fully remote" phrase anywhere in the text must not let the rule
+    # layer settle a source-conflict as confirmed (confirmed is the only verdict
+    # that gets auto-tailored); the model decides, as it does today.
+    job = _described(store_conn, cfg, 13,
+                     FILLER + "Our interview process is fully remote. This position is hybrid.",
+                     remote_hint="hybrid")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 0
+    assert _row(store_conn, job)[2] is None
+
+
+def test_the_structured_override_can_be_switched_off(store_conn, cfg):
+    job = _described(store_conn, cfg, 14, FILLER, title="AI Engineer (Full remote)", remote_hint="hybrid")
+    assert apply_deterministic_rules(store_conn, replace(cfg, explicit_remote_wins=False), NOW) == 1
+    assert _row(store_conn, job)[2] == "rejected"
+
+
 def test_the_hint_advice_can_be_switched_off(store_conn, cfg):
     job = _described(store_conn, cfg, 10, FILLER, remote_hint="remote")
     assert apply_deterministic_rules(store_conn, replace(cfg, remote_hint_advice=False), NOW) == 1

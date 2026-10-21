@@ -18,7 +18,7 @@ import pytest
 
 from src.remote_rules import (
     RULE_PREFIX, _scan_hybrid, classify, confident_hybrid_phrase,
-    occasional_presence_phrase,
+    confident_remote_phrase, occasional_presence_phrase,
 )
 from src.remote_verdicts import ADVISED, CONFIRMED, NOT_STATED, REJECTED
 
@@ -345,3 +345,14 @@ def test_a_hybrid_work_sentence_next_to_cloud_wording_still_rejects():
     text = ("You will operate secure hybrid environments for our customers, spanning private "
             "cloud and public cloud workloads. This role is hybrid: 3 days a week in the office.")
     assert _verdict_of(FILLER + text) == REJECTED
+
+
+def test_confident_remote_phrase_reads_only_explicit_full_remote_forms():
+    assert confident_remote_phrase("Junior AI Engineer - Pharma (Full remote)") == "Full remote"
+    assert confident_remote_phrase("This role is 100% remote.") == "100% remote"
+    assert confident_remote_phrase("This is not a fully remote role.") is None
+    # An option is not a statement, exactly like classify's own remote scan.
+    assert confident_remote_phrase("Fully remote or hybrid, you choose.") is None
+    # Wider remote wording ("remote-first", "work from anywhere") does not
+    # override a source hint; only the explicit full-remote forms do.
+    assert confident_remote_phrase("We are a remote-first company.") is None

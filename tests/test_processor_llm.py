@@ -92,6 +92,12 @@ def test_tier_two_needs_no_remote_check(store_conn, cfg):
     assert _row(store_conn, job)[2:4] == ("not_checked", "")
 
 
+def test_an_explicit_full_remote_beats_the_hybrid_hint():
+    assert structured_verdict("hybrid", explicit_remote="Full remote") is None
+    assert structured_verdict("hybrid", explicit_remote=None) == (
+        "rejected", "Source states the work mode. (hybrid)")
+
+
 def test_only_the_hybrid_onsite_hint_is_a_shortcut():
     assert structured_verdict("onsite")[0] == "rejected"
     assert structured_verdict("hybrid")[0] == "rejected"

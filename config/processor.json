@@ -14,7 +14,7 @@
   "llm_stop_at_requests": 950,
   "title_prefilter": {"1": true, "2": true, "3": true, "4": true},
   "remote_rules": {"enabled": true, "occasional_presence": true, "cloud_hybrid": true},
-  "structured_remote": {"enabled": true},
+  "structured_remote": {"enabled": true, "explicit_remote_wins": true},
   "remote_hint": {"advised_when_silent": true},
   "merged_call": {"enabled": false},
   "description_order": {

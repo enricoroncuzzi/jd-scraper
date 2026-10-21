@@ -185,6 +185,28 @@ def _scan_hybrid(text: str, *, occasional_guard: bool, cloud_hybrid_guard: bool,
     return confident, suppressed
 
 
+# The spec's explicit forms only: an override must be unambiguous, so the wider
+# _CONFIDENT_REMOTE vocabulary ("remote-first", "work from anywhere") is not used.
+_EXPLICIT_FULL_REMOTE = re.compile("|".join([
+    r"fully[- ]remote",
+    r"full[- ]remot[eo]",
+    r"100\s*%\s*(?:remote|remoto|teletrabajo|home\s*office)",
+    r"remote\s+al\s+100\s*%",
+    r"trabajo\s+100\s*%\s*remot",
+    r"teletrabajo\s+(?:al\s+)?100\s*%",
+    r"100\s*%\s*da\s+remot",
+]), re.IGNORECASE)
+
+
+def confident_remote_phrase(text: str) -> str | None:
+    """The first explicit fully-remote phrase ("full remote", "100% remote") or None.
+
+    suffix_guard as in classify's remote scan: "Fully remote or hybrid" is an
+    option, not a statement, and must not skip the structured hint.
+    """
+    return _first_confident(_EXPLICIT_FULL_REMOTE, text or "", suffix_guard=True)
+
+
 def confident_hybrid_phrase(text: str, *, occasional_guard: bool = True,
                             cloud_hybrid_guard: bool = True, few_guard: bool = True) -> str | None:
     """The first hybrid phrase that survives the occasional-presence guard, or None."""
