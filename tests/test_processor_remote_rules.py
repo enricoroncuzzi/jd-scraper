@@ -319,3 +319,52 @@ def test_a_regular_hybrid_reason_is_never_overridden(store_conn, cfg, text, reas
     assert run_remote_batches(store_conn, cfg, later, LlmKeys("l", "g"),
                               verify=_rejecting_verify(reason)) == 1
     assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected", "rejected")
+
+
+def _answering_verify(verdict, reason="", advice=""):
+    def verify(**kwargs):
+        for offer in kwargs["offers"]:
+            offer.remote_verdict = verdict
+            offer.remote_reason = reason
+            offer.remote_advice = advice
+        return kwargs["offers"], {"degraded": False}
+    return verify
+
+
+def _verified(store_conn, cfg, n, verify, **job):
+    job_id = _described(store_conn, cfg, n, "Short text.", **job)
+    later = NOW + timedelta(minutes=31)
+    assert run_remote_batches(store_conn, cfg, later, LlmKeys("l", "g"), verify=verify) == 1
+    return _row(store_conn, job_id)
+
+
+def test_a_model_not_stated_with_a_remote_hint_is_advised(store_conn, cfg):
+    stage, _r, verdict, reason, advice = _verified(
+        store_conn, cfg, 30, _answering_verify("not_stated", "No work mode."), remote_hint="remote")
+    assert (stage, verdict, reason) == ("described", "advised", SOURCE_HINT_REASON)
+    assert advice == "the source marks it remote - check eligibility"
+
+
+def test_a_model_not_stated_hint_upgrade_can_be_switched_off(store_conn, cfg):
+    row = _verified(store_conn, replace(cfg, remote_hint_advice=False), 31,
+                    _answering_verify("not_stated", "No work mode."), remote_hint="remote")
+    assert row[2] == "not_stated"
+
+
+def test_a_model_not_stated_without_a_hint_stays_not_stated(store_conn, cfg):
+    assert _verified(store_conn, cfg, 32,
+                     _answering_verify("not_stated", "No work mode."))[2] == "not_stated"
+
+
+def test_a_model_rejection_or_confirmation_is_never_upgraded_by_the_hint(store_conn, cfg):
+    assert _verified(store_conn, cfg, 33, _answering_verify("confirmed", "Fully remote."),
+                     remote_hint="remote")[2] == "confirmed"
+    assert _verified(store_conn, cfg, 34, _answering_verify("rejected", "Office in Milan."),
+                     remote_hint="remote")[2] == "rejected"
+
+
+def test_a_model_eligibility_advice_is_kept_over_the_hint_advice(store_conn, cfg):
+    row = _verified(store_conn, cfg, 35,
+                    _answering_verify("advised", "Remote.", "check eligibility: EU only"),
+                    remote_hint="remote")
+    assert row[2:] == ("advised", "Remote.", "check eligibility: EU only")

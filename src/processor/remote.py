@@ -18,7 +18,7 @@ explicit full-remote phrase in the title or text drops the source's hybrid/onsit
 shortcut and sends the job to the model. After the model answers, a rejection
 grounded only in occasional presence (both the reason and the text say so, and
 neither shows a regular cadence or a work-mode "hybrid") is turned into `advised`
-for a source-hinted job.
+for a source-hinted job, and a model `not_stated` for a source-hinted job is `advised` too.
 """
 from datetime import datetime
 
@@ -193,6 +193,11 @@ def run_remote_batches(conn, cfg: ProcessorConfig, now: datetime, keys: LlmKeys,
                         cloud_hybrid_guard=cfg.cloud_hybrid_guard)
                     if override is not None:
                         verdict, reason, advice = override
+                if (verdict == NOT_STATED and cfg.remote_hint_advice
+                        and row.remote_hint in SOURCE_REMOTE_HINTS):
+                    verdict, reason, advice = (
+                        ADVISED, SOURCE_HINT_REASON,
+                        source_hint_advice(cfg.policies[row.tier].require_italy_eligibility))
                 cur.execute(
                     "UPDATE jobs SET remote_verdict = %s, remote_reason = %s, remote_advice = %s "
                     "WHERE id = %s", (verdict, reason, advice, row.id))
