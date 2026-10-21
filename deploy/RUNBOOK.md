@@ -198,7 +198,7 @@ loses nothing.
   offsites, team sprints, meetups, a few trips a year, occasional client travel - is not
   hybrid, in the free rules and in the model prompt; technology wording ("hybrid cloud",
   "hybrid environments") is not a work mode either. A source `remote`/`remote_worldwide`
-  hint with a silent description is `advised` with the advice "the source marks it remote"
+  hint with a silent description, or a model answer of `not_stated`, is `advised` with the advice "the source marks it remote"
   (in a tier that needs eligibility: "... - check eligibility"), shown under the existing
   "Remote, eligibility to check" heading. A job the source marks remote is never stored
   `rejected` when the model's only evidence is occasional presence (both the model's reason

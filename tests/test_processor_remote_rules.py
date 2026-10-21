@@ -342,7 +342,13 @@ def test_a_model_not_stated_with_a_remote_hint_is_advised(store_conn, cfg):
     stage, _r, verdict, reason, advice = _verified(
         store_conn, cfg, 30, _answering_verify("not_stated", "No work mode."), remote_hint="remote")
     assert (stage, verdict, reason) == ("described", "advised", SOURCE_HINT_REASON)
-    assert advice == "the source marks it remote - check eligibility"
+    assert advice == "the source marks it remote"
+
+
+def test_a_model_not_stated_with_a_worldwide_hint_in_tier_three_carries_the_eligibility_advice(store_conn, cfg):
+    row = _verified(store_conn, cfg, 35, _answering_verify("not_stated", "No work mode."),
+                    location="Berlin, Germany", tier_hint=3, remote_hint="remote_worldwide")
+    assert row[2:5] == ("advised", SOURCE_HINT_REASON, "the source marks it remote - check eligibility")
 
 
 def test_a_model_not_stated_hint_upgrade_can_be_switched_off(store_conn, cfg):
