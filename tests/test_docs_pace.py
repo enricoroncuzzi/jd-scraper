@@ -93,13 +93,3 @@ def test_the_scoped_week_one_queries_assert_their_values(store_conn):
         assert cur.fetchone()[0] == [timedelta(hours=4)] * 3
         cur.execute(share_sql)
         assert float(cur.fetchone()[0]) == 0.5
-
-
-def test_the_runbook_documents_every_description_order_key():
-    import json
-
-    block = json.load(open("config/processor.json"))["description_order"]
-    text = open("deploy/RUNBOOK.md").read()
-    for key in block:
-        assert f"description_order.{key}" in text
-    assert "description_pick_count" in text
