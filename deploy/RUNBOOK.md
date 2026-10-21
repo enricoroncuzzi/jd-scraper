@@ -203,8 +203,22 @@ loses nothing.
   2026-10-18 remote-verdict release: the first service start after that pull drops and
   recreates `jobs_remote_verdict_chk` so `advised`/`not_stated` can be stored (a validation
   scan over the jobs table, a few seconds at production size) and adds `remote_advice`. The
-  fingerprint then matches, so later starts do no DDL. The pacing change has its own order
-  below.
+  fingerprint then matches, so later starts do no DDL. Every later release re-runs the whole
+  DDL list once on its first start, because the fingerprint changes with each edit: the
+  2026-10-21 description-order release adds `jobs.description_class` and re-runs that same
+  constraint drop and re-add, so it holds the jobs table for a few seconds too. Restart
+  `jds-process` first and wait for `python -m src.services.status` to show it healthy, then
+  restart the other units: only the first service runs the DDL, and the rest start against a
+  matching fingerprint. A code rollback causes the same one-time scan. The pacing change has
+  its own order below.
+- Turning the description order off without a deploy: set `"enabled": false` inside
+  `description_order` in `config/processor.json` and `sudo systemctl restart jds-process`. Every
+  pick is then a floor pick, i.e. today's two queries. The order still classifies waiting jobs
+  and still advances the per-tier counters; it changes the order, nothing else. The file is
+  tracked: commit or reset a server-side edit before the next `git pull --ff-only`. The first
+  tick after a deploy adds a class to up to `description_order.backfill_per_tick` waiting jobs
+  before it picks, so a 3,000-row backlog is covered in about six ticks (12 min at the 120 s
+  idle cadence); `python -m src.services.status` shows the queue split by class once they are.
 - Rolling back past the 2026-10-18 remote-verdict release is not a plain code rollback: older
   code cannot read `advised` or `not_stated`, and `jds-deliver` would fail on the first such
   row. Stop `jds-process` and `jds-deliver`, run
@@ -246,12 +260,33 @@ it, so a stale config never stops the service. Delete it when you next edit the 
 
 Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
 point where an overdue description may spend more than one tick) and
-`description_urgent_after_hours` (`60`, the point where a waiting job goes ahead of the tier
-rotation so it still reaches the digest inside the 4-day target), `config/deliver.json`
+`description_urgent_after_hours` (`60`, the age past which a waiting job is eligible for the
+floor pick: it is guaranteed one pick in `description_order.quota_one_in` per tier ahead of the
+class order, not absolute priority), `config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
 repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2]` freehire,
 `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
 `max_wait_seconds` 300, `run_budget_seconds` 1700).
+
+`config/processor.json` `description_order` decides which waiting description is worth
+fetching next (see "Which description goes next" below). Every key, with the shipped value:
+
+| Setting | Shipped value | Meaning |
+|---|---|---|
+| `description_order.enabled` | `true` | the whole order; `false` (edit + restart `jds-process`, no deploy) reproduces the pre-order behaviour exactly, one plain oldest-first pick per fetch |
+| `description_order.quota_one_in` | `4` | one pick in four, per tier, is the plain oldest-first pick (the 60-hour floor and the rotation); `1` makes every pick one |
+| `description_order.backfill_per_tick` | `500` | waiting jobs given a priority class per processor tick when they have none (a 3,000-row backlog takes six ticks) |
+| `description_order.ai_title_keywords` | `AI, GenAI, generative AI, artificial intelligence, machine learning, ML, MLOps, deep learning, LLM, LLMs, NLP, data scientist(s), data science, computer vision` | whole-word title keywords that make a title "AI/ML/DS"; matched case-insensitively on word boundaries |
+| `description_order.senior_title_keywords` | `Senior, Sr, Lead, Principal, Staff, Head, Director, VP, Vice President, Chief, Manager` | whole-word seniority keywords that demote an AI title to the `other` classes |
+| `description_order.classes` | `default` (tiers 1, 3, 4): `ai_country`, `ai_city`, `other_country`, `other_city`; `"2"`: `ai`, `other` | the class order per tier, best first; tier 2 omits `location`, since it accepts any work mode |
+| `description_pick_count:<tier>` (kv_state) | one row per tier | how many picks that tier has made, i.e. the phase of its floor share; deleting the rows only resets the phase |
+
+The block is validated when the config loads, so edit only the `enabled` value (or a value this
+table documents); a malformed `description_order` block stops every service that loads the
+processor config (`jds-process`, `jds-deliver`, the experiment CLI) at start. Changing `classes`
+or either keyword list changes the ranks, so run
+`psql jds -c "UPDATE jobs SET description_class = NULL WHERE stage = 'seen' AND tier IS NOT NULL AND description_status IN ('pending', 'rate_limited');"`
+and let the next ticks reclassify the backlog at `description_order.backfill_per_tick`.
 
 The base is a constant 75 s / 110 s, jittered +/-20 %, and nothing clamps it: there is no
 request cap, so open hours do not set a floor and a finished day changes nothing (the
@@ -269,12 +304,31 @@ The gate closes only for a configured `closed_hours` window: there is no night w
 shipped and no daily cap.
 
 Which description goes next is decided by `src/processor/describe.py` `_next_job`, and it does
-not sweep the tiers in order: a job past `description_urgent_after_hours` (60 h) goes first
-whatever its tier, oldest first, and otherwise the tiers take turns (the tier whose last fetch
-attempt is oldest goes next, then that tier's oldest job, ties to tier 1). The per-tier
-"last served" times are one `kv_state` row per tier (`description_turn:<tier>`), not a new
-column; deleting those rows just restarts the rotation from tier 1. The pace and the
-number of requests are unaffected, only who gets the turn.
+not sweep the tiers in order. The head tier is the one whose last fetch attempt is oldest, and
+its own pick counter decides the kind of the pick:
+
+- one pick in `description_order.quota_one_in` per tier is the **floor pick**, exactly today's
+  queries: a job past `description_urgent_after_hours` (60 h) first, whatever its tier, oldest
+  first, else that tier's oldest job. The 60-hour rule is therefore a guaranteed share of the
+  fetches, not absolute priority.
+- every other pick is a **class pick**: the same tier rotation (the tier whose last attempt is
+  oldest goes first, ties to tier 1), then the best priority class inside that tier
+  (`ai_country` > `ai_city` > `other_country` > `other_city` for tiers 1/3/4; `ai` > `other` for
+  tier 2), then the oldest job, ties on `note_no`. A class pick has no urgent cutoff, so a fresh
+  high-value job can precede an aged low-value one.
+
+The class is written when the cheap checks assign the tier and read as one smallint column
+(`jobs.description_class`); the rotation and the floor share are `kv_state` rows per tier
+(`description_turn:<tier>`, `description_pick_count:<tier>`), not new timestamps. Deleting the
+turn rows restarts the rotation from tier 1, deleting the pick rows only resets the share's
+phase. The pace, the number of requests and the set of jobs fetched are unaffected, only the
+order. The measured effect: at the 2:1 inflow/capacity of 2026-10-20, the most valuable jobs
+reach a description at a median of 3 h and a p90 of 13 h (max 26 h) in every tier, against a p90
+of 193 h in the old order; low-value jobs are still fetched but their tail waits about 10 days
+at day 12 (median 167 h, p90 229 h, max 244 h) and ages out at the 30-day expiry, because
+description capacity is about half of the inflow. `description_order.quota_one_in` is the dial
+that trades high-value latency against that tail (1 = pure FIFO, 4 = shipped); more description
+capacity is a pace decision outside this change.
 
 A flat 110 s over 24 h would be about 785 requests; with the +/-20 % jitter the mean stays at
 110 s, so the weekend still does about 785 and the weekday about 1,152 at 75 s. Nothing stops
