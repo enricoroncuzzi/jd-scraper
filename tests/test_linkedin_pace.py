@@ -284,6 +284,80 @@ def test_a_search_yields_while_descriptions_are_under_their_share(make_budget):
     assert _events(description, "kind") == [("description",), ("search",)]
 
 
+def test_a_description_yields_the_turn_to_a_waiting_packaging_request(make_budget):
+    # The packaging caller asks for one LinkedIn turn per package, so it is granted the
+    # next turn: a describer waiting for that same turn must give way to it.
+    fake = FakeTime()
+    packaging, describer = make_budget(fake), make_budget(fake)
+    packaging.snapshot()
+    packaging._declare_wanting("packaging")
+    order = []
+
+    def the_packaging_request_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with packaging.slot("packaging") as slot:
+                order.append("packaging")
+                slot.clean(200)
+            fake.on_sleep = the_packaging_request_takes_its_turn
+    fake.on_sleep = the_packaging_request_takes_its_turn
+    with describer.slot("description") as slot:
+        order.append("description")
+        slot.clean(200)
+    assert order == ["packaging", "description"]
+    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
+    assert sum(fake.sleeps[1:]) == pytest.approx(75)   # it waits out the packaging spacing
+    assert _events(packaging, "kind") == [("packaging",), ("description",)]
+
+
+def test_a_search_yields_the_turn_to_a_waiting_packaging_request(make_budget):
+    # The share would have given this turn to the search (the description run is at the
+    # cap), but a waiting packaging request outranks both steady kinds.
+    fake = FakeTime()
+    search, packaging = make_budget(fake), make_budget(fake)
+    search.snapshot()
+    _set(search, description_run=2, last_kind="description")
+    packaging._declare_wanting("packaging")
+    order = []
+
+    def the_packaging_request_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with packaging.slot("packaging") as slot:
+                order.append("packaging")
+                slot.clean(200)
+            fake.on_sleep = the_packaging_request_takes_its_turn
+    fake.on_sleep = the_packaging_request_takes_its_turn
+    with search.slot("search") as slot:
+        order.append("search")
+        slot.clean(200)
+    assert order == ["packaging", "search"]
+    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
+    assert _events(packaging, "kind") == [("packaging",), ("search",)]
+
+
+def test_a_packaging_turn_keeps_the_description_run_where_it_was(make_budget):
+    # A packaging turn is neither a description turn nor a search turn, so it must not
+    # reset the two-of-three description run (nor count towards it).
+    fake = FakeTime()
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, description_run=1, last_kind="description")
+    with budget.slot("packaging") as slot:
+        slot.clean(200)
+    assert _row(budget, "last_kind", "description_run") == ("packaging", 1)
+
+
+def test_a_stale_packaging_marker_does_not_hold_back_a_description(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, wanting=Json({"packaging": fake.now.timestamp() - 600}))
+    with budget.slot("description") as slot:
+        slot.clean(200)
+    assert fake.sleeps == []
+
+
 def test_a_search_takes_its_turn_once_the_description_run_reaches_the_cap(make_budget):
     fake = FakeTime()
     search, description = make_budget(fake), make_budget(fake)
@@ -471,3 +545,34 @@ def test_an_overdue_next_in_line_description_gives_up_on_a_long_wait(make_budget
     assert _row(budget, "requests_today") == (0,) and _events(budget, "kind") == []
     wanting = _row(budget, "wanting")[0]
     assert "description" not in wanting
+
+
+SAT_NOON = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Saturday
+
+
+def _weekend_request_right_after_a_request(make_budget):
+    fake = FakeTime(SAT_NOON)
+    first = make_budget(fake)
+    with first.slot("search") as slot:
+        slot.clean(200)
+    budget = make_budget(fake, give_up_after=120)
+    # the previous request drew the longest jittered spacing of the weekend window
+    _set(budget, next_slot_at=fake.now + timedelta(seconds=132))
+    return fake, budget
+
+
+def test_a_packaging_request_outwaits_the_longest_weekend_spacing(make_budget):
+    fake, budget = _weekend_request_right_after_a_request(make_budget)
+    started = fake.now
+    with budget.slot("packaging") as slot:
+        slot.clean(200)
+    assert (fake.now - started).total_seconds() == pytest.approx(132)
+    assert [kind for (kind,) in _events(budget, "kind")] == ["search", "packaging"]
+
+
+def test_a_description_request_still_gives_up_at_the_tick_budget_on_a_weekend(make_budget):
+    fake, budget = _weekend_request_right_after_a_request(make_budget)
+    with pytest.raises(PaceBusy):
+        with budget.slot("description"):
+            raise AssertionError("no request may be made")
+    assert [kind for (kind,) in _events(budget, "kind")] == ["search"]

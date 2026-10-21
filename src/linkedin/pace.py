@@ -19,10 +19,16 @@ anywhere between 3 s and 390 s, while the old hour nudge and day verdict cut
 throughput to about a quarter. A refusal is waited out (60 s doubling to a 30 min
 cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
 description are waiting, descriptions take two of every three turns
-(`pace.description_turn_share`); a lone waiting kind always takes the turn. The
-advisory lock is held only for the request itself; waiters sleep unlocked in short
-chunks. A caller that passes `give_up_after` and cannot get a turn raises PaceBusy,
-and a caller that gives up writes only its own `wanting` markers.
+(`pace.description_turn_share`); a lone waiting kind always takes the turn. A
+`packaging` request - the one LinkedIn request a CV package needs - is granted the
+next turn instead of competing for it: it is rare, each turn buys a whole package,
+and a pass that loses the turn gets no package at all, while a description or a
+search just takes the following turn. The advisory lock is held only for the request
+itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_after`
+and cannot get a turn raises PaceBusy; a `packaging` request waits at least the longest
+jittered spacing of the window in effect (plus a second), read from the schedule at wait
+time, so the previous request's spacing can never make it give up. A caller that gives
+up writes only its own `wanting` markers.
 """
 import json
 import random
@@ -44,6 +50,10 @@ from src.linkedin.schedule import (
 from src.services.pulse import pulse
 
 HOST = "linkedin.com"
+# The one LinkedIn request a CV package needs (src/delivery/autopackage.py). It is a kind
+# of its own so the turn policy can grant it the next turn: inside the description kind
+# it only ever raced the describer for one turn per pass, and lost (2026-10-21).
+PACKAGING_KIND = "packaging"
 WANTING_FRESH_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.25
 YIELD_SECONDS = 0.5
@@ -146,10 +156,18 @@ def _fresh(state: PaceState, marker: str, now_ts: float) -> bool:
 
 
 def must_yield(state: PaceState, kind: str, now_ts: float, *, run_cap: int) -> bool:
-    """When both a search and a description are waiting, descriptions take two of every
-    three turns: a description yields only once `run_cap` descriptions have gone in a
-    row, and a search yields while fewer than `run_cap` have. A lone waiting kind always
-    takes the turn."""
+    """Who gives way when more than one kind is waiting.
+
+    A waiting packaging request takes the next turn and never gives way itself: the
+    packaging caller asks for one turn per package, so reserving it costs the steady
+    kinds a turn each time a package is due and nothing else. Otherwise, when both a
+    search and a description are waiting, descriptions take two of every three turns: a
+    description yields only once `run_cap` descriptions have gone in a row, and a search
+    yields while fewer than `run_cap` have. A lone waiting kind always takes the turn."""
+    if kind == PACKAGING_KIND:
+        return False
+    if _fresh(state, PACKAGING_KIND, now_ts):
+        return True
     search_waiting = _fresh(state, "search", now_ts)
     description_waiting = _fresh(state, "description", now_ts)
     if kind == "description":
@@ -299,7 +317,11 @@ class PaceBudget:
             state.wait_until = now + timedelta(seconds=wait)
             print(f"[pace] LinkedIn refused a {kind} request ({slot.status}): waiting "
                   f"{wait:.0f}s (refusal {state.refusal_streak} in a row)")
-        state.description_run = state.description_run + 1 if kind == "description" else 0
+        if kind == "description":
+            state.description_run += 1
+        elif kind == "search":
+            # A packaging turn is neither kind: it leaves the two-of-three run alone.
+            state.description_run = 0
         state.last_kind = kind
         spacing = next_spacing(self.schedule, now, self.uniform)
         state.next_slot_at = now + timedelta(seconds=spacing)
@@ -319,6 +341,13 @@ class PaceBudget:
         except Exception as exc:  # noqa: BLE001 - telemetry must not raise into the pipeline
             print(f"[pace] could not record the {kind} request in pace_events: "
                   f"{type(exc).__name__}: {exc}")
+
+    def _give_up_bound(self, kind: str) -> float | None:
+        if self.give_up_after is None or kind != PACKAGING_KIND:
+            return self.give_up_after
+        window = window_name(self.schedule, self.clock())
+        longest = start_spacing_seconds(self.schedule, window) * (1 + self.schedule.pace.jitter)
+        return max(self.give_up_after, longest + YIELD_SECONDS * 2)
 
     def _gate(self, state: PaceState) -> Gate:
         return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today)
@@ -349,11 +378,12 @@ class PaceBudget:
             # more than the tick budget waiting, as long as one spacing fits in it; the
             # guard compares the remaining wait, not the elapsed time.
             next_in_line = overdue and state.description_run < self.run_cap
-            if self.give_up_after is not None and (
-                    wait > self.give_up_after if next_in_line
-                    else (self.clock() - started).total_seconds() + pause > self.give_up_after):
+            bound = self._give_up_bound(kind)
+            if bound is not None and (
+                    wait > bound if next_in_line
+                    else (self.clock() - started).total_seconds() + pause > bound):
                 self._drop_markers(kinds)
-                raise PaceBusy(f"no LinkedIn {kind} turn within {self.give_up_after:g}s")
+                raise PaceBusy(f"no LinkedIn {kind} turn within {bound:g}s")
             pulse({"linkedin_wait": round(max(wait, 0))})
             self.sleep(pause)
         slot = Slot()

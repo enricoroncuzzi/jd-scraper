@@ -277,7 +277,7 @@ configured in `config/schedule.json`:
 | `closed_hours` | `null` | no closed window: LinkedIn runs around the clock (set `[0, 6]` to restore the 00:00-06:00 Rome pause) |
 | `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | the fixed base spacing, in seconds |
 | `pace.jitter` | `0.2` | every sleep is jittered +/-20 % |
-| `pace.description_turn_share` | `0.6667` | descriptions get this share of the turns when a search also waits (realised as a run of `round(share/(1-share))` = 2) |
+| `pace.description_turn_share` | `0.6667` | descriptions get this share of the turns when a search also waits (realised as a run of `round(share/(1-share))` = 2); a waiting `packaging` request (the one LinkedIn request a CV package needs) takes the next turn instead |
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
 
@@ -336,9 +336,25 @@ operator information: it never closes the gate. A refusal honours
 `Retry-After` or waits 60 s, doubling each consecutive refusal to a 30 min cap, and the first
 clean response resets it; the spacing around it does not move. When both a search and a
 description are waiting, descriptions take two of every three turns (`pace.description_turn_share`,
-realised as a run of two); a lone waiting kind always takes the turn. Once the oldest waiting
-job is over `description_deadline_hours` old, an overdue description that the share says takes
-the next turn may spend more than one processor tick waiting for it. If a walk is refused three
+realised as a run of two); a lone waiting kind always takes the turn. The `packaging` kind
+is the exception: `jds-deliver` needs exactly one LinkedIn request to classify a
+LinkedIn-hosted job before tailoring it, so a waiting packaging request is granted the next
+turn and the describer and the walker yield to it. It is a kind of its own (it used to ask
+for a `description` turn), because inside the description kind it only ever raced the
+describer for the single turn that fit in its 120 s budget, and lost that race pass after
+pass: on 2026-10-21 the same two jobs were deferred dozens of times in one day, against 5
+deferrals the whole day before, and neither got a package. The reservation costs the steady
+kinds one turn per package and adds no request. It is a policy in the shared pace, so it
+takes effect only when all three LinkedIn services run this code: `jds-process` and
+`jds-collect-linkedin` must see the packaging marker (they are the ones that yield) and
+`jds-deliver` must ask for it, so a deploy that restarts only `jds-deliver` keeps the old
+race. After the deploy, `psql jds -c "SELECT kind, count(*) FROM pace_events WHERE at >
+now() - interval '1 hour' GROUP BY 1"` shows `packaging` rows as packages come due. The
+packaging wait is not the 120 s tick budget: it is at least the longest jittered spacing
+of the window in effect (weekend 110 s base, up to 132 s) plus a second, read from the
+schedule at wait time, so a request that arrives just after the previous one still gets its
+turn. Once the oldest waiting job is over `description_deadline_hours` old, an overdue
+description that the share says takes the next turn may spend more than one processor tick waiting for it. If a walk is refused three
 times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
 The gate closes only for a configured `closed_hours` window: there is no night window as
 shipped and no daily cap.
@@ -405,8 +421,10 @@ row and the last success, and adds any wait in Rome time:
 
 ```
 LinkedIn pace: fixed 75s weekday / 110s weekend, 0/342 refused today, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome
-LinkedIn pace: fixed 75s weekday / 110s weekend, 2/350 refused today, 2 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, waiting until 12:04:00 Rome
+LinkedIn pace: fixed 75s weekday / 110s weekend, 2/350 refused today, 2 refusals in a row, last request: packaging, last success 2026-10-14 11:40 Rome, waiting until 12:04:00 Rome
 ```
+
+`last request` names the kind of the last request: `search`, `description` or `packaging`.
 
 The stored `weekday_spacing_seconds`, `weekend_spacing_seconds` and `nudge` columns from the
 old adaptive pace are ignored by the fixed code, so the live row's 99 s / 133 s base and x3

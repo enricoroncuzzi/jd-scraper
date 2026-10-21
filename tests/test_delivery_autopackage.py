@@ -195,7 +195,7 @@ def test_a_linkedin_classify_request_goes_through_the_shared_pace_but_other_host
     pace = FakePace()
     assert classify_through_pace(pace, "https://www.linkedin.com/jobs/view/1", lambda l: "linkedin_easy_apply") \
         == "linkedin_easy_apply"
-    assert pace.events == [("description", "clean")]
+    assert pace.events == [("packaging", "clean")]   # granted the next turn, see pace.must_yield
     assert classify_through_pace(pace, "https://boards.greenhouse.io/acme/1", lambda l: "external_ats") \
         == "external_ats"
     assert len(pace.events) == 1
