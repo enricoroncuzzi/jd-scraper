@@ -47,6 +47,7 @@ def test_the_description_stage_has_a_time_budget_per_tick():
     assert load_processor_config().description_seconds_per_tick == 120
 
 
+<<<<<<< HEAD
 def test_the_shipped_config_turns_the_order_on_with_a_quota_of_four():
     cfg = load_processor_config()
     assert (cfg.fetch_order.enabled, cfg.fetch_order.quota_one_in) == (True, 4)
@@ -58,3 +59,14 @@ def test_the_shipped_config_turns_the_order_on_with_a_quota_of_four():
     assert [c.name for c in cfg.fetch_order.order_for(4).classes] == [
         "ai_country", "ai_city", "other_country", "other_city"]
     assert [c.name for c in cfg.fetch_order.order_for(2).classes] == ["ai", "other"]
+=======
+def test_the_occasional_presence_guard_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().occasional_presence_guard is True
+    data = json.load(open("config/processor.json"))
+    data["remote_rules"]["occasional_presence"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).occasional_presence_guard is False
+>>>>>>> 4a3354a (feat(remote): add the occasional-presence switch and plumbing)

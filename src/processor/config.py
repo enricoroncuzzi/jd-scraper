@@ -54,6 +54,9 @@ class ProcessorConfig:
     # The deterministic phrase rules (src/remote_rules.py) that run before the
     # model. See that module for what they will and will not decide.
     remote_rules_enabled: bool = True
+    # Occasional presence (onboarding, team events, offsites, sprints, meetups)
+    # is not a hybrid phrase. Off restores the pre-2026-10-21 rule behaviour.
+    occasional_presence_guard: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -115,6 +118,8 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         structured_remote_enabled=bool(
             data.get("structured_remote", {}).get("enabled", True)),
         remote_rules_enabled=bool(data.get("remote_rules", {}).get("enabled", True)),
+        occasional_presence_guard=bool(
+            data.get("remote_rules", {}).get("occasional_presence", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
     )

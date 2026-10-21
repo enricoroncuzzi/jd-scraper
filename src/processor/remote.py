@@ -63,7 +63,8 @@ def apply_deterministic_rules(conn, cfg: ProcessorConfig, now: datetime) -> int:
                         remote_hint=row.remote_hint,
                         require_italy_eligibility=policy.require_italy_eligibility,
                         # The source-hint shortcut is decided above, by its own switch.
-                        hints_enabled=False)
+                        hints_enabled=False,
+                        occasional_guard=cfg.occasional_presence_guard)
                     if ruled is not None:
                         verdict = (ruled.verdict, ruled.reason, ruled.advice)
                         if ruled.reason.startswith(RULE_PREFIX):

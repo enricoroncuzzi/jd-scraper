@@ -250,6 +250,9 @@ def classify(
     remote_hint: str | None = None,
     require_italy_eligibility: bool = False,
     hints_enabled: bool = True,
+    # reserved for Tasks 1b and 2: accepted now so the processor can pass them.
+    occasional_guard: bool = True,
+    cloud_hybrid_guard: bool = True,
 ) -> RuleVerdict | None:
     """A verdict this module is sure of, or None to let the model decide.
 

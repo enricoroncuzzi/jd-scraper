@@ -41,6 +41,12 @@ def _verdict(row):
     return result.verdict if result else None
 
 
+def test_classify_accepts_the_guard_switches():
+    result = classify("This is a hybrid role: three days a week in the office.",
+                      title="AI Engineer", occasional_guard=False, cloud_hybrid_guard=False)
+    assert result is not None and result.verdict == REJECTED
+
+
 def test_the_rule_layer_never_rejects_a_genuinely_remote_job():
     false_rejects = [row["k"] for row in _rows()
                      if row["label"] == "R" and _verdict(row) == REJECTED]
