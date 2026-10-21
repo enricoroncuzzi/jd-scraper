@@ -155,7 +155,7 @@ def test_tailoring_generation_is_recorded(tmp_path):
     assert len(recorded) == 1
     assert recorded[0]["stage"] == "tailoring"
     assert recorded[0]["provider"] == "openrouter"
-    assert recorded[0]["request_model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert recorded[0]["request_model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
     assert recorded[0]["batch_size"] == 1
     assert recorded[0]["attempt"] == 1
 
@@ -326,11 +326,11 @@ def test_tailoring_request_routes_nemotron_with_structured_fallbacks(tmp_path, m
 
     assert selection.cover_letter.proof_id == "exp.0.b0"
     request = captured[0]
-    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert request["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
     assert request["models"] == [
         "dots-studio/dots-3-note-preview:free",
         "liquid/lfm-2.5-2.6b:free",
-        "apodex/apodex-1.1-mini:free",
+        "nvidia/nemotron-3.5-super-vl:free",
     ]
     assert "qwen" not in request["model"]
     assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]

@@ -4,6 +4,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock
 import openai
+import pytest
 from src.models import JobOffer, ScoredOffer
 from src.scorer import (
     score_offers,
@@ -508,12 +509,12 @@ def test_scoring_request_routes_nemotron_primary_with_free_structured_fallbacks(
     assert usage["total_tokens"] == 120
 
     request = captured[0]
-    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert request["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
     fallbacks = request["models"]
     assert fallbacks == [
+        "nvidia/nemotron-3.5-super-vl:free",
         "dots-studio/dots-3-note-preview:free",
         "liquid/lfm-2.5-2.6b:free",
-        "apodex/apodex-1.1-mini:free",
     ]
     assert all(model.endswith(":free") for model in fallbacks)
     assert "qwen" not in request["model"] and all("qwen" not in model for model in fallbacks)
@@ -588,3 +589,49 @@ def test_batch_size_controls_how_many_offers_one_scoring_request_carries(monkeyp
     sizes.clear()
     scorer.score_offers(offers, "profile", [], [], "key")
     assert sizes == [5, 5, 5, 1]
+
+
+def _full_answer(batch):
+    return scorer._ScoringOutput(offers=[
+        scorer._ScoringItem(id=o.id, score=7, comment="c", summary="s") for o in batch
+    ])
+
+
+def test_an_empty_offers_answer_is_retried_and_then_invalid_output():
+    """dots-3 returned {"offers": []} as a valid tool call. Silently accepting
+    it dropped every job in the batch from scoring."""
+    chain = MagicMock()
+    chain.invoke.return_value = scorer._ScoringOutput(offers=[])
+    counter = scorer._TokenCounter()
+
+    with patch("src.scorer.telemetry.llm_call"), patch("src.scorer.time.sleep"), \
+            pytest.raises(scorer._EmptyStructuredOutput):
+        scorer._invoke_batch(chain, _make_offers(), "p", [], [], counter, max_retries=3)
+
+    assert chain.invoke.call_count == 3
+
+
+def test_a_short_offers_answer_is_retried_and_then_invalid_output():
+    batch = _make_offers()
+    chain = MagicMock()
+    chain.invoke.return_value = _full_answer(batch[:1])
+    counter = scorer._TokenCounter()
+
+    with patch("src.scorer.telemetry.llm_call"), patch("src.scorer.time.sleep"), \
+            pytest.raises(scorer._EmptyStructuredOutput):
+        scorer._invoke_batch(chain, batch, "p", [], [], counter, max_retries=3)
+
+    assert chain.invoke.call_count == 3
+
+
+def test_a_full_offers_answer_is_accepted_on_the_first_attempt():
+    batch = _make_offers()
+    chain = MagicMock()
+    chain.invoke.return_value = _full_answer(batch)
+    counter = scorer._TokenCounter()
+
+    with patch("src.scorer.telemetry.llm_call"), patch("src.scorer.time.sleep"):
+        result = scorer._invoke_batch(chain, batch, "p", [], [], counter, max_retries=3)
+
+    assert [item.id for item in result] == [o.id for o in batch]
+    assert chain.invoke.call_count == 1

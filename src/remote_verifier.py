@@ -4,7 +4,7 @@ LinkedIn's "remote" work-mode filter is not trustworthy for this: plenty of
 listings are tagged remote but require residency in the posting country. This
 stage reads the description itself and rules on it.
 
-OpenRouter nvidia/nemotron-3-super-120b-a12b:free is the primary judge. Groq
+OpenRouter nvidia/nemotron-3.5-super-vl:free is the primary judge. Groq
 gpt-oss-20b is the fallback, used when OpenRouter's daily share is spent, its
 quota is exhausted, or a batch fails. Two OpenRouter batch failures in a row
 stop further OpenRouter calls for that run. Groq keeps its own token budget: a
@@ -167,19 +167,20 @@ _EXCERPT_SEPARATOR = " [...] "
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Pins are perishable and kept independent of src/scorer.py so this stage does
-# not inherit a scoring pin change. Primary is
-# nvidia/nemotron-3-super-120b-a12b:free. qwen/qwen3.8-27b:free was withdrawn
-# (404; the paid slug is not pinned). Fallbacks are the other free models that
-# listed structured_outputs on 2026-10-06, one provider each. The array itself
-# is what OpenRouter caps at 3 entries (a 6-entry list broke scoring on
-# 2026-09-01).
-_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+# not inherit a scoring pin change. Re-pinned from the 2026-10-21 free-model
+# eval (report section 6): the old Nemotron Super primary 404ed on every call
+# from 2026-10-20 10:13 Rome and the old third fallback is no longer in
+# OpenRouter's model list. Primary here is nvidia/nemotron-3.5-super-vl:free,
+# the candidate that best agreed with the stored Nemotron Super verdicts. The
+# array itself is what OpenRouter caps at 3 entries (a 6-entry list broke
+# scoring on 2026-09-01).
+_OPENROUTER_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 _OPENROUTER_FALLBACK_MODELS = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
     # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
     # an unknown models entry can 400 the whole request.
     "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
-    "apodex/apodex-1.1-mini:free",
 ]
 # Verification may use 4/10 of the account-wide daily request allowance.
 # Scoring and tailoring share that allowance and are not capped here.
@@ -658,6 +659,12 @@ def _verify_batch_openrouter(
                                input_tokens=counter.last_prompt_tokens,
                                output_tokens=counter.last_completion_tokens)
                 if result is None:
+                    raise _EmptyStructuredOutput()
+                # A well-formed but short (or empty) `offers` list used to be
+                # accepted, and every missing id silently became the degraded
+                # "not_stated" reason. A batch is answered only when all of it
+                # is: otherwise retry and then record invalid_output.
+                if len(result.offers) < len(batch):
                     raise _EmptyStructuredOutput()
             verdicts = _resolve_items(result.offers, batch, require_italy_eligibility)
             usage["openrouter_prompt_tokens"] += counter.prompt_tokens

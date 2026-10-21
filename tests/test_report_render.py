@@ -30,12 +30,11 @@ def _report(tiers=None, **kw):
         tiers=tiers if tiers is not None else {n: _tier(n) for n in (1, 2, 3, 4)},
         queries=[rd.QueryRow(3, "AI Engineer", "Europe", "remote", 20, 20, 200, 180, "cap_hit")],
         stages=[
-            rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
-                        "nvidia/nemotron-3-super-120b-a12b:free", 12, 0, 40000),
-            rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
+            rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free",
+                        "nvidia/nemotron-3-ultra-550b-a55b:free", 12, 0, 40000),
+            rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free",
                         "liquid/lfm-2.5-2.6b:free", 1, 0, 3000),
-            rd.StageRow(1, "verification", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
-                        "nvidia/nemotron-3-super-120b-a12b:free", 24, 0, 47000),
+            rd.StageRow(1, "verification", "openrouter", _VL, _VL, 24, 0, 47000),
         ],
         limits=[
             rd.LimitUse("groq", "openai/gpt-oss-20b", "tokens", 200000, 134000,
@@ -62,7 +61,7 @@ def test_healthy_day_is_all_ok_and_has_no_warnings():
 
 def test_fallback_model_appears_next_to_the_primary_with_counts():
     tier1 = rr.render_day(_report(), settings=SETTINGS)[0]
-    assert "nemotron-3-super-120b-a12b (12 calls) + lfm-2.5-2.6b (1 call)" in tier1
+    assert "nemotron-3-ultra-550b-a55b (12 calls) + lfm-2.5-2.6b (1 call)" in tier1
 
 
 def test_each_limit_is_shown_in_its_own_unit_per_tier():
@@ -70,8 +69,8 @@ def test_each_limit_is_shown_in_its_own_unit_per_tier():
     # healthy-day fixture can show the OpenRouter primary without hiding the
     # token-limit line.
     stages = [
-        rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
-                    "nvidia/nemotron-3-super-120b-a12b:free", 12, 0, 40000),
+        rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "nvidia/nemotron-3-ultra-550b-a55b:free", 12, 0, 40000),
         rd.StageRow(1, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",
                     24, 0, 47000),
     ]
@@ -212,7 +211,7 @@ def test_pack_messages_cuts_a_single_unbroken_line():
 
 
 def test_helpers():
-    assert rr.short_model("nvidia/nemotron-3-super-120b-a12b:free") == "nemotron-3-super-120b-a12b"
+    assert rr.short_model("nvidia/nemotron-3-ultra-550b-a55b:free") == "nemotron-3-ultra-550b-a55b"
     assert rr.short_model("openai/gpt-oss-20b") == "gpt-oss-20b"
     assert rr.fmt_tokens(None) == "-" and rr.fmt_tokens(999) == "999" and rr.fmt_tokens(134400) == "134k"
 
@@ -352,7 +351,8 @@ def test_a_rate_limit_give_up_blocks_all_ok():
     assert "given up: 40" in blocks[2]
 
 
-_NEMOTRON = "nvidia/nemotron-3-super-120b-a12b:free"
+_NEMOTRON = "nvidia/nemotron-3-ultra-550b-a55b:free"
+_VL = "nvidia/nemotron-3.5-super-vl:free"
 _LIQUID = "liquid/lfm-2.5-2.6b:free"
 _DOTS = "dots-studio/dots-3-note-preview:free"
 
@@ -370,7 +370,7 @@ def test_answering_model_other_than_the_configured_primary_blocks_all_ok():
     assert "⚠ Scoring: 3 of 10 calls answered by lfm-2.5-2.6b (2), dots-3-note-preview (1)" in blocks[0]
     assert "⚠ Tailoring: 4 of 4 calls answered by lfm-2.5-2.6b (4)" in blocks[1]
     assert f"warn above {round(100 * rr.PRIMARY_MODEL_MISMATCH_SHARE_WARN)}%" in blocks[0]
-    assert "primary nemotron-3-super-120b-a12b" in blocks[0]
+    assert "primary nemotron-3-ultra-550b-a55b" in blocks[0]
     detail = rr.render_day_detail(_report(stages=stages), settings=SETTINGS)
     assert "⚠ Scoring: 3 of 10 calls answered by lfm-2.5-2.6b (2), dots-3-note-preview (1)" in detail
 
@@ -379,7 +379,7 @@ def test_primary_model_share_at_the_threshold_stays_all_ok():
     stages = [
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _NEMOTRON, 8, 0, 1000),
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _LIQUID, 2, 0, 100),
-        rd.StageRow(1, "verification", "openrouter", _NEMOTRON, _NEMOTRON, 10, 0, 100),
+        rd.StageRow(1, "verification", "openrouter", _VL, _VL, 10, 0, 100),
     ]
     assert "ALL OK" in _summary(_report(stages=stages))
 
@@ -389,7 +389,7 @@ def test_failed_and_unanswered_calls_do_not_count_as_another_model():
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _NEMOTRON, 8, 0, 1000),
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _LIQUID, 10, 8, 100),
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, rd.NO_RESPONSE_MODEL, 20, 20, 0),
-        rd.StageRow(1, "verification", "openrouter", _NEMOTRON, _NEMOTRON, 4, 0, 100),
+        rd.StageRow(1, "verification", "openrouter", _VL, _VL, 4, 0, 100),
     ]
     assert "ALL OK" in _summary(_report(stages=stages))
 
@@ -397,7 +397,7 @@ def test_failed_and_unanswered_calls_do_not_count_as_another_model():
 def test_one_fallback_call_on_a_short_stage_stays_all_ok():
     stages = [
         rd.StageRow(1, "scoring", "openrouter", _NEMOTRON, _NEMOTRON, 25, 0, 1000),
-        rd.StageRow(1, "verification", "openrouter", _NEMOTRON, _NEMOTRON, 28, 0, 1000),
+        rd.StageRow(1, "verification", "openrouter", _VL, _VL, 28, 0, 1000),
         rd.StageRow(1, "tailoring", "openrouter", _NEMOTRON, _LIQUID, 1, 0, 10),
     ]
     blocks = rr.render_day(_report(stages=stages), settings=SETTINGS)
@@ -446,7 +446,7 @@ def test_tier_message_shows_the_funnel_and_labeled_lines():
     tier1 = rr.render_day(_report(), settings=SETTINGS)[0]
     assert "Offers: 100 found → 40 scored → 4 scored 8+ → 2 packaged" in tier1
     assert "Searches: 0 run, 0 hit their page limit (? pages)" in tier1
-    assert "Scoring: nemotron-3-super-120b-a12b (12 calls) + lfm-2.5-2.6b (1 call)\n  13 calls · 43k tok" in tier1
+    assert "Scoring: nemotron-3-ultra-550b-a55b (12 calls) + lfm-2.5-2.6b (1 call)\n  13 calls · 43k tok" in tier1
 
 
 def test_day_summary_has_verdict_run_time_code_limits_and_llm_totals():
@@ -522,8 +522,8 @@ def test_tier_report_legend_names_tokens_when_the_block_shows_tokens():
 
 def test_tier_report_legend_names_both_units_when_both_appear():
     stages = [
-        rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-super-120b-a12b:free",
-                    "nvidia/nemotron-3-super-120b-a12b:free", 12, 0, 40000),
+        rd.StageRow(1, "scoring", "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free",
+                    "nvidia/nemotron-3-ultra-550b-a55b:free", 12, 0, 40000),
         rd.StageRow(1, "verification", "groq", "openai/gpt-oss-20b", "openai/gpt-oss-20b",
                     24, 0, 47000),
     ]

@@ -25,6 +25,7 @@ from src.remote_verifier import (
     _verify_batch,
     verify_offers,
 )
+from src import remote_verifier as rv
 from src.llm_limits import Limit
 
 
@@ -1050,11 +1051,11 @@ def test_openrouter_verification_routes_nemotron_primary_with_structured_fallbac
     assert verified[0].remote_verdict == "confirmed"
     assert usage["openrouter_requests"] == 1
     request = captured[0]
-    assert request["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert request["model"] == "nvidia/nemotron-3.5-super-vl:free"
     assert request["models"] == [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
         "dots-studio/dots-3-note-preview:free",
         "liquid/lfm-2.5-2.6b:free",
-        "apodex/apodex-1.1-mini:free",
     ]
     assert request["model"] not in request["models"]
     assert all(model.endswith(":free") for model in request["models"])
@@ -1132,3 +1133,62 @@ def test_the_hybrid_bullet_follows_the_prompt_switch():
 
 def test_the_prompt_version_follows_the_guidance():
     assert _prompt_version(True, True) != _prompt_version(True, False)
+
+
+# --- Empty or short `offers` answers -----------------------------------------
+
+def _openrouter_usage():
+    return {
+        "openrouter_prompt_tokens": 0, "openrouter_completion_tokens": 0,
+        "openrouter_total_tokens": 0, "openrouter_requests": 0,
+    }
+
+
+@pytest.mark.parametrize("answer", [
+    [],                                     # dots-3's valid-looking empty list
+    [(1, "confirmed")],                     # one verdict for a two-offer batch
+])
+def test_an_empty_or_short_offers_answer_is_retried_then_invalid(monkeypatch, answer):
+    """A batch is answered only when every offer in it got a verdict. An empty
+    or short list used to map the missing jobs to the degraded reason silently."""
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    chain = MagicMock()
+    chain.invoke.return_value = _verdict_output(answer)
+    usage = _openrouter_usage()
+
+    with pytest.raises(rv._EmptyStructuredOutput) as raised:
+        rv._verify_batch_openrouter(
+            chain, [_offer(1), _offer(2)], True, usage, requests_allowed=100,
+        )
+
+    from src import telemetry
+    assert telemetry.classify_llm_error(raised.value) == "invalid_output"
+    assert chain.invoke.call_count == rv._MAX_RETRIES
+    assert usage["openrouter_requests"] == rv._MAX_RETRIES
+
+
+def test_a_complete_offers_answer_is_accepted_on_the_first_attempt(monkeypatch):
+    chain = MagicMock()
+    chain.invoke.return_value = _verdict_output([(1, "confirmed"), (2, "confirmed")])
+    usage = _openrouter_usage()
+
+    verdicts = rv._verify_batch_openrouter(
+        chain, [_offer(1), _offer(2)], True, usage, requests_allowed=100,
+    )
+
+    assert verdicts[1].verdict == "confirmed" and verdicts[2].verdict == "confirmed"
+    assert chain.invoke.call_count == 1
+
+
+def test_an_empty_openrouter_answer_leaves_the_batch_degraded_not_scored(monkeypatch):
+    monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
+    chain = _mock_openrouter(monkeypatch, [_verdict_output([])] * rv._MAX_RETRIES)
+
+    verified, usage = verify_offers(
+        [_offer(1), _offer(2)], True, groq_api_key="", llm_api_key="or-key",
+    )
+
+    assert chain.invoke.call_count == rv._MAX_RETRIES
+    assert [o.remote_verdict for o in verified] == ["not_stated", "not_stated"]
+    assert all(o.remote_reason == _DEGRADED_REASON for o in verified)
+    assert usage["degraded"] is True

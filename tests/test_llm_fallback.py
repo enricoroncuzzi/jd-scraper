@@ -35,7 +35,8 @@ def call(conn, stage, model, at=NOW, provider="openrouter", outcome="ok"):
             "INSERT INTO llm_calls (id, stage, provider, request_model, response_model, latency_ms, "
             "batch_size, attempt, outcome, prompt_version, started_at) "
             "VALUES (gen_random_uuid(), %s, %s, %s, %s, 1000, 1, 1, %s, 'v', %s)",
-            (stage, provider, PRIMARY, model, outcome, at))
+            (stage, provider, SCORING_PRIMARY if stage == "scoring" else PRIMARY,
+             model, outcome, at))
     conn.commit()
 
 
@@ -45,7 +46,7 @@ def usage(conn, stage, now=NOW):
 
 def test_stage_usage_counts_primary_and_fallback_answers(store_conn):
     for _ in range(3):
-        call(store_conn, "scoring", PRIMARY)
+        call(store_conn, "scoring", SCORING_PRIMARY)
     for _ in range(2):
         call(store_conn, "scoring", FALLBACK)
     call(store_conn, "scoring", None, outcome="timeout")
@@ -56,7 +57,7 @@ def test_stage_usage_counts_primary_and_fallback_answers(store_conn):
     assert answered.answered == 5
     assert answered.fallback_calls == 2
     assert answered.primary_share == pytest.approx(0.6)
-    assert answered.top_model == (PRIMARY, 3)
+    assert answered.top_model == (SCORING_PRIMARY, 3)
     assert answered.fallbacks == ((FALLBACK, 2),)
 
 
@@ -126,7 +127,7 @@ def test_each_stage_alerts_on_its_own(store_conn):
 
 def test_a_stage_below_the_share_stays_quiet(store_conn):
     for _ in range(8):
-        call(store_conn, "scoring", PRIMARY)
+        call(store_conn, "scoring", SCORING_PRIMARY)
     for _ in range(2):
         call(store_conn, "scoring", FALLBACK)  # exactly 20%, not above
     assert run_guard(store_conn, CFG, Outbox(), NOW, ROME) == []
@@ -191,7 +192,7 @@ def test_status_lines_show_calls_primary_share_and_top_model(store_conn):
     scoring = next(line for line in lines if "scoring" in line)
     assert "6 calls" in scoring and "1 unanswered" in scoring
     assert "60% by the primary" in scoring and FALLBACK in scoring
-    assert PRIMARY in scoring
+    assert SCORING_PRIMARY in scoring
     verification = next(line for line in lines if "verification" in line)
     assert "0 calls" in verification
 

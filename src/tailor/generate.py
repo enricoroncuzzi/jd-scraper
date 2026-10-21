@@ -124,16 +124,21 @@ def _prompt_version() -> str:
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # Same perishable pins as scoring and verification, kept as constants here so a
-# scoring pin change cannot silently retarget tailoring. Primary is
-# nvidia/nemotron-3-super-120b-a12b:free. Fallbacks are free models that listed
-# structured_outputs on 2026-10-06. OpenRouter caps this array at 3 entries.
-_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+# scoring pin change cannot silently retarget tailoring. Re-pinned from the
+# 2026-10-21 free-model eval (report section 6): the old Nemotron Super primary
+# 404ed on every call from 2026-10-20 10:13 Rome and the old third fallback is
+# no longer in OpenRouter's model list. Primary here is
+# nvidia/nemotron-3-ultra-550b-a55b:free, which the eval's tailoring output
+# passed the production validators 3/3.
+# OpenRouter caps this array at 3 entries. method="function_calling" stays: the
+# primary does not advertise structured_outputs and function calling worked.
+_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 _OPENROUTER_FALLBACK_MODELS = [
     # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
     # an unknown models entry can 400 the whole request.
     "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
-    "apodex/apodex-1.1-mini:free",
+    "nvidia/nemotron-3.5-super-vl:free",
 ]
 
 
