@@ -27,8 +27,8 @@ search just takes the following turn. The advisory lock is held only for the req
 itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_after`
 and cannot get a turn raises PaceBusy; a `packaging` request waits at least the longest
 jittered spacing of the window in effect (plus a second), read from the schedule at wait
-time, so the previous request's spacing can never make it give up, and a caller that gives up writes only its own
-`wanting` markers.
+time, so the previous request's spacing can never make it give up. A caller that gives
+up writes only its own `wanting` markers.
 """
 import json
 import random

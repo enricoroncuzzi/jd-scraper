@@ -350,11 +350,11 @@ takes effect only when all three LinkedIn services run this code: `jds-process` 
 `jds-deliver` must ask for it, so a deploy that restarts only `jds-deliver` keeps the old
 race. After the deploy, `psql jds -c "SELECT kind, count(*) FROM pace_events WHERE at >
 now() - interval '1 hour' GROUP BY 1"` shows `packaging` rows as packages come due. The
-packaging wait is not the 120 s tick budget: it is at least the longest jittered spacing of the
-window in effect (weekend 110 s base, up to 132 s) plus a second, read from the schedule at
-wait time, so a request that arrives just after the previous one still gets its turn. Once the oldest waiting job is over
-`description_deadline_hours` old, an overdue description that the share says takes
-the next turn may spend more than one processor tick waiting for it. If a walk is refused three
+packaging wait is not the 120 s tick budget: it is at least the longest jittered spacing
+of the window in effect (weekend 110 s base, up to 132 s) plus a second, read from the
+schedule at wait time, so a request that arrives just after the previous one still gets its
+turn. Once the oldest waiting job is over `description_deadline_hours` old, an overdue
+description that the share says takes the next turn may spend more than one processor tick waiting for it. If a walk is refused three
 times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
 The gate closes only for a configured `closed_hours` window: there is no night window as
 shipped and no daily cap.
