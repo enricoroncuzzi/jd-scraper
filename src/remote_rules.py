@@ -151,8 +151,18 @@ def occasional_presence_phrase(text: str) -> str | None:
     return match.group(0).strip() if match else None
 
 
+# "hybrid" as a technology adjective: hybrid cloud, hybrid infrastructure,
+# hybrid environments. Removed before the work-mode scan, so a description whose
+# only "hybrid" is technical reads as silent, while a real hybrid sentence next
+# to it still rejects. Plural only, and no work/working prefix: "hybrid working
+# environment" and a singular "hybrid environment" are ordinary workplace
+# wording for a hybrid role and keep rejecting through _CONFIDENT_HYBRID.
+_CLOUD_HYBRID = re.compile(
+    r"\bhybrid[-\s]+(?:cloud|multi-?cloud|infrastructure|environments)\b", re.IGNORECASE)
+
+
 def _scrub_cloud_hybrid(text: str) -> str:
-    return text  # Task 2 replaces this with the real cloud scrub
+    return _CLOUD_HYBRID.sub(" ", text)
 
 
 def _scan_hybrid(text: str, *, occasional_guard: bool, cloud_hybrid_guard: bool,
@@ -354,6 +364,7 @@ def classify(
     the title, because "Backend MLOps Engineer - REMOTO" states the mode there.
     """
     text = f"{title}\n{description}".strip()
+    scanned = _scrub_cloud_hybrid(text) if cloud_hybrid_guard else text
     lowered_location = (location or "").lower()
 
     if hints_enabled and remote_hint in ("hybrid", "onsite"):
@@ -381,7 +392,7 @@ def classify(
         # auto-confirmed: "confirmed" is the one verdict that gets auto-tailored.
         return None
     # Mixed signals, or a remote word only as a perk: the model decides.
-    if hybrid or remote or _OFFICE_PERK.search(text) or _WORK_MODE_MENTION.search(text):
+    if hybrid or remote or _OFFICE_PERK.search(scanned) or _WORK_MODE_MENTION.search(scanned):
         return None
     if len(description.strip()) < _MIN_DESCRIPTION_CHARS:
         return None

@@ -1,4 +1,5 @@
 """The rule pre-pass inside the remote stage: what it settles, and how it stores it."""
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -86,6 +87,12 @@ def test_the_source_hint_settles_hybrid_before_any_text_rule(store_conn, cfg):
     job = _described(store_conn, cfg, 1, FILLER, remote_hint="hybrid")
     assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
     assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected_structured", "rejected")
+
+
+def test_the_cloud_hybrid_guard_can_be_switched_off(store_conn, cfg):
+    job = _described(store_conn, cfg, 4, FILLER + "We run secure hybrid environments for clients.")
+    assert apply_deterministic_rules(store_conn, replace(cfg, cloud_hybrid_guard=False), NOW) == 1
+    assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected_rule", "rejected")
 
 
 def test_an_occasional_presence_phrase_is_left_to_the_model(store_conn, cfg):

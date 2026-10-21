@@ -315,3 +315,33 @@ def test_a_suppressed_phrase_is_reported_separately_from_a_confident_one():
         "2 days a week in the office during onboarding.", occasional_guard=True,
         cloud_hybrid_guard=True)
     assert confident is None and suppressed is not None
+
+CLOUD_HYBRID_TEXTS = [
+    "You will operate and secure hybrid environments for our customers, spanning private cloud and "
+    "public cloud workloads with Terraform and Kubernetes. You will join a team of platform engineers "
+    "delivering observability, secrets management and CI/CD pipelines for regulated clients.",
+    "Our client runs a multi-cloud and hybrid environments estate. You will design automated "
+    "provisioning with Ansible and Terraform, improve monitoring and support the migration of "
+    "legacy workloads. A background in infrastructure engineering and scripting is what we ask for.",
+]
+WORKPLACE_HYBRID_ENVIRONMENT_TEXTS = [
+    "We provide a flexible hybrid working environment for all staff.",
+    "Join our hybrid work environment in Milan.",
+    "We work in a hybrid environment, as we value flexibility.",
+]
+
+
+def test_hybrid_technology_wording_is_not_a_work_mode():
+    for text in CLOUD_HYBRID_TEXTS:
+        assert _verdict_of(FILLER + text) == NOT_STATED, text
+
+
+def test_a_hybrid_working_environment_is_still_hybrid():
+    for text in WORKPLACE_HYBRID_ENVIRONMENT_TEXTS:
+        assert _verdict_of(FILLER + text) == REJECTED, text
+
+
+def test_a_hybrid_work_sentence_next_to_cloud_wording_still_rejects():
+    text = ("You will operate secure hybrid environments for our customers, spanning private "
+            "cloud and public cloud workloads. This role is hybrid: 3 days a week in the office.")
+    assert _verdict_of(FILLER + text) == REJECTED

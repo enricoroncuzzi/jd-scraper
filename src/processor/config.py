@@ -57,6 +57,9 @@ class ProcessorConfig:
     # Occasional presence (onboarding, team events, offsites, sprints, meetups)
     # is not a hybrid phrase. Off restores the pre-2026-10-21 rule behaviour.
     occasional_presence_guard: bool = True
+    # Technology-only "hybrid" wording (hybrid cloud, hybrid environments) is not
+    # a work mode. Off restores the pre-2026-10-21 rule behaviour.
+    cloud_hybrid_guard: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -120,6 +123,7 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         remote_rules_enabled=bool(data.get("remote_rules", {}).get("enabled", True)),
         occasional_presence_guard=bool(
             data.get("remote_rules", {}).get("occasional_presence", True)),
+        cloud_hybrid_guard=bool(data.get("remote_rules", {}).get("cloud_hybrid", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
     )
