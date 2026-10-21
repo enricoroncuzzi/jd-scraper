@@ -20,6 +20,8 @@ from src.remote_verifier import (
     _extract_policy_excerpt,
     _is_daily_quota_exceeded,
     _openrouter_verification_daily_request_cap,
+    _build_prompt,
+    _prompt_version,
     _verify_batch,
     verify_offers,
 )
@@ -1066,7 +1068,8 @@ def test_a_larger_batch_size_means_fewer_openrouter_requests(monkeypatch):
 
     calls = []
 
-    def fake_openrouter(chain, batch, require_italy, usage, allowed):
+    def fake_openrouter(chain, batch, require_italy, usage, allowed,
+                        occasional_presence_guidance=True):
         calls.append(len(batch))
         usage["openrouter_requests"] += 1
         return {o.id: rv._ResolvedVerdict(verdict="confirmed", reason="ok") for o in batch}
@@ -1087,7 +1090,8 @@ def test_a_large_batch_that_falls_back_to_groq_is_sent_in_chunks_of_eight(monkey
 
     chunks = []
 
-    def fake_groq(client, batch, require_italy, usage=None):
+    def fake_groq(client, batch, require_italy, usage=None,
+                  occasional_presence_guidance=True):
         chunks.append(len(batch))
         return {o.id: rv._ResolvedVerdict(verdict="not_stated", reason="x") for o in batch}, usage
 
@@ -1098,3 +1102,33 @@ def test_a_large_batch_that_falls_back_to_groq_is_sent_in_chunks_of_eight(monkey
                        description_status="ok") for i in range(12)]
     rv.verify_offers(offers, False, "groq-key", llm_api_key="", batch_size=12)
     assert chunks == [8, 4]
+
+
+def test_the_prompt_says_occasional_presence_is_not_hybrid():
+    prompt = _build_prompt([_offer(1)], True)
+    assert "Occasional presence is NOT hybrid" in prompt
+    for phrase in ("onboarding", "team events", "offsites", "team sprints", "meetups",
+                   "client travel"):
+        assert phrase in prompt
+
+
+def test_the_prompt_says_hybrid_technology_words_are_not_a_work_mode():
+    prompt = _build_prompt([_offer(1)], False)
+    assert "'hybrid cloud'" in prompt and "'hybrid environments'" in prompt
+
+
+def test_the_prompt_guidance_can_be_switched_off():
+    prompt = _build_prompt([_offer(1)], True, occasional_presence_guidance=False)
+    assert "Occasional presence is NOT hybrid" not in prompt
+
+
+def test_the_hybrid_bullet_follows_the_prompt_switch():
+    on = _build_prompt([_offer(1)], True)
+    off = _build_prompt([_offer(1)], True, occasional_presence_guidance=False)
+    assert "- hybrid: regular required office days" in on
+    assert "- hybrid: any required office days." in off
+    assert "regular required" not in off
+
+
+def test_the_prompt_version_follows_the_guidance():
+    assert _prompt_version(True, True) != _prompt_version(True, False)

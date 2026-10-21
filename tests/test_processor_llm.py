@@ -52,10 +52,12 @@ class FakeVerify:
         self.calls = []
 
     def __call__(self, offers, require_italy_eligibility, groq_api_key, llm_api_key,
-                 groq_tokens_used_today, openrouter_requests_used_today, batch_size=None):
+                 groq_tokens_used_today, openrouter_requests_used_today, batch_size=None,
+                 occasional_presence_prompt=True):
         self.calls.append({"batch_size": batch_size, "ids": [o.id for o in offers], "titles": [o.title for o in offers],
                            "italy": require_italy_eligibility, "groq": groq_api_key,
-                           "llm": llm_api_key, "or_used": openrouter_requests_used_today})
+                           "llm": llm_api_key, "or_used": openrouter_requests_used_today,
+                           "occasional_presence_prompt": occasional_presence_prompt})
         for offer in offers:
             degraded = offer.id in self.degraded_ids
             offer.remote_verdict = "unconfirmed" if degraded else self.verdict
@@ -125,6 +127,7 @@ def test_a_full_batch_is_verified_with_the_tiers_italy_rule_and_stored(store_con
     verify = FakeVerify("confirmed", "fully remote")
     assert run_remote_batches(store_conn, cfg, NOW, KEYS, verify=verify) == 8
     assert verify.calls[0]["italy"] is False and len(verify.calls[0]["ids"]) == 8
+    assert verify.calls[0]["occasional_presence_prompt"] is True
     assert (verify.calls[0]["llm"], verify.calls[0]["groq"]) == ("llm-key", "groq-key")
     assert _row(store_conn, jobs[0])[:4] == ("described", "", "confirmed", "fully remote")
 

@@ -166,7 +166,8 @@ def run_remote_batches(conn, cfg: ProcessorConfig, now: datetime, keys: LlmKeys,
                 groq_tokens_used_today=groq_used.input_tokens + groq_used.output_tokens,
                 openrouter_requests_used_today=budget.stage_requests_today(
                     conn, "openrouter", "verification", now),
-                batch_size=cfg.remote_check_batch_size)
+                batch_size=cfg.remote_check_batch_size,
+                occasional_presence_prompt=cfg.occasional_presence_prompt)
         with conn.cursor() as cur:
             for row, offer in zip(batch, verified):
                 if offer.remote_reason == _DEGRADED_REASON:

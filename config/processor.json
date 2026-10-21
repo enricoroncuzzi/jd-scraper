@@ -16,6 +16,7 @@
   "remote_rules": {"enabled": true, "occasional_presence": true, "cloud_hybrid": true},
   "structured_remote": {"enabled": true, "explicit_remote_wins": true},
   "remote_hint": {"advised_when_silent": true, "never_reject_on_occasional": true},
+  "remote_verifier": {"occasional_presence_prompt": true},
   "merged_call": {"enabled": false},
   "description_order": {
     "enabled": true,

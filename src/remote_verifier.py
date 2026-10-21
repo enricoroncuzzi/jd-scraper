@@ -475,7 +475,20 @@ def _is_malformed_output_error(e: Exception) -> bool:
     return "json_validate_failed" in (body + " " + message + " " + str(e)).lower()
 
 
-def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str:
+_OCCASIONAL_PRESENCE_GUIDANCE = (
+    "Occasional presence is NOT hybrid: a few weeks in the office during onboarding, "
+    "team events, offsites, twice-yearly team sprints, meetups, quarterly gatherings, "
+    "a few trips a year to headquarters and occasional client travel do not make a role "
+    "hybrid or on-site; a fully remote role that asks for them is remote. Hybrid means "
+    "regular required office days ('3 days a week in the office', '2 days on site each "
+    "week').\n"
+    "Words such as 'hybrid cloud', 'hybrid infrastructure' and 'hybrid environments' "
+    "describe technology, not a work mode: ignore them.\n\n"
+)
+
+
+def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool,
+                  occasional_presence_guidance: bool = True) -> str:
     rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
     budget = _per_offer_budget(len(batch))
     offers_text = "\n\n".join(
@@ -488,13 +501,15 @@ def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str
         "answer with work_mode, eligibility and the quote that decided it.\n\n"
         "work_mode is one of:\n"
         "- remote: fully remote. Remote-first with offices optional counts as remote.\n"
-        "- hybrid: any required office days.\n"
+        + ("- hybrid: regular required office days (not occasional trips, events or sprints).\n"
+           if occasional_presence_guidance else "- hybrid: any required office days.\n") +
         "- onsite: the role is done at an office or site.\n"
         "- flexible: remote only mentioned as a perk or an option (smart working, "
         "WFH days, 'hybrid or remote', 'flexible remote working').\n"
         "- not_stated: the description is silent or too vague to settle it.\n"
         "Never infer on-site from an office address, a city name or a company HQ; "
         "use not_stated instead.\n\n"
+        f"{_OCCASIONAL_PRESENCE_GUIDANCE if occasional_presence_guidance else ''}"
         f"{rule}\n\n"
         "quote must be a short phrase copied exactly from the title, location or "
         "description (at most 15 words) that states the work mode: 'fully remote', "
@@ -512,20 +527,24 @@ def _build_prompt(batch: list[JobOffer], require_italy_eligibility: bool) -> str
     )
 
 
-@functools.lru_cache(maxsize=2)
-def _prompt_version(require_italy_eligibility: bool) -> str:
+@functools.lru_cache(maxsize=4)
+def _prompt_version(require_italy_eligibility: bool, occasional_presence_guidance: bool) -> str:
     try:
         rule = _ITALY_RULE if require_italy_eligibility else _REMOTE_ONLY_RULE
-        return telemetry.prompt_version(inspect.getsource(_build_prompt), rule)
+        return telemetry.prompt_version(
+            inspect.getsource(_build_prompt), rule,
+            _OCCASIONAL_PRESENCE_GUIDANCE if occasional_presence_guidance else "")
     except Exception:
         return "unknown"
 
 
 def _verify_batch(
     client, batch: list[JobOffer], require_italy_eligibility: bool, usage: dict | None = None,
+    *, occasional_presence_guidance: bool = True,
 ) -> tuple[dict, dict]:
     """Return (verdicts by offer id, token usage). Raises when every retry fails."""
-    prompt = _build_prompt(batch, require_italy_eligibility)
+    prompt = _build_prompt(batch, require_italy_eligibility,
+                           occasional_presence_guidance=occasional_presence_guidance)
     last_error = None
     if usage is None:
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -534,7 +553,8 @@ def _verify_batch(
             with telemetry.llm_call(stage="verification", provider="groq",
                                     request_model=_GROQ_MODEL, batch_size=len(batch),
                                     attempt=attempt + 1,
-                                    prompt_version=_prompt_version(require_italy_eligibility),
+                                    prompt_version=_prompt_version(
+                                        require_italy_eligibility, occasional_presence_guidance),
                                     is_quota_exhausted=_is_daily_quota_exceeded) as call:
                 response = client.chat.completions.create(
                     model=_GROQ_MODEL,
@@ -605,7 +625,7 @@ def _openrouter_chain(llm_api_key: str):
 
 def _verify_batch_openrouter(
     chain, batch: list[JobOffer], require_italy_eligibility: bool,
-    usage: dict, requests_allowed: int,
+    usage: dict, requests_allowed: int, *, occasional_presence_guidance: bool = True,
 ) -> dict:
     """One OpenRouter batch. Reuses src/scorer.py's
     failure classifiers (_is_quota_exceeded, _is_retryable_upstream_value_error,
@@ -617,7 +637,8 @@ def _verify_batch_openrouter(
     and raises _OpenRouterShareSpent instead of going past requests_allowed.
     Returns the verdicts by offer id and adds token usage into `usage`.
     """
-    prompt = _build_prompt(batch, require_italy_eligibility)
+    prompt = _build_prompt(batch, require_italy_eligibility,
+                           occasional_presence_guidance=occasional_presence_guidance)
     counter = _TokenCounter()
     last_error = None
     for attempt in range(_MAX_RETRIES):
@@ -629,7 +650,8 @@ def _verify_batch_openrouter(
             with telemetry.llm_call(stage="verification", provider="openrouter",
                                     request_model=_OPENROUTER_MODEL, batch_size=len(batch),
                                     attempt=attempt + 1,
-                                    prompt_version=_prompt_version(require_italy_eligibility),
+                                    prompt_version=_prompt_version(
+                                        require_italy_eligibility, occasional_presence_guidance),
                                     is_quota_exhausted=_openrouter_quota_exhausted) as call:
                 result = chain.invoke({"prompt": prompt}, config={"callbacks": [counter]})
                 call.set_usage(response_model=counter.last_model,
@@ -689,6 +711,7 @@ def verify_offers(
     groq_tokens_used_today: int = 0,
     openrouter_requests_used_today: int = 0,
     batch_size: int | None = None,
+    occasional_presence_prompt: bool = True,
 ) -> tuple[list[JobOffer], dict]:
     """Mark each offer with the new verdict vocabulary. Never raises.
 
@@ -772,6 +795,7 @@ def verify_offers(
                 verdicts = _verify_batch_openrouter(
                     openrouter_chain, batch, require_italy_eligibility,
                     usage, openrouter_requests_allowed,
+                    occasional_presence_guidance=occasional_presence_prompt,
                 )
             except _OpenRouterShareSpent:
                 print(f"[verifier] Verification's daily share of OpenRouter requests "
@@ -827,6 +851,7 @@ def verify_offers(
                         chunk_verdicts, _ = _verify_batch(
                             client, batch[start:start + BATCH_SIZE], require_italy_eligibility,
                             usage=batch_usage,
+                            occasional_presence_guidance=occasional_presence_prompt,
                         )
                         collected.update(chunk_verdicts)
                     verdicts = collected

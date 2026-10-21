@@ -69,6 +69,8 @@ class ProcessorConfig:
     # A source remote hint is never stored rejected when the model's only
     # evidence is occasional presence.
     remote_hint_never_reject: bool = True
+    # The verifier prompt's occasional-presence guidance and its hybrid bullet.
+    occasional_presence_prompt: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -139,6 +141,8 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
             data.get("remote_hint", {}).get("advised_when_silent", True)),
         remote_hint_never_reject=bool(
             data.get("remote_hint", {}).get("never_reject_on_occasional", True)),
+        occasional_presence_prompt=bool(
+            data.get("remote_verifier", {}).get("occasional_presence_prompt", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
     )
