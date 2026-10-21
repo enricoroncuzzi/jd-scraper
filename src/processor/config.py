@@ -54,6 +54,23 @@ class ProcessorConfig:
     # The deterministic phrase rules (src/remote_rules.py) that run before the
     # model. See that module for what they will and will not decide.
     remote_rules_enabled: bool = True
+    # Occasional presence (onboarding, team events, offsites, sprints, meetups)
+    # is not a hybrid phrase. Off restores the pre-2026-10-21 rule behaviour.
+    occasional_presence_guard: bool = True
+    # Technology-only "hybrid" wording (hybrid cloud, hybrid environments) is not
+    # a work mode. Off restores the pre-2026-10-21 rule behaviour.
+    cloud_hybrid_guard: bool = True
+    # A source "remote"/"remote_worldwide" hint plus a silent description is
+    # advised, not not_stated: the source's own field is evidence.
+    remote_hint_advice: bool = True
+    # An explicit "full remote" in the title or text beats the source's
+    # hybrid/on-site shortcut and hands the job to the model.
+    explicit_remote_wins: bool = True
+    # A source remote hint is never stored rejected when the model's only
+    # evidence is occasional presence.
+    remote_hint_never_reject: bool = True
+    # The verifier prompt's occasional-presence guidance and its hybrid bullet.
+    occasional_presence_prompt: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -114,7 +131,18 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         llm_stop_at_requests=int(data["llm_stop_at_requests"]),
         structured_remote_enabled=bool(
             data.get("structured_remote", {}).get("enabled", True)),
+        explicit_remote_wins=bool(
+            data.get("structured_remote", {}).get("explicit_remote_wins", True)),
         remote_rules_enabled=bool(data.get("remote_rules", {}).get("enabled", True)),
+        occasional_presence_guard=bool(
+            data.get("remote_rules", {}).get("occasional_presence", True)),
+        cloud_hybrid_guard=bool(data.get("remote_rules", {}).get("cloud_hybrid", True)),
+        remote_hint_advice=bool(
+            data.get("remote_hint", {}).get("advised_when_silent", True)),
+        remote_hint_never_reject=bool(
+            data.get("remote_hint", {}).get("never_reject_on_occasional", True)),
+        occasional_presence_prompt=bool(
+            data.get("remote_verifier", {}).get("occasional_presence_prompt", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
     )

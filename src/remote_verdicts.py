@@ -5,10 +5,12 @@ description never states the work mode" and "the model could not tell whether an
 Italy resident may take it". The captain split them (2026-10-18):
 
 - `confirmed`         fully remote, workable from Italy (no eligibility problem)
-- `advised`           fully remote, but limited to another country or with no
+- `advised`           fully remote, but limited to another country, with no
                       stated country restriction in a tier that needs Italy
-                      eligibility. Never rejected for eligibility alone (D3);
-                      delivered and alerted with a short advice line.
+                      eligibility, or the source marks the job remote while the
+                      text does not state the work mode. Never rejected for
+                      eligibility alone (D3); delivered and alerted with a short
+                      advice line.
 - `not_stated`        the text does not state the work mode (D1). Kept in the
                       digest in its own section, no Telegram Strong match alert.
 - `rejected`          hybrid, on-site, or remote only as an occasional perk

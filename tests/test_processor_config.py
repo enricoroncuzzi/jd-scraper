@@ -58,3 +58,69 @@ def test_the_shipped_config_turns_the_order_on_with_a_quota_of_four():
     assert [c.name for c in cfg.fetch_order.order_for(4).classes] == [
         "ai_country", "ai_city", "other_country", "other_city"]
     assert [c.name for c in cfg.fetch_order.order_for(2).classes] == ["ai", "other"]
+
+
+def test_the_occasional_presence_guard_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().occasional_presence_guard is True
+    data = json.load(open("config/processor.json"))
+    data["remote_rules"]["occasional_presence"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).occasional_presence_guard is False
+
+
+def test_the_cloud_hybrid_guard_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().cloud_hybrid_guard is True
+    data = json.load(open("config/processor.json"))
+    data["remote_rules"]["cloud_hybrid"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).cloud_hybrid_guard is False
+
+
+def test_the_remote_hint_advice_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().remote_hint_advice is True
+    data = json.load(open("config/processor.json"))
+    data["remote_hint"]["advised_when_silent"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).remote_hint_advice is False
+
+
+def test_the_explicit_full_remote_override_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().explicit_remote_wins is True
+    data = json.load(open("config/processor.json"))
+    data["structured_remote"]["explicit_remote_wins"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).explicit_remote_wins is False
+
+
+def test_the_remote_hint_never_reject_guard_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().remote_hint_never_reject is True
+    data = json.load(open("config/processor.json"))
+    data["remote_hint"]["never_reject_on_occasional"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).remote_hint_never_reject is False
+
+
+def test_the_occasional_presence_prompt_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().occasional_presence_prompt is True
+    data = json.load(open("config/processor.json"))
+    data["remote_verifier"]["occasional_presence_prompt"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).occasional_presence_prompt is False

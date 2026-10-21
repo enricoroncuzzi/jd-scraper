@@ -194,6 +194,28 @@ loses nothing.
   only for an explicit "Remote (UK)" or "Remote - Italy", so most remote-phrased jobs there
   cost one verification call. Inspect the mix with
   `psql jds -c "SELECT remote_verdict, count(*) FROM jobs WHERE tier IN (1,3,4) AND first_seen_at > now() - interval '7 days' GROUP BY 1;"`.
+- Remote check (2026-10-21): occasional presence - an onboarding period, team events,
+  offsites, team sprints, meetups, a few trips a year, occasional client travel - is not
+  hybrid, in the free rules and in the model prompt; technology wording ("hybrid cloud",
+  "hybrid environments") is not a work mode either. A source `remote`/`remote_worldwide`
+  hint with a silent description, or a model answer of `not_stated`, is `advised` with the advice "the source marks it remote"
+  (in a tier that needs eligibility: "... - check eligibility"), shown under the existing
+  "Remote, eligibility to check" heading. A job the source marks remote is never stored
+  `rejected` when the model's only evidence is occasional presence (both the model's reason
+  and the text must carry such a phrase, and a regular weekly cadence still rejects). An
+  explicit "fully remote"/"100% remote" in the title or text beats the source's hybrid
+  shortcut; the shortcut is dropped and the model decides, in every tier, so a loose "fully
+  remote" phrase cannot turn a source hybrid job into a rule-level `confirmed` (the only
+  verdict that is auto-tailored). Six switches, each default on, all in
+  `config/processor.json` - set one to `false` and restart `jds-process`, no deploy needed:
+  `remote_rules.occasional_presence`, `remote_rules.cloud_hybrid`,
+  `remote_hint.advised_when_silent`, `remote_hint.never_reject_on_occasional`,
+  `structured_remote.explicit_remote_wins`, `remote_verifier.occasional_presence_prompt`.
+  Turning one off restores the previous behaviour for that rule (with
+  `occasional_presence=false`, the prompt renders exactly as before). The disabled
+  `merged_call` path builds its own prompt, so it gets neither the guidance nor the
+  post-model guard, and the retiring `main.py` pipeline (section 8) calls `verify_offers`
+  directly, so it gets the new prompt guidance with no switch of its own.
 - Deploying new code: `git pull --ff-only && .venv/bin/pip install -r requirements.txt`, then
   restart one unit at a time (`sudo systemctl restart jds-process`; wait for `status` to show
   it healthy; then the next). A restart sends SIGTERM and the service stops between jobs, so it
