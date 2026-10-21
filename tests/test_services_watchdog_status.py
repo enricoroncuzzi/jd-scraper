@@ -7,6 +7,8 @@ from src.delivery.settings import DeliverySettings
 from src.jobstore import budget, heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.schedule import ScheduleConfig, local_day
+from src.processor.cheap import check_one
+from src.processor.config import load_processor_config
 from src.services import status, watchdog
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -209,3 +211,21 @@ def test_every_status_time_is_converted_to_rome_and_labelled(store_conn):
     assert "2026-10-14 14:00 Rome" in text and "2026-10-14 14:00:05 Rome" in text
     assert "waiting until 14:04:00 Rome" in text
     assert all(zone == "Rome" for zone in re.findall(r"\d{2}:\d{2}(?::\d{2})? (\w+)", text))
+
+
+def test_status_shows_the_description_queue_split_by_priority_class(store_conn):
+    cfg = load_processor_config()
+    for n, (title, location) in enumerate([("AI Engineer", "Italy"), ("AI Engineer", "Milan, Italy"),
+                                           ("Python Developer", "Italy"), ("Python Developer", "Milan, Italy")]):
+        job = record_sighting(store_conn, CardInput(source="linkedin", source_job_id=str(n),
+                                                    source_url=f"https://l/{n}", title=title, company="c",
+                                                    location=location, tier_hint=1), NOW).job_id
+        check_one(store_conn, job, cfg, NOW)
+        if n == 0:
+            with store_conn.cursor() as cur:
+                cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "1 pick in 4 is oldest-first" in text
+    assert "ai_country 0" in text and "unclassified 1" in text
+    assert "other_city 1" in text and "(no waiting descriptions)" in text

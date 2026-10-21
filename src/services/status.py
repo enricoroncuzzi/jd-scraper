@@ -14,6 +14,8 @@ from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
 from src.linkedin.pace import Gate, PaceState, evaluate_gate
 from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests_today_for, start_spacing_seconds
+from src.processor.config import load_processor_config
+from src.processor.describe import waiting_by_class
 
 
 def rome(value: datetime | None, schedule: ScheduleConfig, fmt: str = "%Y-%m-%d %H:%M") -> str:
@@ -39,6 +41,7 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         lines.append("Jobs by tier and stage (oldest first_seen):")
         for tier, stage, count, oldest in cur.fetchall():
             lines.append(f"  tier {tier:<2} {stage:<13} {count:>6}   {rome(oldest, schedule)}")
+        lines.extend(_description_queue_lines(cur, now, schedule, load_processor_config()))
         cur.execute("SELECT source, count(*) FILTER (WHERE active), count(*) FILTER (WHERE active AND due_at <= %s), "
                     "max(last_walked_at) FROM slices GROUP BY source ORDER BY source", (now,))
         lines.append("Slices (active, due now, last walk):")
@@ -82,6 +85,39 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         lines.append(f"  {beat.service:<18} {beat.state:<9} "
                      f"last beat {rome(beat.beat_at, schedule, '%Y-%m-%d %H:%M:%S')}  {beat.detail}")
     return "\n".join(lines)
+
+
+def _description_queue_lines(cur, now: datetime, schedule: ScheduleConfig, cfg) -> list[str]:
+    """The waiting description queue, per tier and priority class.
+
+    Shows the split the fetch order works on: the class each rank is, how many jobs
+    wait in it and how old the tier's oldest waiting job is. A tier with nothing
+    waiting still gets a line, so a tier that has gone silent is visible.
+    """
+    order = cfg.fetch_order
+    quota = f"1 pick in {order.quota_one_in} is oldest-first" if order.enabled else "order disabled"
+    names = ", ".join(cls.name for cls in order.order_for(1).classes)
+    lines = [f"Description queue by priority class (tiers 1/3/4: {names}; {quota}):"]
+    rows = waiting_by_class(cur, now)
+    by_tier: dict[int, dict] = {}
+    for tier, rank, count, oldest in rows:
+        by_tier.setdefault(tier, {})[rank] = (count, oldest)
+    for tier in sorted(set(by_tier) | {1, 2, 3, 4}):
+        ranked = by_tier.get(tier, {})
+        if not ranked:
+            lines.append(f"  tier {tier:<2} (no waiting descriptions)")
+            continue
+        parts = [f"{order.name(tier, rank)} {ranked.get(rank, (0, None))[0]}"
+                 for rank in range(len(order.order_for(tier).classes))]
+        if None in ranked:
+            parts.append(f"unclassified {ranked[None][0]}")
+        stale = [rank for rank in ranked if rank is not None
+                 and rank > len(order.order_for(tier).classes) - 1]
+        for rank in sorted(stale):      # a rank left over from an older class list
+            parts.append(f"{order.name(tier, rank)} {ranked[rank][0]}")
+        oldest = min(oldest for _count, oldest in ranked.values() if oldest is not None)
+        lines.append(f"  tier {tier:<2} " + "   ".join(parts) + f"   oldest {rome(oldest, schedule)}")
+    return lines
 
 
 def main() -> int:

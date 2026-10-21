@@ -119,6 +119,18 @@ def description_overdue(cur, cfg: ProcessorConfig, now: datetime) -> bool:
     return oldest is not None and now - oldest > timedelta(hours=cfg.description_deadline_hours)
 
 
+def waiting_by_class(cur, now: datetime) -> list[tuple[int, int | None, int, datetime | None]]:
+    """The waiting description queue per tier and priority class.
+
+    Rows are `(tier, class rank or None, count, oldest first_seen_at)`, for the
+    status view. The `_WAITING` filter is shared with the pick, so the view cannot
+    drift from what the stage will actually fetch.
+    """
+    cur.execute(f"SELECT tier, description_class, count(*), min(first_seen_at) FROM jobs "
+                f"WHERE {_WAITING} GROUP BY 1, 2 ORDER BY 1, 2", (now,))
+    return cur.fetchall()
+
+
 def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
     """Expire jobs that waited too long. Returns how many."""
     statements = [
