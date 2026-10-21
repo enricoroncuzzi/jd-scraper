@@ -84,14 +84,16 @@ Return all {count} offers. Each must have: id (same as input), score (1-10), com
 
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-# These pins are perishable. The primary is nvidia/nemotron-3-super-120b-a12b:free.
-# OpenRouter withdrew qwen/qwen3.8-27b:free (404; the paid slug qwen/qwen3.8-27b
-# is not pinned). Fallbacks are the other free models that listed
-# structured_outputs on https://openrouter.ai/api/v1/models on 2026-10-06, one
-# provider each. google/gemma-4-26b-a4b-it:free still does not advertise
-# structured outputs, so it is not pinned. Scoring requires tool-calling via
-# with_structured_output(method="function_calling") below.
-_OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+# These pins are perishable. Re-pinned from the 2026-10-21 free-model eval
+# (report section 6): the old Nemotron Super primary 404ed on every call from
+# 2026-10-20 10:13 Rome and the old third fallback is no longer in
+# OpenRouter's model list. The primary here is
+# nvidia/nemotron-3-ultra-550b-a55b:free; it does not advertise
+# structured_outputs, so scoring keeps
+# with_structured_output(method="function_calling") below, the mode the eval
+# measured working on its calls. These pins stay independent of
+# src/remote_verifier.py's and src/tailor/generate.py's.
+_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # OpenRouter's native fallback mechanism: if the primary model is busy/rate-limited,
 # OpenRouter itself retries the request against the next model in this list before
 # ever returning an error to us. OpenRouter rejects extra_body["models"] with a 400
@@ -99,11 +101,11 @@ _OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 # landed in 2026-09-01's diversification (#9) and broke every scoring request for
 # 2 days before being caught; keep this at 3 items, one per provider.
 _OPENROUTER_FALLBACK_MODELS = [
+    "nvidia/nemotron-3.5-super-vl:free",
     # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
     # an unknown models entry can 400 the whole request.
     "dots-studio/dots-3-note-preview:free",
     "liquid/lfm-2.5-2.6b:free",
-    "apodex/apodex-1.1-mini:free",
 ]
 
 _PROMPT_VERSION = telemetry.prompt_version(_SYSTEM, _HUMAN)
@@ -210,6 +212,12 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
                                input_tokens=counter.last_prompt_tokens,
                                output_tokens=counter.last_completion_tokens)
                 if result is None:
+                    raise _EmptyStructuredOutput()
+                # dots-3 answered {"offers": []} as a well-formed tool call, and
+                # the batch was silently dropped from scoring. An empty list is
+                # an empty answer wearing the right shape, so retry and then
+                # record it as invalid_output like any other.
+                if not result.offers:
                     raise _EmptyStructuredOutput()
             return result.offers
         except _EmptyStructuredOutput:
