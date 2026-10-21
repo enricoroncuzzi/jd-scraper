@@ -25,7 +25,9 @@ next turn instead of competing for it: it is rare, each turn buys a whole packag
 and a pass that loses the turn gets no package at all, while a description or a
 search just takes the following turn. The advisory lock is held only for the request
 itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_after`
-and cannot get a turn raises PaceBusy, and a caller that gives up writes only its own
+and cannot get a turn raises PaceBusy; a `packaging` request waits at least the longest
+jittered spacing of the window in effect (plus a second), read from the schedule at wait
+time, so the previous request's spacing can never make it give up, and a caller that gives up writes only its own
 `wanting` markers.
 """
 import json
@@ -340,6 +342,13 @@ class PaceBudget:
             print(f"[pace] could not record the {kind} request in pace_events: "
                   f"{type(exc).__name__}: {exc}")
 
+    def _give_up_bound(self, kind: str) -> float | None:
+        if self.give_up_after is None or kind != PACKAGING_KIND:
+            return self.give_up_after
+        window = window_name(self.schedule, self.clock())
+        longest = start_spacing_seconds(self.schedule, window) * (1 + self.schedule.pace.jitter)
+        return max(self.give_up_after, longest + YIELD_SECONDS * 2)
+
     def _gate(self, state: PaceState) -> Gate:
         return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today)
 
@@ -369,11 +378,12 @@ class PaceBudget:
             # more than the tick budget waiting, as long as one spacing fits in it; the
             # guard compares the remaining wait, not the elapsed time.
             next_in_line = overdue and state.description_run < self.run_cap
-            if self.give_up_after is not None and (
-                    wait > self.give_up_after if next_in_line
-                    else (self.clock() - started).total_seconds() + pause > self.give_up_after):
+            bound = self._give_up_bound(kind)
+            if bound is not None and (
+                    wait > bound if next_in_line
+                    else (self.clock() - started).total_seconds() + pause > bound):
                 self._drop_markers(kinds)
-                raise PaceBusy(f"no LinkedIn {kind} turn within {self.give_up_after:g}s")
+                raise PaceBusy(f"no LinkedIn {kind} turn within {bound:g}s")
             pulse({"linkedin_wait": round(max(wait, 0))})
             self.sleep(pause)
         slot = Slot()
