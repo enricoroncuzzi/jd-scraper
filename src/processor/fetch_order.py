@@ -133,3 +133,92 @@ DEFAULT_FETCH_ORDER = FetchOrder(
     default=TierOrder(classes=DEFAULT_CLASSES),
     by_tier={},
 )
+
+
+def _positive_int(data: dict, key: str, default: int) -> int:
+    value = data.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"description_order.{key} must be an integer >= 1, got {value!r}")
+    return value
+
+
+def _keyword_tuple(data: dict, key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = data.get(key, list(default))
+    if (not isinstance(value, list) or not value
+            or any(not isinstance(word, str) or not word.strip() for word in value)):
+        raise ValueError(f"description_order.{key} must be a non-empty list of non-empty strings")
+    return tuple(value)
+
+
+def _tier_order(spec, where: str) -> TierOrder:
+    """Validate one class list and turn it into a `TierOrder`."""
+    if not isinstance(spec, list):
+        raise ValueError(f"{where} must be a list of classes")
+    classes: list[FetchOrderClass] = []
+    names: set[str] = set()
+    for index, entry in enumerate(spec):
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where}[{index}] must be an object with a name and a title")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{where}[{index}].name must be a non-empty string")
+        if name in names:
+            raise ValueError(f"{where} has a duplicate class name: {name!r}")
+        names.add(name)
+        title = entry.get("title")
+        if title not in TITLE_KINDS:
+            raise ValueError(f'{where}[{index}].title must be "ai" or "other", got {title!r}')
+        location = entry.get("location")
+        if "location" in entry and location not in LOCATION_KINDS:
+            raise ValueError(f'{where}[{index}].location must be "country_only" or "other", '
+                             f"got {location!r}")
+        classes.append(FetchOrderClass(name, title, location))
+    uses_location = {cls.location is not None for cls in classes}
+    if len(uses_location) > 1:
+        raise ValueError(f"{where} must use one key set (title, or title and location)")
+    with_location = uses_location == {True}
+    covered = {(cls.title, cls.location if with_location else None) for cls in classes}
+    expected = {(title, location if with_location else None)
+                for title in TITLE_KINDS
+                for location in (LOCATION_KINDS if with_location else (None,))}
+    if covered != expected or len(classes) != len(expected):
+        raise ValueError(f"{where} must cover every combination of its keys exactly once")
+    return TierOrder(classes=tuple(classes))
+
+
+def load_fetch_order(data: dict | None) -> FetchOrder:
+    """Read and validate the `description_order` block.
+
+    A missing block (an older config file) loads `DEFAULT_FETCH_ORDER`, which is
+    disabled. Every validation failure raises ValueError naming the key, so a
+    typo stops the service loudly instead of silently reordering the queue.
+    """
+    if data is None:
+        return DEFAULT_FETCH_ORDER
+    enabled = data.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"description_order.enabled must be a boolean, got {enabled!r}")
+    quota_one_in = _positive_int(data, "quota_one_in", DEFAULT_FETCH_ORDER.quota_one_in)
+    backfill_per_tick = _positive_int(data, "backfill_per_tick",
+                                      DEFAULT_FETCH_ORDER.backfill_per_tick)
+    ai_keywords = _keyword_tuple(data, "ai_title_keywords", DEFAULT_AI_TITLE_KEYWORDS)
+    senior_keywords = _keyword_tuple(data, "senior_title_keywords", DEFAULT_SENIOR_TITLE_KEYWORDS)
+    shared = {word.lower() for word in ai_keywords} & {word.lower() for word in senior_keywords}
+    if shared:
+        raise ValueError(f"description_order keywords must not appear in both lists: "
+                         f"{sorted(shared)[0]!r}")
+    classes = data.get("classes")
+    if not isinstance(classes, dict) or "default" not in classes:
+        raise ValueError('description_order.classes must define a "default" class order')
+    by_tier: dict[int, TierOrder] = {}
+    for key, spec in classes.items():
+        if key == "default":
+            continue
+        if key not in ("1", "2", "3", "4"):
+            raise ValueError(f"description_order.classes key {key!r} must be a tier from 1 to 4")
+        by_tier[int(key)] = _tier_order(spec, f'description_order.classes["{key}"]')
+    return FetchOrder(enabled=enabled, quota_one_in=quota_one_in,
+                      backfill_per_tick=backfill_per_tick,
+                      ai_title_keywords=ai_keywords, senior_title_keywords=senior_keywords,
+                      default=_tier_order(classes["default"], 'description_order.classes["default"]'),
+                      by_tier=by_tier)

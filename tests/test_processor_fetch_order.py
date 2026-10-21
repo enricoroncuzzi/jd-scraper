@@ -62,3 +62,57 @@ def test_an_unknown_rank_prints_as_its_number_and_none_as_unclassified():
     assert ORDER.name(1, None) == "unclassified"
     assert ORDER.name(1, 1) == "ai_city"
     assert ORDER.name(1, 9) == "class9"
+
+
+import json
+import re
+
+from src.processor.config import load_processor_config
+
+
+def test_the_shipped_config_turns_the_order_on_with_a_quota_of_four():
+    cfg = load_processor_config()
+    assert (cfg.fetch_order.enabled, cfg.fetch_order.quota_one_in) == (True, 4)
+    assert cfg.fetch_order.backfill_per_tick == 500
+    assert [c.name for c in cfg.fetch_order.order_for(1).classes] == [
+        "ai_country", "ai_city", "other_country", "other_city"]
+    assert [c.name for c in cfg.fetch_order.order_for(3).classes] == [
+        "ai_country", "ai_city", "other_country", "other_city"]
+    assert [c.name for c in cfg.fetch_order.order_for(4).classes] == [
+        "ai_country", "ai_city", "other_country", "other_city"]
+    assert [c.name for c in cfg.fetch_order.order_for(2).classes] == ["ai", "other"]
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (lambda d: d["description_order"].update(enabled="yes"), "description_order.enabled"),
+    (lambda d: d["description_order"].update(quota_one_in=0), "description_order.quota_one_in"),
+    (lambda d: d["description_order"].update(quota_one_in=True), "description_order.quota_one_in"),
+    (lambda d: d["description_order"].update(backfill_per_tick=0), "description_order.backfill_per_tick"),
+    (lambda d: d["description_order"].update(ai_title_keywords=[]), "description_order.ai_title_keywords"),
+    (lambda d: d["description_order"]["senior_title_keywords"].append("ai"), "description_order keywords"),
+    (lambda d: d["description_order"]["classes"].pop("default"), 'description_order.classes must define'),
+    (lambda d: d["description_order"]["classes"].update({"7": []}), "description_order.classes key '7'"),
+    (lambda d: d["description_order"]["classes"]["default"].pop(), 'description_order.classes["default"] must cover'),
+    (lambda d: d["description_order"]["classes"]["default"][0].update(title="tech"), 'must be "ai" or "other"'),
+    (lambda d: d["description_order"]["classes"]["default"][0].update(location="city"), 'must be "country_only" or "other"'),
+    (lambda d: d["description_order"]["classes"]["default"][2].update(title="ai"), "must cover every combination"),
+    (lambda d: d["description_order"]["classes"]["2"][1].update(location="other"), "must use one key set"),
+    (lambda d: d["description_order"]["classes"]["default"][1].update(name="ai_country"), "duplicate class name"),
+])
+def test_a_broken_description_order_block_fails_loudly(tmp_path, mutate, message):
+    data = json.load(open("config/processor.json"))
+    mutate(data)
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    # re.escape: the messages carry "[" and ".", which `match` reads as a regex
+    with pytest.raises(ValueError, match=re.escape(message)):
+        load_processor_config(str(path))
+
+
+def test_a_config_without_the_description_order_key_still_loads(tmp_path):
+    data = json.load(open("config/processor.json"))
+    del data["description_order"]
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    cfg = load_processor_config(str(path))
+    assert cfg.fetch_order.enabled is False and cfg.fetch_order.quota_one_in == 4
