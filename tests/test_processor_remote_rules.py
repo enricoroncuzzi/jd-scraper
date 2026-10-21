@@ -88,6 +88,12 @@ def test_the_source_hint_settles_hybrid_before_any_text_rule(store_conn, cfg):
     assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected_structured", "rejected")
 
 
+def test_an_occasional_presence_phrase_is_left_to_the_model(store_conn, cfg):
+    job = _described(store_conn, cfg, 3, FILLER + "Occasional on-site presence at the office.")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 0
+    assert _row(store_conn, job)[2] is None
+
+
 def test_a_rejected_job_is_never_retried_by_the_batch_stage(store_conn, cfg):
     from src.processor.llm_stages import LlmKeys
     from src.processor.remote import run_remote_batches

@@ -16,7 +16,10 @@ import os
 
 import pytest
 
-from src.remote_rules import RULE_PREFIX, classify
+from src.remote_rules import (
+    RULE_PREFIX, _scan_hybrid, classify, confident_hybrid_phrase,
+    occasional_presence_phrase,
+)
 from src.remote_verdicts import ADVISED, CONFIRMED, NOT_STATED, REJECTED
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "remote_labelled_sample.csv")
@@ -215,3 +218,100 @@ def test_the_hint_shortcut_can_be_switched_off():
     result = classify("A description with no work-mode words at all. " * 10,
                       remote_hint="onsite", hints_enabled=False)
     assert result.verdict == NOT_STATED
+
+FILLER = ("We build retrieval augmented generation pipelines with Python, PyTorch and FastAPI, "
+          "and we ship them to production with Docker and GitHub Actions CI/CD. ") * 2
+
+# Failing-first proof: the first seven are rejected on main and the guard fixes them.
+OCCASIONAL_TEXTS = [
+    "Occasional on-site presence at the Milan office during the quarter.",
+    "2 days a week in the office during the 3-week onboarding period.",
+    "Quarterly in-office days for the whole team.",
+    "2 days a year in the office.",
+    "On-site presence is required for our team sprints.",
+    "In-office days for team sprints in London.",
+    "Canonical has very few office-based roles.",
+    # Already pass without the guard; kept as documentation of the class.
+    "Teams meet two to four times yearly in person for team sprints.",
+    "Expenses-paid trips to HQ for team meetups twice a year.",
+    "Occasional travel for client workshops and team meetings.",
+]
+REGULAR_HYBRID_TEXTS = [
+    "This is a hybrid role: three days a week in the office in Milan.",
+    "We work hybrid, 2 days on site each week in our Rome office.",
+    "3 days a week in the office, with occasional overtime.",
+    "3 days a week in the office, plus a quarterly bonus.",
+    "Hybrid: 2 days a week in the office. We also run quarterly team offsites.",
+]
+# A hybrid-looking phrase suppressed by the occasional guard must reach the
+# model, never the silent branch: not_stated would hide a real hybrid job.
+MIXED_HYBRID_TEXTS = [
+    "Two days a week in the office (Tuesday and Thursday), plus a quarterly team offsite.",
+    "2 days a week in the office during the 3-week onboarding period.",
+    "2 days a year in the office.",
+]
+# Remote plus a suppressed phrase must not be auto-confirmed (confirmed is the
+# only verdict that gets auto-tailored): the model decides, as it does today.
+REMOTE_PLUS_OCCASIONAL_TEXTS = [
+    "We are a remote-first company. Three days a week in the office in Milan, plus a team "
+    "offsite each quarter.",
+    "Remote-first culture. Hybrid schedule: in-office days on Tuesday and Thursday, with "
+    "quarterly team events.",
+    "Acme is a fully remote company. There is occasional on-site presence at the Milan "
+    "office during onboarding, and a few team events during the year, but the role is done "
+    "from home.",
+]
+
+
+def _verdict_of(text, **kwargs):
+    result = classify(text, title="AI Engineer", **kwargs)
+    return result.verdict if result else None
+
+
+def test_occasional_presence_never_decides_hybrid():
+    for text in OCCASIONAL_TEXTS:
+        assert _verdict_of(FILLER + text) != REJECTED, text
+
+
+def test_regular_office_days_are_still_hybrid():
+    for text in REGULAR_HYBRID_TEXTS:
+        assert _verdict_of(FILLER + text) == REJECTED, text
+
+
+def test_a_suppressed_hybrid_phrase_goes_to_the_model_not_not_stated():
+    for text in MIXED_HYBRID_TEXTS:
+        assert _verdict_of(FILLER + text) is None, text
+
+
+def test_remote_plus_a_suppressed_phrase_is_not_auto_confirmed():
+    for text in REMOTE_PLUS_OCCASIONAL_TEXTS:
+        assert _verdict_of(FILLER + text) is None, text
+
+
+def test_occasional_presence_phrase_reports_the_marker():
+    assert occasional_presence_phrase("Occasional travel for client workshops.") == "Occasional travel"
+    # The sprint alternative is the bare word: that is what the function returns.
+    assert occasional_presence_phrase("Mandatory attendance at quarterly team sprints in London") \
+        == "sprints"
+    assert occasional_presence_phrase("You will work from our Rome office every day.") is None
+
+
+def test_a_few_office_days_is_not_the_very_few_idiom():
+    # "a few in-office days a week" is a regular hybrid policy; only the
+    # "very few <office word>" idiom says the opposite.
+    assert _verdict_of(FILLER + "We are a remote-first company. Expect a few in-office "
+                                 "days per week.") is None
+    assert _verdict_of(FILLER + "Expect a few in-office days per week.") == REJECTED
+
+
+def test_the_very_few_idiom_follows_the_occasional_switch():
+    canonical = FILLER + "Canonical has very few office-based roles."
+    assert _verdict_of(canonical) != REJECTED
+    assert _verdict_of(canonical, occasional_guard=False) == REJECTED
+
+
+def test_a_suppressed_phrase_is_reported_separately_from_a_confident_one():
+    confident, suppressed = _scan_hybrid(
+        "2 days a week in the office during onboarding.", occasional_guard=True,
+        cloud_hybrid_guard=True)
+    assert confident is None and suppressed is not None

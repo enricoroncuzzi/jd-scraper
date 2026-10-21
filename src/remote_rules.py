@@ -88,6 +88,100 @@ _CONFIDENT_HYBRID = re.compile(
     re.IGNORECASE,
 )
 
+
+# --- Occasional presence ---------------------------------------------------
+_PRESENCE_WORD = (r"(?:on-?site|in-?person|in\s+(?:the\s+)?office|at\s+the\s+office|"
+                  r"office\s+days?|presence|visits?|trips?|travel\w*|gatherings?|"
+                  r"meet-?ups?|events?)")
+# Occasional presence, by construction. Deliberately NOT free-floating "quarterly"
+# or "periodic": "3 days a week in the office, plus a quarterly bonus" is a
+# regular hybrid sentence. "occasional"/"periodic" only count next to a presence
+# word, the frequency forms are year/quarter scoped, and a bare "sprint" counts
+# because the spec and three audit ids (Canonical) name team sprints. An agile
+# sprint only matters when it shares a sentence with a hybrid phrase, and then
+# the result is the model, never a rejection or a confirm.
+_OCCASIONAL_PRESENCE = re.compile("|".join([
+    rf"\boccasional(?:ly)?\s+(?:\w+\s+){{0,3}}{_PRESENCE_WORD}\b",
+    rf"\b{_PRESENCE_WORD}\s+(?:\w+\s+){{0,3}}occasional(?:ly)?\b",
+    rf"\bperiodic(?:ally)?\s+(?:\w+\s+){{0,3}}{_PRESENCE_WORD}\b",
+    r"\bfrom\s+time\s+to\s+time\b", r"\bonce\s+in\s+a\s+while\b", r"\bnow\s+and\s+then\b",
+    r"\b(?:a\s+)?few\s+times\s+(?:a|per)\s+(?:year|quarter)\b",
+    r"\b(?:\w+\s+){0,3}times\s+(?:a|per)\s+(?:year|quarter)\b",
+    r"\b(?:\w+\s+){0,3}times\s+(?:yearly|annually)\b",
+    r"\b(?:once|twice)\s+(?:a|per)\s+(?:year|quarter)\b",
+    r"\btwice[-\s](?:a\s+)?yearly\b",
+    r"\b(?:bi-?annual(?:ly)?|semi-?annual(?:ly)?)\b",
+    r"\bevery\s+(?:few\s+months|quarter|year)\b",
+    r"\b(?:days?|weeks?|trips?|visits?)\s+(?:a|per)\s+(?:year|quarter)\b",
+    r"\ba\s+(?:few|couple\s+of)\s+(?:trips?|visits?)\b",
+    r"\bsprints?\b",
+    r"\bonboarding\b", r"\bteam\s+events?\b", r"\boff-?sites?\b", r"\bretreats?\b",
+    r"\bteam\s+meet-?ups?\b", r"\bmeet-?ups?\b", r"\bteam\s+gatherings?\b", r"\bgatherings?\b",
+    r"\b(?:kick-?offs?|hackathons?|bootcamps?)\b",
+    r"\bin-?person\s+team\s+days?\b", r"\bteam\s+days?\b", r"\bsite\s+visits?\b",
+    r"\b(?:client|customer|team)\s+workshops?\b",
+    r"\boccasionalmente\b", r"\bsaltuariament[ei]\b", r"\bogni\s+tanto\b", r"\bqualche\s+volta\b",
+    r"\bocasionalmente\b", r"\bde\s+vez\s+en\s+cuando\b", r"\bespor[aá]dic\w*\b",
+    r"\boccasionnellement\b", r"\bde\s+temps\s+en\s+temps\b",
+    r"\bgelegentlich\w*\b", r"\bab\s+und\s+zu\b",
+]), re.IGNORECASE)
+# A frequency adjective directly in front of the match ("quarterly in-office
+# days", "annual on-site presence").
+_OCCASIONAL_QUALIFIER = re.compile(
+    r"\b(?:quarterly|yearly|annual|annually|bi-?annual|semi-?annual)\s*$", re.IGNORECASE)
+# "very few office-based roles" (Canonical's own wording) is not a hybrid phrase:
+# it says the opposite. "a few in-office days a week" is the opposite case (a
+# regular policy), so the lookbehind keeps "a few" out. Checked like a
+# negation, for both guarded and unguarded scans, so the post-model hint
+# override does not keep such a job rejected.
+_FEW_PREFIX = re.compile(r"(?<!\ba\s)\b(?:very\s+)?few\s+$", re.IGNORECASE)
+_SENTENCE_DELIMITERS = ".!?;\n\u2022"
+
+
+def _sentence_around(text: str, start: int, end: int) -> str:
+    left = max(text.rfind(char, 0, start) for char in _SENTENCE_DELIMITERS) + 1
+    rights = [position for position in (text.find(char, end) for char in _SENTENCE_DELIMITERS)
+              if position != -1]
+    return text[left:min(rights) if rights else len(text)]
+
+
+def occasional_presence_phrase(text: str) -> str | None:
+    """The first phrase in `text` that marks presence as occasional, or None."""
+    match = _OCCASIONAL_PRESENCE.search(text or "")
+    return match.group(0).strip() if match else None
+
+
+def _scrub_cloud_hybrid(text: str) -> str:
+    return text  # Task 2 replaces this with the real cloud scrub
+
+
+def _scan_hybrid(text: str, *, occasional_guard: bool, cloud_hybrid_guard: bool,
+                 few_guard: bool = True) -> tuple[str | None, str | None]:
+    """(first confident hybrid phrase, first phrase suppressed as occasional presence)."""
+    scanned = _scrub_cloud_hybrid(text) if cloud_hybrid_guard else text
+    confident = suppressed = None
+    for match in _CONFIDENT_HYBRID.finditer(scanned):
+        prefix = scanned[max(0, match.start() - 40):match.start()]
+        if (_NEGATION.search(prefix) or _PERK_PREFIX.search(prefix)
+                or (few_guard and _FEW_PREFIX.search(prefix))):
+            continue
+        occasional = (
+            occasional_presence_phrase(_sentence_around(scanned, match.start(), match.end()))
+            or _OCCASIONAL_QUALIFIER.search(scanned[max(0, match.start() - 30):match.start()]))
+        if occasional_guard and occasional:
+            suppressed = suppressed or match.group(0).strip()
+            continue
+        confident = confident or match.group(0).strip()
+    return confident, suppressed
+
+
+def confident_hybrid_phrase(text: str, *, occasional_guard: bool = True,
+                            cloud_hybrid_guard: bool = True, few_guard: bool = True) -> str | None:
+    """The first hybrid phrase that survives the occasional-presence guard, or None."""
+    return _scan_hybrid(text or "", occasional_guard=occasional_guard,
+                        cloud_hybrid_guard=cloud_hybrid_guard, few_guard=few_guard)[0]
+
+
 # Confident fully-remote. Same rule: no bare "remote" (it names remote sensing,
 # remote support, a remote team mate), only phrasing that states the mode.
 _CONFIDENT_REMOTE = re.compile(
@@ -265,20 +359,27 @@ def classify(
     if hints_enabled and remote_hint in ("hybrid", "onsite"):
         return RuleVerdict(REJECTED, f"{RULE_PREFIX}source work mode is {remote_hint}")
 
-    hybrid = _first_confident(_CONFIDENT_HYBRID, text)
+    hybrid, suppressed = _scan_hybrid(text, occasional_guard=occasional_guard,
+                                      cloud_hybrid_guard=cloud_hybrid_guard,
+                                      few_guard=occasional_guard)
     remote = _first_confident(_CONFIDENT_REMOTE, text, suffix_guard=True)
     if not remote and re.search(r"\bremote\b", lowered_location):
         remote = "remote (location field)"
 
     if hybrid and not remote:
         return RuleVerdict(REJECTED, f"{RULE_PREFIX}'{hybrid}' requires on-site presence")
-    if remote and not hybrid:
+    if remote and not hybrid and not suppressed:
         eligibility = _eligibility(text, require_italy_eligibility=require_italy_eligibility)
         if eligibility is None:
             return None
         verdict, advice = eligibility
         reason = f"{RULE_PREFIX}'{remote}' states a fully remote role"
         return RuleVerdict(verdict, reason, advice)
+    if suppressed:
+        # The only hybrid-looking phrase was occasional presence: the model
+        # decides. This branch also covers remote + suppressed, which is NOT
+        # auto-confirmed: "confirmed" is the one verdict that gets auto-tailored.
+        return None
     # Mixed signals, or a remote word only as a perk: the model decides.
     if hybrid or remote or _OFFICE_PERK.search(text) or _WORK_MODE_MENTION.search(text):
         return None
