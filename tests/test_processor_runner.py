@@ -142,7 +142,7 @@ def test_a_tick_classifies_a_waiting_backlog_even_with_the_gate_closed(store_con
     with store_conn.cursor() as cur:              # then the class is lost, as after a config change
         cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
     store_conn.commit()
-    gate = Gate(open=False, reason="daily_cap", requests_today=0, cap=1400, window="weekday")
+    gate = Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
     get = ScriptedGet()
     tick = process_once(store_conn, FakePace(gate=gate), cfg, KEYS, now=NOW, get=get,
                         sleep=lambda _s: None, verify=FakeVerify(), score=FakeScore())
