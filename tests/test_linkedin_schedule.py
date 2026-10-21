@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,9 @@ def test_the_shipped_schedule_loads():
 def test_the_shipped_schedule_carries_no_request_cap():
     cfg = load_schedule_config()
     assert not hasattr(cfg, "weekday_cap") and not hasattr(cfg, "weekend_cap")
+    # The shipped config file itself carries no cap either.
+    shipped = json.loads(Path("config/schedule.json").read_text())
+    assert "daily_caps" not in shipped
 
 
 def test_a_leftover_daily_caps_block_is_ignored(tmp_path):
