@@ -6,13 +6,13 @@ scope, optionally apply the title pre-filter, and send a job that already has a
 description straight to the language check.
 """
 import hashlib
-import re
 from datetime import datetime
 
 from src.jobstore.merge import resolve_identity
 from src.processor.config import ProcessorConfig
 from src.processor.language import classify_language
 from src.processor.state import JobRow, load_job, set_stage
+from src.processor.titles import title_hits_exclude
 from src.tier_scope import TIER3_ALLOWED_COUNTRIES
 
 TIER_BY_COUNTRY: dict[str, int] = {
@@ -28,14 +28,6 @@ def provisional_tier(country: str | None, tier_hint: int | None) -> int | None:
     if country is None:
         return tier_hint
     return TIER_BY_COUNTRY.get(country)
-
-
-def title_hits_exclude(title: str, exclude_keywords: tuple[str, ...]) -> str | None:
-    """The first exclude keyword present in the title as a whole word or phrase."""
-    for keyword in exclude_keywords:
-        if re.search(rf"(?<![\w+]){re.escape(keyword)}(?![\w+])", title, re.IGNORECASE):
-            return keyword
-    return None
 
 
 def _handled_before_cutover(cur, job_id) -> bool:
