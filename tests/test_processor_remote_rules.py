@@ -304,6 +304,12 @@ def test_the_occasional_presence_guard_on_model_answers_can_be_switched_off(stor
      "Hybrid position with sprints in the office"),
     ("Remote-friendly. Team day in the Berlin office, two days in the week. Sprints of 2 weeks.",
      "Team day in office, two days in the week; sprints"),
+    ("Presence in our Milan office is required 2 days / week. Team sprints.",
+     "2 days / week in office, sprints"),
+    ("Presence in our Milan office is required two days per fortnight. Team sprints.",
+     "office two days per fortnight, team sprints"),
+    ("Work from our Milan office half of the month. Team events.",
+     "half the month in office; team events"),
 ])
 def test_a_regular_hybrid_reason_is_never_overridden(store_conn, cfg, text, reason):
     # A reason that mentions an occasional word ("sprints", "team events") while
