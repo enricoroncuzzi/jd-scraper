@@ -207,6 +207,24 @@ def confident_remote_phrase(text: str) -> str | None:
     return _first_confident(_EXPLICIT_FULL_REMOTE, text or "", suffix_guard=True)
 
 
+# A cadence of weeks or months, or named weekdays: regular presence, whatever
+# else a model reason says. Read from the model's reason only; the text's
+# regular office days are caught by the unguarded hybrid scan. Quarter stays on
+# the "N days/weeks per quarter" form only: "once a quarter" is occasional, as
+# _OCCASIONAL_PRESENCE reads it.
+_REGULAR_PRESENCE = re.compile(
+    r"\b(?:twice|once|\d+\s+times)\s+(?:a|per|each|every)\s+(?:week|month)\b"
+    r"|\b(?:one|two|three|four|five|\d+)\s+(?:days?|weeks?)"
+    r"\s+(?:a|per|each|every)\s+(?:week|month|quarter)\b"
+    r"|\b(?:weekly|monthly|every\s+(?:week|month)|(?:mon|tues|wednes|thurs|fri)days?)\b",
+    re.IGNORECASE)
+
+
+def regular_presence_phrase(text: str) -> str | None:
+    match = _REGULAR_PRESENCE.search(text or "")
+    return match.group(0).strip() if match else None
+
+
 def confident_hybrid_phrase(text: str, *, occasional_guard: bool = True,
                             cloud_hybrid_guard: bool = True, few_guard: bool = True) -> str | None:
     """The first hybrid phrase that survives the occasional-presence guard, or None."""

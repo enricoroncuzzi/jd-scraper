@@ -66,6 +66,9 @@ class ProcessorConfig:
     # An explicit "full remote" in the title or text beats the source's
     # hybrid/on-site shortcut and hands the job to the model.
     explicit_remote_wins: bool = True
+    # A source remote hint is never stored rejected when the model's only
+    # evidence is occasional presence.
+    remote_hint_never_reject: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -134,6 +137,8 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         cloud_hybrid_guard=bool(data.get("remote_rules", {}).get("cloud_hybrid", True)),
         remote_hint_advice=bool(
             data.get("remote_hint", {}).get("advised_when_silent", True)),
+        remote_hint_never_reject=bool(
+            data.get("remote_hint", {}).get("never_reject_on_occasional", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
     )

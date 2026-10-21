@@ -21,7 +21,12 @@ from src.processor.llm_stages import (
 )
 from src.processor.llm_sink import batch_context
 from src.processor.state import defer, set_stage
-from src.remote_rules import RULE_PREFIX, classify, confident_remote_phrase
+from src.remote_rules import (
+    RULE_PREFIX, classify, confident_hybrid_phrase, confident_remote_phrase,
+    occasional_presence_phrase, regular_presence_phrase,
+)
+from src.models import JobOffer
+from src.processor.state import JobRow
 from src.remote_verdicts import ADVISED, NOT_STATED, REJECTED
 from src.remote_verifier import _DEGRADED_REASON, verify_offers
 
@@ -52,6 +57,36 @@ def structured_verdict(remote_hint: str | None, *,
             return None
         return REJECTED, f"{STRUCTURED_REASON} ({remote_hint})"
     return None
+
+
+def hint_remote_override(row: JobRow, offer: JobOffer, *,
+                         require_italy_eligibility: bool,
+                         cloud_hybrid_guard: bool = True) -> tuple[str, str, str] | None:
+    """The source says remote, the model rejected, its evidence is occasional
+    presence, and neither the text nor the reason shows a regular office
+    pattern: the source wins.
+
+    "Occasional-presence grounds alone" is the bar, so BOTH the model's reason
+    and the text must carry an occasional-presence phrase; a reason that only
+    mentions an event while describing a regular requirement does not qualify.
+    The hybrid scan here is deliberately UNGUARDED: office days sharing a
+    sentence with an offsite are still office days. The reason is also read for
+    a regular cadence, because _CONFIDENT_HYBRID has no "twice a week" and no
+    named weekdays.
+    """
+    if offer.remote_verdict != REJECTED or row.remote_hint not in SOURCE_REMOTE_HINTS:
+        return None
+    text = f"{row.title}\n{row.description}"
+    if not occasional_presence_phrase(offer.remote_reason):
+        return None
+    if not occasional_presence_phrase(text):
+        return None
+    if regular_presence_phrase(offer.remote_reason):
+        return None
+    if confident_hybrid_phrase(text, occasional_guard=False,
+                               cloud_hybrid_guard=cloud_hybrid_guard) is not None:
+        return None
+    return (ADVISED, SOURCE_HINT_REASON, source_hint_advice(require_italy_eligibility))
 
 
 def apply_deterministic_rules(conn, cfg: ProcessorConfig, now: datetime) -> int:
@@ -137,11 +172,19 @@ def run_remote_batches(conn, cfg: ProcessorConfig, now: datetime, keys: LlmKeys,
                 if offer.remote_reason == _DEGRADED_REASON:
                     defer(cur, row.id, now, retry_delay(row.attempts))
                     continue
+                verdict, reason, advice = (
+                    offer.remote_verdict, offer.remote_reason, offer.remote_advice)
+                if cfg.remote_hint_never_reject:
+                    override = hint_remote_override(
+                        row, offer,
+                        require_italy_eligibility=cfg.policies[row.tier].require_italy_eligibility,
+                        cloud_hybrid_guard=cfg.cloud_hybrid_guard)
+                    if override is not None:
+                        verdict, reason, advice = override
                 cur.execute(
                     "UPDATE jobs SET remote_verdict = %s, remote_reason = %s, remote_advice = %s "
-                    "WHERE id = %s",
-                    (offer.remote_verdict, offer.remote_reason, offer.remote_advice, row.id))
-                if offer.remote_verdict == REJECTED:
+                    "WHERE id = %s", (verdict, reason, advice, row.id))
+                if verdict == REJECTED:
                     set_stage(cur, row.id, "filtered_out", "remote_rejected", now)
                 stored += 1
         conn.commit()
