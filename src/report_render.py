@@ -7,10 +7,11 @@ error texts and stop reasons are full of Markdown metacharacters.
 """
 from zoneinfo import ZoneInfo
 
+# The stage-to-primary map is shared with the daily fallback guard
+# (src/llm_fallback.py), so the morning report and the guard cannot disagree
+# about which model each stage pins.
+from src.llm_fallback import STAGE_PRIMARIES as _STAGE_PRIMARY
 from src.report_data import NO_RESPONSE_MODEL, TIER_FLAGS, TIER_NAMES, TierSettings
-from src.remote_verifier import _OPENROUTER_MODEL as _VERIFICATION_PRIMARY
-from src.scorer import _OPENROUTER_MODEL as _SCORING_PRIMARY
-from src.tailor.generate import _OPENROUTER_MODEL as _TAILORING_PRIMARY
 
 _ROME = ZoneInfo("Europe/Rome")
 _SUMMARY_RULE = "━━━━━━━━━━━━━━━━━━━━"
@@ -33,11 +34,6 @@ RATE_LIMIT_DROPPED_WARN = 0
 # often has one or two calls, and one fallback answer would otherwise be 100%.
 PRIMARY_MODEL_MISMATCH_SHARE_WARN = 0.20
 PRIMARY_MODEL_MISMATCH_MIN_CALLS = 3
-_STAGE_PRIMARY = {
-    "scoring": _SCORING_PRIMARY,
-    "verification": _VERIFICATION_PRIMARY,
-    "tailoring": _TAILORING_PRIMARY,
-}
 
 
 def short_model(model: str) -> str:
