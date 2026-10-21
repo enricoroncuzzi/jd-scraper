@@ -203,10 +203,11 @@ loses nothing.
   2026-10-18 remote-verdict release: the first service start after that pull drops and
   recreates `jobs_remote_verdict_chk` so `advised`/`not_stated` can be stored (a validation
   scan over the jobs table, a few seconds at production size) and adds `remote_advice`. The
-  fingerprint then matches, so later starts do no DDL. Every later release re-runs the whole
-  DDL list once on its first start, because the fingerprint changes with each edit: the
-  2026-10-21 description-order release adds `jobs.description_class` and re-runs that same
-  constraint drop and re-add, so it holds the jobs table for a few seconds too. Restart
+  fingerprint then matches, so later starts do no DDL. A release that edits the DDL list
+  re-runs the whole list once on its first start, because the fingerprint hashes that list (a
+  release that does not edit it re-runs nothing): the 2026-10-21 description-order release
+  adds `jobs.description_class` and re-runs that same constraint drop and re-add, so it holds
+  the jobs table for a few seconds too. Restart
   `jds-process` first and wait for `python -m src.services.status` to show it healthy, then
   restart the other units: only the first service runs the DDL, and the rest start against a
   matching fingerprint. A code rollback causes the same one-time scan. The pacing change has
@@ -283,7 +284,9 @@ fetching next (see "Which description goes next" below). Every key, with the shi
 
 The block is validated when the config loads, so edit only the `enabled` value (or a value this
 table documents); a malformed `description_order` block stops every service that loads the
-processor config (`jds-process`, `jds-deliver`, the experiment CLI) at start. Changing `classes`
+processor config (`jds-process`, `jds-deliver`, the experiment CLI) at start, and the operator
+view prints one "processor config is unreadable" line instead of its queue block (the rest of
+`python -m src.services.status` keeps working). Changing `classes`
 or either keyword list changes the ranks, so run
 `psql jds -c "UPDATE jobs SET description_class = NULL WHERE stage = 'seen' AND tier IS NOT NULL AND description_status IN ('pending', 'rate_limited');"`
 and let the next ticks reclassify the backlog at `description_order.backfill_per_tick`.

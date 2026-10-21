@@ -41,7 +41,14 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         lines.append("Jobs by tier and stage (oldest first_seen):")
         for tier, stage, count, oldest in cur.fetchall():
             lines.append(f"  tier {tier:<2} {stage:<13} {count:>6}   {rome(oldest, schedule)}")
-        lines.extend(_description_queue_lines(cur, now, schedule, load_processor_config()))
+        try:
+            cfg = load_processor_config()
+        except (ValueError, OSError) as exc:
+            # A malformed description_order block stops jds-process and jds-deliver at
+            # start; the operator view must keep showing the gate, budgets and beats.
+            lines.append(f"Description queue: the processor config is unreadable: {exc}")
+        else:
+            lines.extend(_description_queue_lines(cur, now, schedule, cfg))
         cur.execute("SELECT source, count(*) FILTER (WHERE active), count(*) FILTER (WHERE active AND due_at <= %s), "
                     "max(last_walked_at) FROM slices GROUP BY source ORDER BY source", (now,))
         lines.append("Slices (active, due now, last walk):")

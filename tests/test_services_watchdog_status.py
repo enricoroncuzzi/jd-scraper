@@ -229,3 +229,33 @@ def test_status_shows_the_description_queue_split_by_priority_class(store_conn):
     assert "1 pick in 4 is oldest-first" in text
     assert "ai_country 0" in text and "unclassified 1" in text
     assert "other_city 1" in text and "(no waiting descriptions)" in text
+
+
+def test_status_shows_a_rank_left_over_from_an_older_class_list(store_conn):
+    # A config change (a shorter class list) leaves ranks that no class covers. They must
+    # stay visible, or the reclassification step in the RUNBOOK looks like it worked.
+    cfg = load_processor_config()
+    job = record_sighting(store_conn, CardInput(source="linkedin", source_job_id="9",
+                                                source_url="https://l/9", title="AI Engineer",
+                                                company="c", location="Italy", tier_hint=1), NOW).job_id
+    check_one(store_conn, job, cfg, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = 9 WHERE id = %s", (job,))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "class9 1" in text
+
+
+def test_status_keeps_the_dashboard_when_the_processor_config_is_broken(store_conn, monkeypatch):
+    # A malformed description_order block stops jds-process and jds-deliver at start; the
+    # operator view must still show the gate, the budgets and the heartbeats.
+    def _broken():
+        raise ValueError("description_order.quota_one_in must be an integer >= 1, got 0")
+    monkeypatch.setattr(status, "load_processor_config", _broken)
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at) VALUES ('linkedin.com', %s)", (NOW,))
+    heartbeat.start(store_conn, "process", now=NOW)
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "description_order.quota_one_in" in text
+    assert "LinkedIn gate:" in text and "Services:" in text and "process" in text
