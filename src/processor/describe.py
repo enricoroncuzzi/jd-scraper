@@ -49,6 +49,28 @@ def oldest_waiting_description(cur, now: datetime) -> datetime | None:
     return cur.fetchone()[0]
 
 
+def classify_waiting(conn, cfg: ProcessorConfig, now: datetime,
+                     limit: int | None = None) -> int:
+    """Give a priority class to waiting jobs that have none yet. Returns how many.
+
+    A row is unclassified when it predates the deploy or when a config change
+    cleared its rank. The processor classifies them in bounded batches each tick,
+    using the same classifier `check_one` uses when it assigns the tier, so a
+    backlog never needs a deploy script. A `limit` of None means
+    `cfg.fetch_order.backfill_per_tick`.
+    """
+    limit = cfg.fetch_order.backfill_per_tick if limit is None else limit
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT id, title, location_raw, tier FROM jobs WHERE {_WAITING} "
+                    "AND description_class IS NULL ORDER BY first_seen_at LIMIT %s", (now, limit))
+        rows = cur.fetchall()
+        for job_id, title, location_raw, tier in rows:
+            cur.execute("UPDATE jobs SET description_class = %s WHERE id = %s",
+                        (cfg.fetch_order.classify(tier, title, location_raw), job_id))
+    conn.commit()
+    return len(rows)
+
+
 def description_overdue(cur, cfg: ProcessorConfig, now: datetime) -> bool:
     """True when the oldest waiting job was first seen more than
     `description_deadline_hours` ago: an overdue description may spend more than one

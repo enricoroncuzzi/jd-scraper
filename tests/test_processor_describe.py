@@ -11,7 +11,8 @@ from src.linkedin.schedule import ScheduleConfig
 from src.linkedin.search import RETRY_WAITS
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
-from src.processor.describe import describe_next, expire_stale, refusal_delay, run_descriptions
+from src.processor.describe import (classify_waiting, describe_next, expire_stale, refusal_delay,
+                                    run_descriptions)
 from tests.linkedin_fakes import BusyPace, FakePace, ScriptedGet, response
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -552,3 +553,33 @@ def test_a_job_specific_refusal_also_ends_the_round(store_conn, cfg):
     get = ScriptedGet(*[response(403)] * 4)
     assert run_descriptions(store_conn, FakePace(), cfg, NOW, get=get, sleep=lambda _s: None) == 1
     assert len(get.calls) == 4
+
+
+# -- the priority class backlog: classified without a deploy script ---------------------
+
+def test_waiting_jobs_without_a_class_are_classified_in_batches(store_conn, cfg):
+    for n, location in enumerate(("Italy", "Milan, Italy", "Europe")):
+        _tiered_job(store_conn, cfg, f"390000000{n}", title="AI Engineer", location=location)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = NULL")
+    store_conn.commit()
+    assert classify_waiting(store_conn, cfg, NOW, limit=2) == 2
+    assert classify_waiting(store_conn, cfg, NOW) == 1
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT description_class FROM jobs ORDER BY note_no")
+        assert [row[0] for row in cur.fetchall()] == [0, 1, 1]
+
+
+def test_classification_skips_jobs_that_are_not_waiting(store_conn, cfg):
+    described = _tiered_job(store_conn, cfg, "3900000001")
+    backoff = _tiered_job(store_conn, cfg, "3900000002")
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = NULL, description_status = 'ok', "
+                    "description = 'text' WHERE id = %s", (described,))
+        cur.execute("UPDATE jobs SET description_class = NULL, next_attempt_at = %s WHERE id = %s",
+                    (NOW + timedelta(hours=1), backoff))
+    store_conn.commit()
+    assert classify_waiting(store_conn, cfg, NOW) == 0
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM jobs WHERE description_class IS NULL")
+        assert cur.fetchone()[0] == 2
