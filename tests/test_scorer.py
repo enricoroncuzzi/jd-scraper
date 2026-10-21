@@ -555,7 +555,7 @@ def test_each_scoring_attempt_is_recorded_with_the_responding_model():
     def invoke(payload, config):
         counter.on_llm_end(LLMResult(generations=[], llm_output={
             "token_usage": {"prompt_tokens": 10, "completion_tokens": 2}, "model_name": "served"}))
-        return None if chain.invoke.call_count == 1 else MagicMock(offers=[])
+        return None if chain.invoke.call_count == 1 else MagicMock(offers=[object()])
 
     chain.invoke.side_effect = invoke
     recorded = []
@@ -611,17 +611,17 @@ def test_an_empty_offers_answer_is_retried_and_then_invalid_output():
     assert chain.invoke.call_count == 3
 
 
-def test_a_short_offers_answer_is_retried_and_then_invalid_output():
+def test_a_short_offers_answer_is_accepted_on_the_first_attempt():
     batch = _make_offers()
     chain = MagicMock()
     chain.invoke.return_value = _full_answer(batch[:1])
     counter = scorer._TokenCounter()
 
-    with patch("src.scorer.telemetry.llm_call"), patch("src.scorer.time.sleep"), \
-            pytest.raises(scorer._EmptyStructuredOutput):
-        scorer._invoke_batch(chain, batch, "p", [], [], counter, max_retries=3)
+    with patch("src.scorer.telemetry.llm_call"), patch("src.scorer.time.sleep"):
+        result = scorer._invoke_batch(chain, batch, "p", [], [], counter, max_retries=3)
 
-    assert chain.invoke.call_count == 3
+    assert [item.id for item in result] == [batch[0].id]
+    assert chain.invoke.call_count == 1
 
 
 def test_a_full_offers_answer_is_accepted_on_the_first_attempt():

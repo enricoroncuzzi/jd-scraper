@@ -1135,7 +1135,7 @@ def test_the_prompt_version_follows_the_guidance():
     assert _prompt_version(True, True) != _prompt_version(True, False)
 
 
-# --- Empty or short `offers` answers -----------------------------------------
+# --- Empty `offers` answers -----------------------------------------
 
 def _openrouter_usage():
     return {
@@ -1144,16 +1144,12 @@ def _openrouter_usage():
     }
 
 
-@pytest.mark.parametrize("answer", [
-    [],                                     # dots-3's valid-looking empty list
-    [(1, "confirmed")],                     # one verdict for a two-offer batch
-])
-def test_an_empty_or_short_offers_answer_is_retried_then_invalid(monkeypatch, answer):
-    """A batch is answered only when every offer in it got a verdict. An empty
-    or short list used to map the missing jobs to the degraded reason silently."""
+def test_an_empty_offers_answer_is_retried_then_invalid(monkeypatch):
+    """dots-3's valid-looking empty list used to map every job to the degraded
+    reason silently."""
     monkeypatch.setattr("src.remote_verifier.time.sleep", lambda s: None)
     chain = MagicMock()
-    chain.invoke.return_value = _verdict_output(answer)
+    chain.invoke.return_value = _verdict_output([])
     usage = _openrouter_usage()
 
     with pytest.raises(rv._EmptyStructuredOutput) as raised:
@@ -1165,6 +1161,19 @@ def test_an_empty_or_short_offers_answer_is_retried_then_invalid(monkeypatch, an
     assert telemetry.classify_llm_error(raised.value) == "invalid_output"
     assert chain.invoke.call_count == rv._MAX_RETRIES
     assert usage["openrouter_requests"] == rv._MAX_RETRIES
+
+
+def test_a_short_offers_answer_resolves_the_answered_ids_without_retry(monkeypatch):
+    chain = MagicMock()
+    chain.invoke.return_value = _verdict_output([(1, "confirmed")])
+    usage = _openrouter_usage()
+
+    verdicts = rv._verify_batch_openrouter(
+        chain, [_offer(1), _offer(2)], True, usage, requests_allowed=100,
+    )
+
+    assert verdicts[1].verdict == "confirmed" and 2 not in verdicts
+    assert chain.invoke.call_count == 1
 
 
 def test_a_complete_offers_answer_is_accepted_on_the_first_attempt(monkeypatch):

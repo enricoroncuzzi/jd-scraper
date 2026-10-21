@@ -214,11 +214,10 @@ def _invoke_batch(chain, batch: list[JobOffer], profile: str, priority_keywords:
                 if result is None:
                     raise _EmptyStructuredOutput()
                 # dots-3 answered {"offers": []} as a well-formed tool call, and
-                # the batch was silently dropped from scoring. A batch is only
-                # answered when every offer in it came back: anything shorter is
+                # the batch was silently dropped from scoring. An empty list is
                 # an empty answer wearing the right shape, so retry and then
                 # record it as invalid_output like any other.
-                if len(result.offers) < len(batch):
+                if not result.offers:
                     raise _EmptyStructuredOutput()
             return result.offers
         except _EmptyStructuredOutput:

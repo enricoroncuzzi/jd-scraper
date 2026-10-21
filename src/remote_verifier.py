@@ -660,11 +660,10 @@ def _verify_batch_openrouter(
                                output_tokens=counter.last_completion_tokens)
                 if result is None:
                     raise _EmptyStructuredOutput()
-                # A well-formed but short (or empty) `offers` list used to be
-                # accepted, and every missing id silently became the degraded
-                # "not_stated" reason. A batch is answered only when all of it
-                # is: otherwise retry and then record invalid_output.
-                if len(result.offers) < len(batch):
+                # A well-formed but empty `offers` list used to be accepted, and
+                # every id silently became the degraded "not_stated" reason.
+                # Retry it and then record invalid_output.
+                if not result.offers:
                     raise _EmptyStructuredOutput()
             verdicts = _resolve_items(result.offers, batch, require_italy_eligibility)
             usage["openrouter_prompt_tokens"] += counter.prompt_tokens
