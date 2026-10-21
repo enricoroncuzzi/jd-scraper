@@ -11,6 +11,14 @@ retries.
 
 The verdict vocabulary lives in src/remote_verdicts.py: `advised` is delivered
 with a warning (D3), `not_stated` is digest-only and never alerts (D1).
+
+Two source hints shape the verdict: a `remote`/`remote_worldwide` hint with a
+silent description is `advised` (the source's own field is evidence), and an
+explicit full-remote phrase in the title or text drops the source's hybrid/onsite
+shortcut and sends the job to the model. After the model answers, a rejection
+grounded only in occasional presence (both the reason and the text say so, and
+neither shows a regular cadence or a work-mode "hybrid") is turned into `advised`
+for a source-hinted job.
 """
 from datetime import datetime
 
@@ -20,13 +28,12 @@ from src.processor.llm_stages import (
     LlmKeys, budget_open, due_batch, retry_delay, to_offers, waiting_rows,
 )
 from src.processor.llm_sink import batch_context
-from src.processor.state import defer, set_stage
+from src.models import JobOffer
+from src.processor.state import JobRow, defer, set_stage
 from src.remote_rules import (
     RULE_PREFIX, classify, confident_hybrid_phrase, confident_remote_phrase,
-    occasional_presence_phrase, regular_presence_phrase,
+    occasional_presence_phrase, regular_presence_phrase, work_mode_hybrid_phrase,
 )
-from src.models import JobOffer
-from src.processor.state import JobRow
 from src.remote_verdicts import ADVISED, NOT_STATED, REJECTED
 from src.remote_verifier import _DEGRADED_REASON, verify_offers
 
@@ -81,7 +88,11 @@ def hint_remote_override(row: JobRow, offer: JobOffer, *,
         return None
     if not occasional_presence_phrase(text):
         return None
-    if regular_presence_phrase(offer.remote_reason):
+    # Recall-oriented: a reason or text that names a regular cadence, or a text
+    # that uses the word "hybrid" at all, keeps the model's rejection.
+    if regular_presence_phrase(offer.remote_reason) or regular_presence_phrase(text):
+        return None
+    if work_mode_hybrid_phrase(text, cloud_hybrid_guard=cloud_hybrid_guard) is not None:
         return None
     if confident_hybrid_phrase(text, occasional_guard=False,
                                cloud_hybrid_guard=cloud_hybrid_guard) is not None:

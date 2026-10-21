@@ -18,7 +18,8 @@ import pytest
 
 from src.remote_rules import (
     RULE_PREFIX, _scan_hybrid, classify, confident_hybrid_phrase,
-    confident_remote_phrase, occasional_presence_phrase,
+    confident_remote_phrase, occasional_presence_phrase, regular_presence_phrase,
+    work_mode_hybrid_phrase,
 )
 from src.remote_verdicts import ADVISED, CONFIRMED, NOT_STATED, REJECTED
 
@@ -356,3 +357,29 @@ def test_confident_remote_phrase_reads_only_explicit_full_remote_forms():
     # Wider remote wording ("remote-first", "work from anywhere") does not
     # override a source hint; only the explicit full-remote forms do.
     assert confident_remote_phrase("We are a remote-first company.") is None
+
+
+def test_regular_presence_phrase_reads_every_weekly_cadence():
+    cadences = [
+        "2 days in office per week, plus team sprints",
+        "2 days/week in the office and sprints",
+        "Hybrid: 2 office days a week and sprints",
+        "Team day in office, two days in the week; sprints",
+        "two days weekly in our office",
+        "3x a week at the Milan site",
+    ]
+    for reason in cadences:
+        assert regular_presence_phrase(reason) is not None, reason
+    for occasional in ["Onsite team events in Warsaw and global team offsites once a year.",
+                       "Teams meet two to four times yearly in person for team sprints.",
+                       "Team offsites once a quarter in Berlin",
+                       "occasional travel for client workshops"]:
+        assert regular_presence_phrase(occasional) is None, occasional
+
+
+def test_work_mode_hybrid_phrase_separates_work_from_technology_and_options():
+    assert work_mode_hybrid_phrase("Hybrid role. Two days weekly at our Milan site.") == "Hybrid"
+    assert work_mode_hybrid_phrase("We work ibrido in Milan.") == "ibrido"
+    assert work_mode_hybrid_phrase("This is not a hybrid role.") is None
+    assert work_mode_hybrid_phrase("Fully remote or hybrid, you choose.") is None
+    assert work_mode_hybrid_phrase("We run secure hybrid environments for clients.") is None

@@ -138,11 +138,17 @@ _FEW_PREFIX = re.compile(r"(?<!\ba\s)\b(?:very\s+)?few\s+$", re.IGNORECASE)
 _SENTENCE_DELIMITERS = ".!?;\n\u2022"
 
 
+_SENTENCE_WINDOW_CHARS = 300
+
+
 def _sentence_around(text: str, start: int, end: int) -> str:
+    """The sentence around [start:end], clipped to a bounded window on each side
+    so an unpunctuated block of junk cannot make the occasional scan quadratic."""
     left = max(text.rfind(char, 0, start) for char in _SENTENCE_DELIMITERS) + 1
     rights = [position for position in (text.find(char, end) for char in _SENTENCE_DELIMITERS)
               if position != -1]
-    return text[left:min(rights) if rights else len(text)]
+    right = min(rights) if rights else len(text)
+    return text[max(left, start - _SENTENCE_WINDOW_CHARS):min(right, end + _SENTENCE_WINDOW_CHARS)]
 
 
 def occasional_presence_phrase(text: str) -> str | None:
@@ -213,9 +219,19 @@ def confident_remote_phrase(text: str) -> str | None:
 # the "N days/weeks per quarter" form only: "once a quarter" is occasional, as
 # _OCCASIONAL_PRESENCE reads it.
 _REGULAR_PRESENCE = re.compile(
-    r"\b(?:twice|once|\d+\s+times)\s+(?:a|per|each|every)\s+(?:week|month)\b"
-    r"|\b(?:one|two|three|four|five|\d+)\s+(?:days?|weeks?)"
-    r"\s+(?:a|per|each|every)\s+(?:week|month|quarter)\b"
+    # "twice a week", "once a month", "3 times a week"
+    r"\b(?:twice|once|\d+\s+times?)\s*(?:a|per|each|/)\s*(?:week|month)\b"
+    # "2 days a week", "2 days/week", "2 office days each week"
+    r"|\b(?:\d+|one|two|three|four|five|six)\b[^.;\n]{0,40}?\b(?:a|per|each|/)\s*week\b"
+    # "two days in the week"
+    r"|\b(?:\d+|one|two|three|four|five|six)\b[^.;\n]{0,40}?\b(?:in|of)\s+the\s+week\b"
+    # "two days weekly"
+    r"|\bdays?\b[^.;\n]{0,20}\bweekly\b"
+    # "3x a week"
+    r"|\b\d+\s*x\s*(?:a|per|each|/)\s*week\b"
+    # "one week per month", "2 weeks per quarter"
+    r"|\b(?:one|two|three|four|five|\d+)\s+weeks?\s+(?:a|per|each|every)\s+(?:month|quarter)\b"
+    # "weekly", "every week", "monthly", named weekdays
     r"|\b(?:weekly|monthly|every\s+(?:week|month)|(?:mon|tues|wednes|thurs|fri)days?)\b",
     re.IGNORECASE)
 
@@ -223,6 +239,33 @@ _REGULAR_PRESENCE = re.compile(
 def regular_presence_phrase(text: str) -> str | None:
     match = _REGULAR_PRESENCE.search(text or "")
     return match.group(0).strip() if match else None
+
+
+_HYBRID_WORD = re.compile(r"\b(?:hybrid\w*|ibrid\w*|h[ií]brid\w*|hybride)\b", re.IGNORECASE)
+# "remote or hybrid", "hybrid/on-site": an alternative, not a statement.
+_OPTION_PREFIX = re.compile(r"(?:\bor|\band|/|\bo|\bou|\bund)\s*$", re.IGNORECASE)
+
+
+def work_mode_hybrid_phrase(text: str, *, cloud_hybrid_guard: bool = True) -> str | None:
+    """The first work-mode use of the word "hybrid" (any of the five languages), or None.
+
+    Unlike _CONFIDENT_HYBRID this is deliberately wide: any bare "hybrid" counts
+    unless it is negated or an option ("not hybrid", "hybrid or remote").
+    Technology wording (hybrid cloud, hybrid environments) is scrubbed first.
+    Used only to keep the post-model hint override conservative; a hit means the
+    model's rejection stands.
+    """
+    scanned = (_scrub_cloud_hybrid(text) if cloud_hybrid_guard else text) or ""
+    for match in _HYBRID_WORD.finditer(scanned):
+        prefix = scanned[max(0, match.start() - 40):match.start()]
+        if (_NEGATION.search(prefix) or _PERK_PREFIX.search(prefix)
+                or _OPTION_PREFIX.search(prefix)):
+            continue
+        suffix = scanned[match.end():match.end() + 40]
+        if _PERK_SUFFIX.search(suffix):
+            continue
+        return match.group(0).strip()
+    return None
 
 
 def confident_hybrid_phrase(text: str, *, occasional_guard: bool = True,
@@ -394,7 +437,8 @@ def classify(
     remote_hint: str | None = None,
     require_italy_eligibility: bool = False,
     hints_enabled: bool = True,
-    # reserved for Tasks 1b and 2: accepted now so the processor can pass them.
+    # Occasional presence (onboarding, events, offsites, sprints) and technology
+    # "hybrid" wording are not hybrid phrases; each has its own switch.
     occasional_guard: bool = True,
     cloud_hybrid_guard: bool = True,
 ) -> RuleVerdict | None:

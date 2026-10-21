@@ -289,3 +289,27 @@ def test_the_occasional_presence_guard_on_model_answers_can_be_switched_off(stor
     off = replace(cfg, remote_hint_never_reject=False)
     assert run_remote_batches(store_conn, off, later, LlmKeys("l", "g"), verify=verify) == 1
     assert _row(store_conn, job)[2] == "rejected"
+
+
+@pytest.mark.parametrize("text,reason", [
+    ("Hybrid role. Two days weekly at our Milan site. Team sprints.",
+     "2 days in office per week, plus team sprints"),
+    ("Hybrid role. Two days weekly at our Milan site. Team sprints.",
+     "2 days/week in the office and sprints"),
+    ("Hybrid role. Two days weekly at our Milan site. Team sprints.",
+     "Hybrid: 2 office days a week and sprints"),
+    ("Hybrid role. Two days weekly at our Milan site. Team sprints.",
+     "hybrid role with team sprints"),
+    ("Hybrid position. You will be in our Milan office two days weekly. We run two-week sprints.",
+     "Hybrid position with sprints in the office"),
+    ("Remote-friendly. Team day in the Berlin office, two days in the week. Sprints of 2 weeks.",
+     "Team day in office, two days in the week; sprints"),
+])
+def test_a_regular_hybrid_reason_is_never_overridden(store_conn, cfg, text, reason):
+    # A reason that mentions an occasional word ("sprints", "team events") while
+    # stating a regular cadence must keep the model's rejection.
+    job = _described(store_conn, cfg, 24, JOB + text, remote_hint="remote")
+    later = NOW + timedelta(minutes=31)
+    assert run_remote_batches(store_conn, cfg, later, LlmKeys("l", "g"),
+                              verify=_rejecting_verify(reason)) == 1
+    assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected", "rejected")
