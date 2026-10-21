@@ -19,10 +19,14 @@ anywhere between 3 s and 390 s, while the old hour nudge and day verdict cut
 throughput to about a quarter. A refusal is waited out (60 s doubling to a 30 min
 cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
 description are waiting, descriptions take two of every three turns
-(`pace.description_turn_share`); a lone waiting kind always takes the turn. The
-advisory lock is held only for the request itself; waiters sleep unlocked in short
-chunks. A caller that passes `give_up_after` and cannot get a turn raises PaceBusy,
-and a caller that gives up writes only its own `wanting` markers.
+(`pace.description_turn_share`); a lone waiting kind always takes the turn. A
+`packaging` request - the one LinkedIn request a CV package needs - is granted the
+next turn instead of competing for it: it is rare, each turn buys a whole package,
+and a pass that loses the turn gets no package at all, while a description or a
+search just takes the following turn. The advisory lock is held only for the request
+itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_after`
+and cannot get a turn raises PaceBusy, and a caller that gives up writes only its own
+`wanting` markers.
 """
 import json
 import random
@@ -44,6 +48,10 @@ from src.linkedin.schedule import (
 from src.services.pulse import pulse
 
 HOST = "linkedin.com"
+# The one LinkedIn request a CV package needs (src/delivery/autopackage.py). It is a kind
+# of its own so the turn policy can grant it the next turn: inside the description kind
+# it only ever raced the describer for one turn per pass, and lost (2026-10-21).
+PACKAGING_KIND = "packaging"
 WANTING_FRESH_SECONDS = 30.0
 LOCK_POLL_SECONDS = 0.25
 YIELD_SECONDS = 0.5
@@ -146,10 +154,18 @@ def _fresh(state: PaceState, marker: str, now_ts: float) -> bool:
 
 
 def must_yield(state: PaceState, kind: str, now_ts: float, *, run_cap: int) -> bool:
-    """When both a search and a description are waiting, descriptions take two of every
-    three turns: a description yields only once `run_cap` descriptions have gone in a
-    row, and a search yields while fewer than `run_cap` have. A lone waiting kind always
-    takes the turn."""
+    """Who gives way when more than one kind is waiting.
+
+    A waiting packaging request takes the next turn and never gives way itself: the
+    packaging caller asks for one turn per package, so reserving it costs the steady
+    kinds a turn each time a package is due and nothing else. Otherwise, when both a
+    search and a description are waiting, descriptions take two of every three turns: a
+    description yields only once `run_cap` descriptions have gone in a row, and a search
+    yields while fewer than `run_cap` have. A lone waiting kind always takes the turn."""
+    if kind == PACKAGING_KIND:
+        return False
+    if _fresh(state, PACKAGING_KIND, now_ts):
+        return True
     search_waiting = _fresh(state, "search", now_ts)
     description_waiting = _fresh(state, "description", now_ts)
     if kind == "description":
@@ -299,7 +315,11 @@ class PaceBudget:
             state.wait_until = now + timedelta(seconds=wait)
             print(f"[pace] LinkedIn refused a {kind} request ({slot.status}): waiting "
                   f"{wait:.0f}s (refusal {state.refusal_streak} in a row)")
-        state.description_run = state.description_run + 1 if kind == "description" else 0
+        if kind == "description":
+            state.description_run += 1
+        elif kind == "search":
+            # A packaging turn is neither kind: it leaves the two-of-three run alone.
+            state.description_run = 0
         state.last_kind = kind
         spacing = next_spacing(self.schedule, now, self.uniform)
         state.next_slot_at = now + timedelta(seconds=spacing)

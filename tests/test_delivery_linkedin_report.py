@@ -27,10 +27,11 @@ def test_the_block_counts_requests_refusals_and_the_longest_wait(store_conn):
         _event(store_conn, NOW - timedelta(hours=1), "description", "ok")
     _event(store_conn, NOW - timedelta(hours=1), "search", "refused", 60)
     _event(store_conn, NOW - timedelta(hours=1), "description", "refused", 240)
+    _event(store_conn, NOW - timedelta(hours=1), "packaging", "ok")
     _event(store_conn, NOW - timedelta(hours=25), "search", "ok")  # outside the window
     lines = _lines(store_conn)
     assert lines[0] == "LinkedIn (last 24 hours)"
-    assert lines[1] == "Requests: 12 (search 9, description 3); refused 2 (16.7%)"
+    assert lines[1] == "Requests: 13 (search 9, description 3, packaging 1); refused 2 (15.4%)"
     assert lines[2] == "Longest refusal wait: 4m"
 
 
@@ -97,7 +98,7 @@ def test_the_block_counts_area_caps_next_to_full_caps(store_conn):
 
 def test_an_empty_store_gives_a_calm_block(store_conn):
     lines = _lines(store_conn)
-    assert lines[1] == "Requests: 0 (search 0, description 0); refused 0 (0.0%)"
+    assert lines[1] == "Requests: 0 (search 0, description 0, packaging 0); refused 0 (0.0%)"
     assert lines[2] == "Longest refusal wait: none"
     assert lines[3] == "Fixed spacing: 75s weekday, 110s weekend"
     assert lines[4] == "Slices behind cadence: 0 of 0; past 48h+6h: none"

@@ -284,6 +284,80 @@ def test_a_search_yields_while_descriptions_are_under_their_share(make_budget):
     assert _events(description, "kind") == [("description",), ("search",)]
 
 
+def test_a_description_yields_the_turn_to_a_waiting_packaging_request(make_budget):
+    # The packaging caller asks for one LinkedIn turn per package, so it is granted the
+    # next turn: a describer waiting for that same turn must give way to it.
+    fake = FakeTime()
+    packaging, describer = make_budget(fake), make_budget(fake)
+    packaging.snapshot()
+    packaging._declare_wanting("packaging")
+    order = []
+
+    def the_packaging_request_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with packaging.slot("packaging") as slot:
+                order.append("packaging")
+                slot.clean(200)
+            fake.on_sleep = the_packaging_request_takes_its_turn
+    fake.on_sleep = the_packaging_request_takes_its_turn
+    with describer.slot("description") as slot:
+        order.append("description")
+        slot.clean(200)
+    assert order == ["packaging", "description"]
+    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
+    assert sum(fake.sleeps[1:]) == pytest.approx(75)   # it waits out the packaging spacing
+    assert _events(packaging, "kind") == [("packaging",), ("description",)]
+
+
+def test_a_search_yields_the_turn_to_a_waiting_packaging_request(make_budget):
+    # The share would have given this turn to the search (the description run is at the
+    # cap), but a waiting packaging request outranks both steady kinds.
+    fake = FakeTime()
+    search, packaging = make_budget(fake), make_budget(fake)
+    search.snapshot()
+    _set(search, description_run=2, last_kind="description")
+    packaging._declare_wanting("packaging")
+    order = []
+
+    def the_packaging_request_takes_its_turn(seconds):
+        if seconds == pace_module.YIELD_SECONDS and not order:
+            fake.on_sleep = None
+            with packaging.slot("packaging") as slot:
+                order.append("packaging")
+                slot.clean(200)
+            fake.on_sleep = the_packaging_request_takes_its_turn
+    fake.on_sleep = the_packaging_request_takes_its_turn
+    with search.slot("search") as slot:
+        order.append("search")
+        slot.clean(200)
+    assert order == ["packaging", "search"]
+    assert fake.sleeps[0] == pace_module.YIELD_SECONDS
+    assert _events(packaging, "kind") == [("packaging",), ("search",)]
+
+
+def test_a_packaging_turn_keeps_the_description_run_where_it_was(make_budget):
+    # A packaging turn is neither a description turn nor a search turn, so it must not
+    # reset the two-of-three description run (nor count towards it).
+    fake = FakeTime()
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, description_run=1, last_kind="description")
+    with budget.slot("packaging") as slot:
+        slot.clean(200)
+    assert _row(budget, "last_kind", "description_run") == ("packaging", 1)
+
+
+def test_a_stale_packaging_marker_does_not_hold_back_a_description(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake)
+    budget.snapshot()
+    _set(budget, wanting=Json({"packaging": fake.now.timestamp() - 600}))
+    with budget.slot("description") as slot:
+        slot.clean(200)
+    assert fake.sleeps == []
+
+
 def test_a_search_takes_its_turn_once_the_description_run_reaches_the_cap(make_budget):
     fake = FakeTime()
     search, description = make_budget(fake), make_budget(fake)

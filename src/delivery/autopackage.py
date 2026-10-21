@@ -15,9 +15,11 @@ ready" notice is skipped but the row is still written, so the same job is never
 tailored twice.
 
 The classify request is a plain GET of the job page. For a LinkedIn page it goes
-through the shared LinkedIn pace like every other LinkedIn request; when the
-schedule gate is closed there, the candidate is deferred to the next pass rather
-than treated as a failure.
+through the shared LinkedIn pace like every other LinkedIn request, as the
+`packaging` kind, which the pace grants the next turn (a package needs exactly this
+one request, so a pass that lost the turn got no package at all); when the schedule
+gate is closed there, the candidate is deferred to the next pass rather than treated
+as a failure.
 """
 import json
 import os
@@ -30,7 +32,7 @@ from src.autoapply.package import notify_package, write_manifest
 from src.delivery.daily import note_path
 from src.delivery.jobs import DeliveryJob, load_jobs, to_scored_offer
 from src.delivery.settings import DeliverySettings
-from src.linkedin.pace import PaceBusy, PaceGateClosed
+from src.linkedin.pace import PACKAGING_KIND, PaceBusy, PaceGateClosed
 from src.processor.config import ProcessorConfig
 from src.scorer import _openrouter_quota_exhausted
 from src.services.pulse import pulse
@@ -133,8 +135,12 @@ def is_linkedin_link(link: str) -> bool:
 
 
 def classify_through_pace(pace, link: str, classify=classify_channel) -> str:
+    """Classify the application channel. A LinkedIn page is a LinkedIn request, so it
+    takes a turn on the shared pace - and it asks for the `packaging` kind, which the
+    pace grants the next turn: a package needs exactly this one request, and a pass that
+    loses that turn gets no package at all (src/linkedin/pace.py)."""
     if is_linkedin_link(link):
-        with pace.slot("description") as slot:
+        with pace.slot(PACKAGING_KIND) as slot:
             channel = classify(link)
             slot.clean() if channel != "unknown" else slot.neutral()
             return channel

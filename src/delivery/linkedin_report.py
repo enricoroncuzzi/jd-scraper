@@ -49,9 +49,10 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         cur.execute(
             "SELECT count(*), count(*) FILTER (WHERE kind = 'search'), "
             "count(*) FILTER (WHERE kind = 'description'), "
+            "count(*) FILTER (WHERE kind = 'packaging'), "
             "count(*) FILTER (WHERE outcome = 'refused'), max(wait_seconds) "
             "FROM pace_events WHERE at >= %s AND at < %s", (since, now))
-        requests, search, description, refused, longest = cur.fetchone()
+        requests, search, description, packaging, refused, longest = cur.fetchone()
         state = _pace_state(cur, now)
         cur.execute(
             "SELECT count(*) FILTER (WHERE last_walked_at IS NULL OR "
@@ -86,8 +87,8 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
                    f"(first seen {oldest.astimezone(schedule.zone):%Y-%m-%d %H:%M} Rome)")
     return [
         "LinkedIn (last 24 hours)",
-        f"Requests: {requests} (search {search}, description {description}); "
-        f"refused {refused} ({pct:.1f}%)",
+        f"Requests: {requests} (search {search}, description {description}, "
+        f"packaging {packaging}); refused {refused} ({pct:.1f}%)",
         refusal_wait,
         f"Fixed spacing: {wd:.0f}s weekday, {we:.0f}s weekend",
         f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h"
