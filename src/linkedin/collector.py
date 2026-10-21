@@ -53,7 +53,7 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
                  schedule: ScheduleConfig | None = None) -> Tick:
     """Walk the next due slice, if any.
 
-    The schedule gate (a configured closed window, shared daily cap) is checked before a slice is
+    The schedule gate (a configured closed window) is checked before a slice is
     claimed, so a closed gate is one idle tick, not a request.
 
     One slice's unexpected failure must not wedge the collector on a poison card:
@@ -65,8 +65,8 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
     schedule = schedule or ScheduleConfig()
     gate = pace.gate()
     if not gate.open:
-        return Tick(False, {"waiting": f"linkedin {gate.reason}", "requests_today": gate.requests_today,
-                            "cap": gate.cap})
+        return Tick(False, {"waiting": f"linkedin {gate.reason}",
+                            "requests_today": gate.requests_today})
     row = claim_due_slice(conn, started)
     if row is None:
         return Tick(False, {"due_slices": 0})

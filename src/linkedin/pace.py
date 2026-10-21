@@ -2,17 +2,18 @@
 
 One budget per host, stored in the `pace_budgets` table and guarded by a
 Postgres session advisory lock, so the collector and the processor cannot
-exceed it together and never have two LinkedIn requests in flight.
+have two LinkedIn requests in flight.
 
-Two things can gate every request, all enforced here so no caller can bypass them:
-an optional closed window (config/schedule.json `closed_hours`, Rome time, null as
-shipped so LinkedIn runs around the clock) and the shared daily request budget
-(weekday/weekend cap, Rome calendar day). When the gate is closed `slot` raises
-PaceGateClosed instead of blocking a tick for hours; the services catch that and go
-idle. Every request is recorded in `pace_events`.
+One thing can gate every request, enforced here so no caller can bypass it: an
+optional closed window (config/schedule.json `closed_hours`, Rome time, null as
+shipped so LinkedIn runs around the clock). The shared `requests_today` counter is
+recorded for the operator but never closes the gate: there is no daily cap. When
+the gate is closed `slot` raises PaceGateClosed instead of blocking a tick for
+hours; the services catch that and go idle. Every request is recorded in
+`pace_events`.
 
 The pace is fixed (2026-10-18 refusal study): a constant base spacing per window
-(75 s weekday / 110 s weekend, never below the cap-derived floor) jittered +/-20 %.
+(75 s weekday / 110 s weekend) jittered +/-20 %.
 Nothing slows it down: the study found the refusal rate did not depend on the gap
 anywhere between 3 s and 390 s, while the old hour nudge and day verdict cut
 throughput to about a quarter. A refusal is waited out (60 s doubling to a 30 min
@@ -35,8 +36,6 @@ from src.jobstore.db import connect, store_url
 from src.linkedin.schedule import (
     RefusalPolicy,
     ScheduleConfig,
-    daily_cap,
-    floor_spacing_seconds,
     in_closed_window,
     local_day,
     start_spacing_seconds,
@@ -62,9 +61,8 @@ class Gate:
     """Why LinkedIn is open or closed to both services right now."""
 
     open: bool
-    reason: str  # open | closed_hours | daily_cap
+    reason: str  # open | closed_hours
     requests_today: int
-    cap: int
     window: str  # weekday | weekend
 
 
@@ -81,13 +79,11 @@ class PaceBusy(RuntimeError):
 
 
 def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int) -> Gate:
-    cap = daily_cap(schedule, now)
+    """Closed only by a configured closed window. `requests_today` is reported, never a cap."""
     window = window_name(schedule, now)
-    common = {"requests_today": requests_today, "cap": cap, "window": window}
+    common = {"requests_today": requests_today, "window": window}
     if in_closed_window(schedule, now):
         return Gate(False, "closed_hours", **common)
-    if requests_today >= cap:
-        return Gate(False, "daily_cap", **common)
     return Gate(True, "open", **common)
 
 
@@ -115,11 +111,11 @@ def description_run_cap(share: float) -> int:
 def next_spacing(schedule: ScheduleConfig, now: datetime,
                  uniform=random.uniform) -> float:
     """The next sleep: the fixed base spacing for `now`'s window, jittered by
-    +/-`pace.jitter`, never below the cap-derived floor."""
+    +/-`pace.jitter`. Nothing clamps it from below."""
     window = window_name(schedule, now)
     base = start_spacing_seconds(schedule, window)
     factor = uniform(1 - schedule.pace.jitter, 1 + schedule.pace.jitter)
-    return max(floor_spacing_seconds(schedule, window), base * factor)
+    return base * factor
 
 
 def refusal_wait_seconds(streak: int, retry_after: float | None, policy: RefusalPolicy,
@@ -193,7 +189,7 @@ class Slot:
 class PaceBudget:
     """Use `with pace.slot("search") as slot:` around exactly one LinkedIn request
     and call slot.clean() or slot.throttled() with what came back. When the
-    schedule gate is closed (a configured closed window or the daily cap) the
+    schedule gate is closed (a configured closed window) the
     `with` raises PaceGateClosed and no request is made, so a caller must never
     wrap the request in a bare try/except that would swallow it.
 

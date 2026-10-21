@@ -24,12 +24,10 @@ def rome(value: datetime | None, schedule: ScheduleConfig, fmt: str = "%Y-%m-%d 
 
 
 def _gate_line(gate: Gate, schedule: ScheduleConfig) -> str:
-    left = f"{gate.requests_today}/{gate.cap} requests today ({gate.window})"
+    state = f"{gate.requests_today} requests today ({gate.window})"
     if gate.reason == "closed_hours" and schedule.closed_hours is not None:
-        return f"LinkedIn gate: {left}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
-    if gate.reason == "daily_cap":
-        return f"LinkedIn gate: {left}, daily cap reached"
-    return f"LinkedIn gate: {left}, window open"
+        return f"LinkedIn gate: {state}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
+    return f"LinkedIn gate: {state}, window open"
 
 
 def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:

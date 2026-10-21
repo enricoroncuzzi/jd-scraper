@@ -32,8 +32,8 @@ The `jobs` table is the stage machine: `seen -> described -> filtered_out | scor
 Every LinkedIn request the collector, the processor and the packaging stage make passes one choke point, `src/linkedin/pace.py`, so they cannot exceed a shared budget together or have two requests in flight. `config/schedule.json` sets the policy:
 
 - no quiet hours: LinkedIn runs around the clock (`closed_hours` is `null` in `config/schedule.json`);
-- a shared daily budget of 1,400 requests on weekdays and 800 at weekends, on the Rome calendar day;
-- a fixed pace of 75 s weekday / 110 s weekend, jittered +/-20 %, never below the cap-derived floor (62 s / 108 s over 24 h): nothing slows it down (the 2026-10-18 refusal study found the refusal rate did not depend on the gap, while the old nudge and day verdict cut throughput to about a quarter);
+- no daily request cap: the fixed pace below is the only thing that limits volume, and the day's count is operator information (`python -m src.services.status`);
+- a fixed pace of 75 s weekday / 110 s weekend, jittered +/-20 %: nothing slows it down (the 2026-10-18 refusal study found the refusal rate did not depend on the gap, while the old nudge and day verdict cut throughput to about a quarter);
 - a refusal is a short capped wait (60 s doubling to 30 min, or `Retry-After`), never a shutdown and never a change of pace;
 - descriptions take two of every three turns when a search is also waiting (`pace.description_turn_share`), with a 24 h guard that lets an overdue description spend more than one processor tick;
 - every area walked within its cadence, with a 6 h tolerance on the 48 h bound; the description queue gives a job past 60 h (`description_urgent_after_hours`) the next turn whatever its tier, and otherwise the tiers take turns, so a tier-3 backlog cannot starve tier 1 or tier 4 (same rotation as the slice claim).
@@ -69,7 +69,7 @@ The delivery service runs the same engine automatically for above-cutoff jobs: i
 - **Structured LLM I/O everywhere**: Pydantic schemas for scoring, remote verification, and tailoring, no string-parsed output.
 - **No silent loss**: every stage transition is one `UPDATE` in the caller's transaction, and each stage commits per job or per batch, so a crash leaves a job exactly where it was and the next tick picks it up. A host throttle (429/999) returns a description to the queue with no per-job penalty; a job-specific refusal (401/403/503/504) or unreadable markup keeps its 30 minutes to 12 h backoff; a job expires after seven days of host refusals or when the posting is over 30 days old.
 - **Resilience by design**: batch-level retry on 5xx/timeout, including OpenRouter's habit of surfacing an upstream 5xx as HTTP 200 with a JSON error body, distinguished in code (`_is_retryable_upstream_value_error` in `src/scorer.py`) from an unrelated bug before retrying. A quota day stops the LLM stages and leaves jobs waiting, not lost.
-- **Shared LinkedIn pace**: the optional closed window (off as shipped), the shared daily budget, the fixed jittered spacing, the refusal waits and the two-of-three description turns all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
+- **Shared LinkedIn pace**: the optional closed window (off as shipped), the shared daily counter, the fixed jittered spacing, the refusal waits and the two-of-three description turns all live in one place (`src/linkedin/pace.py`), enforced by a Postgres advisory lock, and every request is appended to `pace_events`.
 - **Anti-hallucination in code, not just the prompt**: the CV is checked at runtime against the canonical source, not left to an instruction the model can ignore. The cover letter is checked for banned phrases, length, and a concrete bridge. Hook claims are listed in `CLAIMS_REVIEW.txt` for a person to confirm.
 
 ## By the numbers
@@ -80,7 +80,7 @@ The delivery service runs the same engine automatically for above-cutoff jobs: i
 | LinkedIn search slices | **127** (role x area) | built from the tier configs and `config/collector.json` |
 | Max pages per slice | **90** | `config/collector.json` |
 | Per-area page cap | **20 for the ten largest tier-3 countries** | `config/collector.json` |
-| Shared daily LinkedIn budget | **1,400 weekday / 800 weekend** requests | `config/schedule.json` |
+| Daily LinkedIn request cap | **none** (the pace is the limit) | `config/schedule.json` |
 | Score cutoff | **8** | `scoring.threshold` in each tier config |
 | Manual steps in the daily run | **0** | systemd services |
 

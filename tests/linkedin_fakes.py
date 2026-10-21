@@ -55,7 +55,7 @@ class FakePace:
         self.retry_afters = []
         self.overdue_flags = []
         self.wait = wait
-        self._gate = gate or Gate(open=True, reason="open", requests_today=0, cap=1400, window="weekday")
+        self._gate = gate or Gate(open=True, reason="open", requests_today=0, window="weekday")
 
     def gate(self) -> Gate:
         return self._gate

@@ -1,12 +1,12 @@
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from src.linkedin.schedule import (
-    ScheduleConfig, daily_cap, floor_spacing_seconds, in_closed_window, is_weekend,
-    load_schedule_config, local_day, open_hours_per_day, open_seconds_between, requests_today_for,
-    start_spacing_seconds, window_name,
+    ScheduleConfig, in_closed_window, is_weekend, load_schedule_config, local_day,
+    open_seconds_between, requests_today_for, start_spacing_seconds, window_name,
 )
 
 # 2026-10-14 is a Wednesday; the 17th and 18th are Saturday and Sunday.
@@ -19,13 +19,34 @@ def test_the_shipped_schedule_loads():
     cfg = load_schedule_config()
     assert cfg.timezone == "Europe/Rome"
     assert cfg.closed_hours is None
-    assert (cfg.weekday_cap, cfg.weekend_cap) == (1400, 800)
+
+
+def test_the_shipped_schedule_carries_no_request_cap():
+    cfg = load_schedule_config()
+    assert not hasattr(cfg, "weekday_cap") and not hasattr(cfg, "weekend_cap")
+    # The shipped config file itself carries no cap either.
+    shipped = json.loads(Path("config/schedule.json").read_text())
+    assert "daily_caps" not in shipped
+
+
+def test_a_leftover_daily_caps_block_is_ignored(tmp_path):
+    # A stale or rolled-back schedule.json may still carry the old caps; loading it must
+    # never stop the service.
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS,
+                                                 "daily_caps": {"weekday": 1400, "weekend": 800}}))
+    assert cfg.timezone == "Europe/Rome" and cfg.closed_hours is None
+    assert not hasattr(cfg, "weekday_cap") and not hasattr(cfg, "weekend_cap")
+
+
+def test_a_leftover_daily_caps_block_is_ignored_even_when_it_is_junk(tmp_path):
+    for leftover in ({}, "off", {"weekday": 0}, {"weekday": 1400}):
+        cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "daily_caps": leftover}))
+        assert cfg.pace.start_weekday_seconds == 75
 
 
 def test_the_shipped_schedule_has_no_closed_window():
     cfg = load_schedule_config()
     assert not in_closed_window(cfg, datetime(2026, 10, 13, 22, 30, tzinfo=timezone.utc))  # Rome 00:30
-    assert open_hours_per_day(cfg) == 24
 
 
 def test_a_leftover_breaker_block_is_rejected(tmp_path):
@@ -58,20 +79,6 @@ def test_a_leftover_day_verdict_key_is_rejected(tmp_path):
                      {"pace": {**PACE, "max_spacing_factor": 2.0}}):
         with pytest.raises(ValueError, match="removed"):
             load_schedule_config(_write(tmp_path, {**DEFAULTS, **override}))
-
-
-def test_the_floor_is_the_open_hours_over_the_cap():
-    cfg = ScheduleConfig(closed_hours=(0, 6))
-    assert open_hours_per_day(cfg) == 18
-    assert floor_spacing_seconds(cfg, "weekday") == pytest.approx(18 * 3600 / 1400)  # 46.29 s
-    assert floor_spacing_seconds(cfg, "weekend") == pytest.approx(81.0)
-
-
-def test_without_a_closed_window_the_floor_is_twenty_four_hours_over_the_cap():
-    cfg = ScheduleConfig()
-    assert open_hours_per_day(cfg) == 24
-    assert floor_spacing_seconds(cfg, "weekday") == pytest.approx(24 * 3600 / 1400)
-    assert floor_spacing_seconds(cfg, "weekend") == pytest.approx(108.0)
 
 
 def test_open_time_skips_the_quiet_window():
@@ -110,14 +117,11 @@ def test_start_spacing_seconds_returns_the_window_start():
     assert start_spacing_seconds(cfg, "weekday") == 75 and start_spacing_seconds(cfg, "weekend") == 110
 
 
-def test_the_weekday_and_the_weekend_get_their_own_caps():
+def test_the_weekday_and_the_weekend_get_their_own_window():
     cfg = ScheduleConfig()
     assert not is_weekend(cfg, WED) and window_name(cfg, WED) == "weekday"
-    assert daily_cap(cfg, WED) == 1400
     assert is_weekend(cfg, SAT) and is_weekend(cfg, SUN)
-    assert window_name(cfg, SAT) == "weekend"
-    assert daily_cap(cfg, SAT) == 800
-    assert daily_cap(cfg, SUN) == 800
+    assert window_name(cfg, SAT) == "weekend" and window_name(cfg, SUN) == "weekend"
 
 
 def test_the_quiet_window_is_rome_0000_to_0600():
@@ -174,7 +178,6 @@ def _write(tmp_path, data) -> str:
 DEFAULTS = {
     "timezone": "Europe/Rome",
     "closed_hours": None,
-    "daily_caps": {"weekday": 1400, "weekend": 800},
     "pace": {
         "start_spacing_seconds": {"weekday": 75, "weekend": 110},
         "jitter": 0.2,
@@ -199,8 +202,6 @@ TIGHTEN = {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.1
     {"closed_hours": [0, 24]},
     {"closed_hours": "off"},
     {"closed_hours": {}},
-    {"daily_caps": {"weekday": 0, "weekend": 800}},
-    {"daily_caps": {"weekday": 1400}},
     {"pace": {**PACE, "jitter": 0.6}},
     {"pace": {**PACE, "description_turn_share": 1.0}},
     {"pace": {**PACE, "description_turn_share": 0.4}},

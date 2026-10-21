@@ -2,8 +2,8 @@
 
 One block, built from `pace_events`, the `pace_budgets` row, the `slices` rows and
 the `jobs` table: requests and refusals, the longest refusal wait, the current base
-spacing against its floor, the slices behind their cadence and past 48 h, the oldest
-job waiting for a description, and the page caps this design adds.
+spacing, the slices behind their cadence and past 48 h, the oldest job waiting for a
+description, and the page caps this design adds.
 """
 from datetime import datetime, timedelta
 
@@ -11,7 +11,7 @@ from src.delivery.health import age_text
 from src.linkedin.catalog import CollectorConfig, load_collector_config
 from src.linkedin.pace import PaceState
 from src.linkedin.schedule import (
-    ScheduleConfig, floor_spacing_seconds, load_schedule_config, start_spacing_seconds,
+    ScheduleConfig, load_schedule_config, start_spacing_seconds,
 )
 
 WINDOW_HOURS = 24
@@ -78,8 +78,6 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
 
     wd = start_spacing_seconds(schedule, "weekday")
     we = start_spacing_seconds(schedule, "weekend")
-    fwd = floor_spacing_seconds(schedule, "weekday")
-    fwe = floor_spacing_seconds(schedule, "weekend")
     pct = 100.0 * refused / requests if requests else 0.0
     refusal_wait = (f"Longest refusal wait: {age_text(timedelta(seconds=longest))}"
                     if longest is not None else "Longest refusal wait: none")
@@ -91,8 +89,7 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         f"Requests: {requests} (search {search}, description {description}); "
         f"refused {refused} ({pct:.1f}%)",
         refusal_wait,
-        f"Fixed spacing: {wd:.0f}s weekday, {we:.0f}s weekend "
-        f"(floor {fwd:.0f}s/{fwe:.0f}s)",
+        f"Fixed spacing: {wd:.0f}s weekday, {we:.0f}s weekend",
         f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h"
         f"+{collector.cadence_tolerance_hours}h: {_names(past)}",
         oldest_line,

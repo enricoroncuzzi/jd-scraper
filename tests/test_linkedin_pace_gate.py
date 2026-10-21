@@ -1,4 +1,4 @@
-"""The schedule gate: quiet hours and the shared daily cap."""
+"""The schedule gate: the closed window and the shared daily counter."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -71,46 +71,31 @@ def test_without_a_closed_window_the_gate_is_open_at_night(make_budget):
     assert _row(budget)[0] == 1 and _event_count(budget) == 1
 
 
-# -- the shared daily cap ---------------------------------------------------------------
+# -- the shared daily counter -----------------------------------------------------------
 
-def test_search_and_descriptions_share_one_cap_and_it_blocks_at_the_limit(make_budget):
+def test_the_counter_never_closes_the_gate(make_budget):
     fake = FakeTime(WED)
     budget = make_budget(fake)
     budget.snapshot()  # create the row
     with budget.conn.cursor() as cur:
-        cur.execute("UPDATE pace_budgets SET requests_today = 1398, day = %s "
+        cur.execute("UPDATE pace_budgets SET requests_today = 999999, day = %s "
                     "WHERE host = 'linkedin.com'", (local_day(ScheduleConfig(), WED),))
+    gate = budget.gate()
+    assert gate.open and gate.reason == "open"
+    assert gate.requests_today == 999999 and gate.window == "weekday"
+    assert not hasattr(gate, "cap")
     for kind in ("search", "description"):
         with budget.slot(kind) as slot:
             slot.clean(200)
-    gate = budget.gate()
-    assert not gate.open and gate.reason == "daily_cap"
-    assert gate.requests_today == 1400 and gate.cap == 1400 and gate.window == "weekday"
-    with pytest.raises(PaceGateClosed):
-        with budget.slot("search"):
-            pass
-    assert _row(budget)[0] == 1400
-
-
-def test_the_weekend_uses_the_smaller_cap(make_budget):
-    # Start at Rome midnight: the cap-derived floor for two requests is 12 h, so both fit
-    # inside the same Rome weekend day.
-    fake = FakeTime(datetime(2026, 10, 16, 22, 0, tzinfo=timezone.utc))  # Sat 00:00 Rome
-    budget = make_budget(fake, ScheduleConfig(weekend_cap=2))
-    for _ in range(2):
-        with budget.slot("search") as slot:
-            slot.clean(200)
-    gate = budget.gate()
-    assert gate.window == "weekend" and gate.cap == 2
-    assert not gate.open and gate.reason == "daily_cap"
+    assert _row(budget)[0] == 1000001 and _event_count(budget) == 2
 
 
 def test_the_counter_resets_on_the_next_rome_day(make_budget):
     fake = FakeTime(WED)
-    budget = make_budget(fake, ScheduleConfig(weekday_cap=1))
+    budget = make_budget(fake)
     with budget.slot("search") as slot:
         slot.clean(200)
-    assert budget.gate().reason == "daily_cap"
+    assert budget.gate().requests_today == 1
     fake.now += timedelta(days=1)  # Thursday, Rome
     gate = budget.gate()
     assert gate.open and gate.requests_today == 0
@@ -118,10 +103,10 @@ def test_the_counter_resets_on_the_next_rome_day(make_budget):
 
 def test_the_counter_resets_at_rome_midnight_with_the_gate_open(make_budget):
     fake = FakeTime(datetime(2026, 10, 14, 21, 58, tzinfo=timezone.utc))  # 23:58 Rome
-    budget = make_budget(fake, ScheduleConfig(weekday_cap=1))
+    budget = make_budget(fake)
     with budget.slot("search") as slot:
         slot.clean(200)
-    assert budget.gate().reason == "daily_cap"
+    assert budget.gate().requests_today == 1
     fake.now += timedelta(minutes=10)  # 00:08 Rome, the next day
     gate = budget.gate()
     assert gate.open and gate.reason == "open" and gate.requests_today == 0
@@ -143,7 +128,8 @@ def test_every_request_is_logged_with_service_kind_outcome_and_status(make_budge
 
 def test_evaluate_gate_reports_open_when_everything_is_fine():
     gate = evaluate_gate(ScheduleConfig(), WED, requests_today=5)
-    assert gate.open and gate.reason == "open" and gate.requests_today == 5 and gate.cap == 1400
+    assert gate.open and gate.reason == "open" and gate.requests_today == 5
+    assert gate.window == "weekday" and not hasattr(gate, "cap")
 
 
 # -- end to end through slot: restart, probes, the wait, logging failures ------------------
@@ -179,20 +165,16 @@ def test_a_failed_pace_events_insert_does_not_lose_the_count_or_the_refusal_wait
     assert "could not record the search request" in capsys.readouterr().out
 
 
-def test_two_services_share_one_cap_row(make_budget, store_conn):
-    # Rome midnight again: the 12 h floor for a cap of two keeps both requests in one day.
+def test_two_services_share_one_counter_row(make_budget, store_conn):
     fake = FakeTime(datetime(2026, 10, 13, 22, 0, tzinfo=timezone.utc))  # Wed 00:00 Rome
-    schedule = ScheduleConfig(weekday_cap=2)
-    collector = make_budget(fake, schedule, service="collect-linkedin")
-    processor = make_budget(fake, schedule, service="process")
+    collector = make_budget(fake, service="collect-linkedin")
+    processor = make_budget(fake, service="process")
     with collector.slot("search") as slot:
         slot.clean(200)
     with processor.slot("description") as slot:
         slot.clean(200)
-    assert collector.gate().requests_today == 2 and not collector.gate().open
-    with pytest.raises(PaceGateClosed):
-        with processor.slot("description") as slot:
-            slot.clean(200)
+    gate = collector.gate()
+    assert gate.open and gate.requests_today == 2
     with collector.conn.cursor() as cur:
         cur.execute("SELECT service, count(*) FROM pace_events GROUP BY service ORDER BY service")
         assert cur.fetchall() == [("collect-linkedin", 1), ("process", 1)]

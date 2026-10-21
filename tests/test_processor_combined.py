@@ -97,7 +97,9 @@ def test_a_rejected_job_is_filtered_out_but_keeps_its_score_for_comparison(store
 
 
 def test_items_the_model_skipped_wait_and_retry(store_conn, cfg):
-    jobs = [_described(store_conn, cfg, n, minutes_ago=40) for n in range(3)]
+    # Distinct ages keep the batch order deterministic: jobs.id is a random UUID, so
+    # jobs with an identical first_seen_at would otherwise form the batch in any order.
+    jobs = [_described(store_conn, cfg, n, minutes_ago=40 - n) for n in range(3)]
     done = run_combined_batches(store_conn, cfg, NOW, KEYS, chain=FakeChain(_output(3, skip=(1,))),
                                 sleep=lambda _s: None)
     assert done == 2 and _row(store_conn, jobs[1])[0] == "described" and _row(store_conn, jobs[1])[5] == 1

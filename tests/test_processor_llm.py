@@ -214,7 +214,9 @@ def test_tier_two_is_scored_with_its_own_profile_and_never_mixed_with_the_others
 
 
 def test_what_the_scorer_did_not_reach_waits_and_the_batch_loop_stops(store_conn, cfg):
-    jobs = [_verified(store_conn, cfg, n) for n in range(5)]
+    # Distinct ages keep the batch order deterministic: jobs.id is a random UUID, so
+    # jobs with an identical first_seen_at would otherwise form the batch in any order.
+    jobs = [_verified(store_conn, cfg, n, minutes_ago=10 - n) for n in range(5)]
     assert run_scoring_batches(store_conn, cfg, NOW, KEYS, score=FakeScore(stop_after=2)) == 2
     assert [_row(store_conn, j)[0] for j in jobs] == ["scored", "scored", "described", "described", "described"]
     assert _row(store_conn, jobs[4])[5] == 1
