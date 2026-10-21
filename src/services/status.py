@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
+from src.llm_fallback import format_usage_lines, load_guard_config, stage_usages
 from src.linkedin.pace import Gate, PaceState, evaluate_gate
 from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests_today_for, start_spacing_seconds
 from src.processor.config import load_processor_config
@@ -87,6 +88,9 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         usage = budget.used_today(conn, provider, now)
         lines.append(f"{provider} today (UTC): {usage.requests} requests, "
                      f"{usage.input_tokens + usage.output_tokens} tokens")
+    # Which model actually answered, per stage (src/llm_fallback.py): OpenRouter's
+    # fallback chain answers with a 200, so a broken primary is only visible here.
+    lines.extend(format_usage_lines(stage_usages(conn, now, schedule.zone), load_guard_config()))
     lines.append("Services:")
     for beat in heartbeat.read_all(conn):
         lines.append(f"  {beat.service:<18} {beat.state:<9} "

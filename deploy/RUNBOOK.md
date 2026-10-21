@@ -13,7 +13,7 @@ unless it says otherwise. Nothing here is run by a test.
 | `jds-process` | cheap checks, descriptions, language, remote check, scoring | LinkedIn (descriptions), OpenRouter, Groq, Postgres |
 | `jds-deliver` | alerts, daily delivery at 08:00 Rome time, packaging, Neon copy | Telegram, Neon, Postgres |
 | `jds-collect-freehire.timer`, `jds-collect-himalayas.timer` | one oneshot pull a day each (stage 2), clear of delivery and of each other | their public APIs, Postgres |
-| `jds-watchdog.timer` | every 10 minutes: alerts when a service or the store is down | Telegram, Postgres |
+| `jds-watchdog.timer` | every 10 minutes: alerts when a service or the store is down, or a fallback model answers a stage | Telegram, Postgres |
 | `jds-backup.timer` | nightly `pg_dump` of the job store, keeping 7 days | Postgres, local disk |
 
 Services never call each other. Their only shared state is the PostgreSQL database
@@ -177,7 +177,8 @@ loses nothing.
 
 - Health: the day summary carries each service's state; the watchdog messages Telegram if a
   service is silent for over an hour, a daily source has missed its run or ended in error, no
-  LinkedIn request has succeeded for 24 h of open time, or Postgres is down.
+  LinkedIn request has succeeded for 24 h of open time, a fallback model is answering a stage's
+  OpenRouter calls, or Postgres is down.
 - Logs: `journalctl -u jds-process --since today`. A refusal shows up as a
   `[pace] LinkedIn refused a ... request ... waiting Ns (refusal K in a row)` line, and the
   `status` pace line shows the refusals in a row and any wait (`waiting until ... Rome`).
@@ -186,6 +187,16 @@ loses nothing.
 - Language-model use: the day summary shows OpenRouter requests against 1,000. It turns
   `HIGH` from 800. A budget that prioritises tier 1 is built only if usage exceeds 800 a day
   on three days in a fortnight (spec section 6.5).
+- Fallback-model guard: OpenRouter answers a request from the next model in the fallback chain
+  with an ordinary 200, so a broken primary leaves no error behind. `python -m src.services.status`
+  prints, per scoring/verification/tailoring stage, today's OpenRouter calls, the share answered
+  by the stage's pinned primary and the top answering model. When fallbacks answer more than
+  `share` (20%) of a stage's answered calls, from at least `min_calls` (5) answered calls, the
+  watchdog sends one Telegram alert per stage per Rome day naming the stage, the answering
+  models, the primary and the counts. `config/llm_fallback.json` holds both numbers, and
+  `enabled: false` switches the alert off (the status line stays). A call that never answered is
+  counted as unanswered and does not trigger it: a dead stage is a stage failure, not a fallback
+  answer.
 - Remote-check verdicts (2026-10-18): each tier digest now has up to three sections, "Confirmed
   full-remote", "Remote, eligibility to check" (a short advice line says what to check) and
   "Work mode not stated". Only the last one is withheld from Telegram strong-match alerts; it
@@ -287,8 +298,9 @@ point where an overdue description may spend more than one tick) and
 floor pick: it is guaranteed one pick in `description_order.quota_one_in` per tier ahead of the
 class order, not absolute priority), `config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
-repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2]` freehire,
-`[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
+repeats at most once a day), `config/llm_fallback.json` `share` (`0.2`), `min_calls` (`5`) and
+`enabled` (the fallback alert's off switch), and `config/sources.json` `spacing_seconds` (`[1, 2]`
+freehire, `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
 `max_wait_seconds` 300, `run_budget_seconds` 1700).
 
 `config/processor.json` `description_order` decides which waiting description is worth

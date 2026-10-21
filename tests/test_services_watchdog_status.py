@@ -259,3 +259,41 @@ def test_status_keeps_the_dashboard_when_the_processor_config_is_broken(store_co
     text = status.render(store_conn, NOW, ScheduleConfig())
     assert "description_order.quota_one_in" in text
     assert "LinkedIn gate:" in text and "Services:" in text and "process" in text
+
+
+def _llm_call(conn, stage, model, at=NOW):
+    from src.llm_fallback import STAGE_PRIMARIES
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO llm_calls (id, stage, provider, request_model, response_model, latency_ms, "
+            "batch_size, attempt, outcome, prompt_version, started_at) "
+            "VALUES (gen_random_uuid(), %s, 'openrouter', %s, %s, 1000, 1, 1, 'ok', 'v', %s)",
+            (stage, STAGE_PRIMARIES[stage], model, at))
+    conn.commit()
+
+
+def test_status_shows_what_answered_each_stage_today(store_conn):
+    from src.scorer import _OPENROUTER_MODEL as primary
+    for _ in range(3):
+        _llm_call(store_conn, "scoring", primary)
+    for _ in range(2):
+        _llm_call(store_conn, "scoring", "liquid/lfm-2.5-2.6b:free")
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "OpenRouter calls today (Rome)" in text
+    scoring = next(line for line in text.splitlines() if "scoring" in line and "calls" in line)
+    assert "5 calls" in scoring and "60% by the primary" in scoring
+    assert "liquid/lfm-2.5-2.6b:free (2)" in scoring
+
+
+def test_the_watchdog_alerts_when_a_fallback_model_answers_a_stage(
+        store_conn, store_conn_factory, settings, tmp_path):
+    for name in settings.expected_services:
+        heartbeat.start(store_conn, name, now=NOW)
+        heartbeat.beat(store_conn, name, "running", now=NOW)
+    for _ in range(10):
+        _llm_call(store_conn, "scoring", "liquid/lfm-2.5-2.6b:free")
+    outbox = Outbox()
+    sent = watchdog.run(settings, outbox, connect_fn=lambda: store_conn_factory(store_conn),
+                        state_path=str(tmp_path / "state.json"), now=NOW)
+    assert len(sent) == 1
+    assert "scoring" in sent[0] and "liquid/lfm-2.5-2.6b:free" in sent[0]

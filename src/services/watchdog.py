@@ -19,6 +19,7 @@ from src.delivery.health import (
 )
 from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore.db import connect, store_url, utcnow
+from src.llm_fallback import load_guard_config, run_guard
 from src.telegram import send_message
 
 STATE_PATH = "data/watchdog_state.json"
@@ -62,6 +63,9 @@ def run(settings: DeliverySettings, send, *, connect_fn=lambda: connect(store_ur
         return []
     try:
         sent = run_health_check(conn, settings, send, now, silence_allowance)
+        # A fallback model answering a stage, at most one alert per stage per Rome
+        # day (src/llm_fallback.py).
+        sent.extend(run_guard(conn, load_guard_config(), send, now, settings.timezone))
         if _forget_store_down(state_path):
             text = "OK again: the job store is reachable"
             if send(text) is not False:
