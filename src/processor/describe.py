@@ -8,10 +8,15 @@ path keep the 30 minutes doubling to 12 hours backoff. The job expires after 7
 days of host refusals, or when the posting is over 30 days old. The title+company
 fallback is never used as a description.
 
-The queue is not swept tier by tier: a job past `description_urgent_after_hours`
-goes first whatever its tier, and otherwise the tiers take turns. See `_next_job`.
+The queue keeps the tier rotation of `_next_job`: a job past
+`description_urgent_after_hours` is guaranteed a share of the picks (one pick in
+`quota_one_in` per tier, run exactly as before), and the other picks take the tier
+whose turn it is and prefer the best priority class inside it
+(`src/processor/fetch_order.py`). Nothing is dropped, skipped or expired early;
+the pace and the number of requests are unaffected.
 """
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import requests
@@ -34,6 +39,37 @@ _WAITING = ("stage = 'seen' AND tier IS NOT NULL "
 # AccessExclusiveLock); the jobs table has no description-fetch time to derive it
 # from, because stage_changed_at moves on with every later stage.
 TURN_KEY = "description_turn:"
+# One kv_state row per tier holding how many picks that tier has made. It is per
+# tier so the floor share cannot stay aligned to one tier: with a single counter
+# and four waiting tiers, every quota pick landed on the same tier.
+PICKS_KEY = "description_pick_count:"
+
+# The tier whose last fetch attempt is oldest (a tier never served is oldest of
+# all). It decides the kind of the pick, so its counter is per tier.
+_HEAD_TIER_SQL = ("WITH waiting AS (SELECT tier, first_seen_at FROM jobs WHERE " + _WAITING + ") "
+                  "SELECT w.tier FROM waiting w LEFT JOIN kv_state k ON k.key = %s || w.tier "
+                  "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier LIMIT 1")
+_PICKS_SQL = "SELECT coalesce((value->>'n')::int, 0) FROM kv_state WHERE key = %s"
+# The floor pick: exactly the two queries this stage ran before the priority order.
+_URGENT_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " AND first_seen_at < %s "
+               "ORDER BY first_seen_at, tier, note_no LIMIT 1")
+# The tier rotation, with one extra sort key for the class pick. A floor pick that
+# finds no urgent job runs this too, without the `first_seen_at >= cutoff` guard the
+# old code needed: the urgent query already covered every job past the cutoff.
+_ROTATION_SQL = ("WITH waiting AS (SELECT id, tier, first_seen_at, note_no, description_class "
+                 "FROM jobs WHERE " + _WAITING + ") "
+                 "SELECT w.id FROM waiting w LEFT JOIN kv_state k ON k.key = %s || w.tier "
+                 "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier, {order} LIMIT 1")
+_ROTATION_ORDER = {"quota": "w.first_seen_at, w.note_no",
+                   "class": "w.description_class, w.first_seen_at, w.note_no"}
+
+
+@dataclass(frozen=True)
+class Pick:
+    """The next job to fetch, why it was chosen, and whose turn decided that."""
+    job: JobRow
+    kind: str      # "quota" (the floor share) or "class" (the priority class)
+    tier: int      # the head tier whose pick counter decided the kind
 
 
 def refusal_delay(attempts: int, cfg: ProcessorConfig) -> timedelta:
@@ -78,7 +114,7 @@ def description_overdue(cur, cfg: ProcessorConfig, now: datetime) -> bool:
 
     This is the pace's guard, not the queue order: it keeps its meaning (a description
     that is late may wait out the tick budget) and stays independent of
-    `description_urgent_after_hours`, which only decides who goes first."""
+    `description_urgent_after_hours`, which only decides the floor picks."""
     oldest = oldest_waiting_description(cur, now)
     return oldest is not None and now - oldest > timedelta(hours=cfg.description_deadline_hours)
 
@@ -106,39 +142,53 @@ def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
     return total
 
 
-def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> JobRow | None:
-    """The next job to fetch a description for, in two cheap queries.
-
-    1. A job past `description_urgent_after_hours` goes first whatever its tier,
-       oldest first, so nothing can miss the digest's 4-day target behind a backlog
-       in a busier tier.
-    2. Otherwise the tiers take turns: the tier whose last fetch attempt is oldest
-       goes first (a tier never served yet is oldest of all), then that tier's oldest
-       job; ties go to tier 1. This mirrors `claim_due_slice` in
-       `src/linkedin/walk.py`, so no tier can starve.
-
-    `ORDER BY tier, first_seen_at` gave tier 3 and tier 4 a turn only once tiers 1 and 2
-    were empty: on 2026-10-19 that left 936 tier-3 descriptions waiting, the oldest past
-    the 4-day target. The pace and the number of requests are unaffected.
-
-    Ties break on `note_no`, the insertion-order identity column, so the pick is stable
-    for jobs recorded in the same second (the previous query got that order from the
-    index scan, and a random UUID would reshuffle it on every call)."""
-    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
-    cur.execute(
-        f"SELECT id FROM jobs WHERE {_WAITING} AND first_seen_at < %s "
-        "ORDER BY first_seen_at, tier, note_no LIMIT 1", (now, cutoff))
+def _head_tier(cur, cfg: ProcessorConfig, now: datetime) -> int | None:
+    """The tier whose turn it is, or None when nothing is waiting for a description."""
+    cur.execute(_HEAD_TIER_SQL, (now, TURN_KEY))
     row = cur.fetchone()
-    if row is None:
-        cur.execute(
-            f"WITH waiting AS (SELECT id, tier, first_seen_at, note_no FROM jobs "
-            f"WHERE {_WAITING} AND first_seen_at >= %s) "
-            "SELECT w.id FROM waiting w "
-            "LEFT JOIN kv_state k ON k.key = %s || w.tier "
-            "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier, w.first_seen_at, "
-            "w.note_no LIMIT 1", (now, cutoff, TURN_KEY))
+    return row[0] if row else None
+
+
+def _picks_done(cur, tier: int) -> int:
+    """How many picks `tier` has made; a tier with no row yet starts at 0 (a floor pick)."""
+    cur.execute(_PICKS_SQL, (f"{PICKS_KEY}{tier}",))
+    row = cur.fetchone()
+    return row[0] if row else 0
+
+
+def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> Pick | None:
+    """The next job to fetch a description for, by kind, inside the tier rotation.
+
+    The head tier (the one whose last fetch attempt is oldest, ties to the lowest
+    tier) decides the kind from its own counter:
+
+    * a **floor pick** (one in `cfg.fetch_order.quota_one_in`) is today's pick: a job
+      past `description_urgent_after_hours` goes first whatever its tier, oldest
+      first, else that tier's oldest job. This is the 60-hour rule as a guaranteed
+      share of the fetches, not as absolute priority.
+    * a **class pick** takes the same tier rotation (the turn key first) and then the
+      best priority class, then the oldest job. It has no urgent cutoff, so a fresh
+      high-value job can precede an aged low-value one.
+
+    Ties break on `note_no` so the pick is stable for jobs recorded in the same
+    second. With the order disabled every pick is a floor pick, i.e. exactly the
+    behaviour before this order existed.
+    """
+    head = _head_tier(cur, cfg, now)
+    if head is None:
+        return None
+    kind = "quota" if cfg.fetch_order.quota_turn(_picks_done(cur, head)) else "class"
+    row = None
+    if kind == "quota":
+        cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
+        cur.execute(_URGENT_SQL, (now, cutoff))
         row = cur.fetchone()
-    return load_job(cur, row[0]) if row else None
+    if row is None:
+        cur.execute(_ROTATION_SQL.format(order=_ROTATION_ORDER[kind]), (now, TURN_KEY))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return Pick(load_job(cur, row[0]), kind, head)
 
 
 def _record_turn(cur, tier: int) -> None:
@@ -156,6 +206,16 @@ def _record_turn(cur, tier: int) -> None:
         (f"{TURN_KEY}{tier}",))
 
 
+def _record_pick(cur, tier: int) -> None:
+    """Count a pick against `tier`'s floor share. One `kv_state` row per tier, plain
+    upsert: no new column, and deleting the rows only resets the share's phase."""
+    cur.execute(
+        "INSERT INTO kv_state (key, value, updated_at) VALUES (%s, jsonb_build_object('n', 1), "
+        "clock_timestamp()) ON CONFLICT (key) DO UPDATE SET value = jsonb_build_object('n', "
+        "coalesce((kv_state.value->>'n')::int, 0) + 1), updated_at = clock_timestamp()",
+        (f"{PICKS_KEY}{tier}",))
+
+
 def _linkedin_id(cur, job_id) -> str | None:
     cur.execute("SELECT source_job_id FROM sightings WHERE job_id = %s AND source = 'linkedin' "
                 "ORDER BY seen_at LIMIT 1", (job_id,))
@@ -168,9 +228,10 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     """Fetch one description. Returns None when no job is waiting for one, else one
     of 'described', 'throttled', 'refused', 'gone' or 'unreadable'."""
     with conn.cursor() as cur:
-        job = _next_job(cur, cfg, now)
-        if job is None:
+        pick = _next_job(cur, cfg, now)
+        if pick is None:
             return None
+        job = pick.job
         overdue = description_overdue(cur, cfg, now)
         linkedin_id = _linkedin_id(cur, job.id)
         if linkedin_id is None:
@@ -184,8 +245,10 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
             # requests. Leave the job exactly as it is; the next tick retries it.
             return "deferred"
         # Any attempt is this tier's turn in the rotation, whatever the outcome: a tier
-        # whose fetches keep being throttled must not keep taking the next turn.
+        # whose fetches keep being throttled must not keep taking the next turn. The
+        # floor share counts against the tier whose turn decided the kind.
         _record_turn(cur, job.tier)
+        _record_pick(cur, pick.tier)
         if result.status == "ok":
             cur.execute(
                 "UPDATE jobs SET description = %s, description_status = 'ok', "
