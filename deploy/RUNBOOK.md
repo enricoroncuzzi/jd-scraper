@@ -196,7 +196,10 @@ loses nothing.
   models, the primary and the counts. `config/llm_fallback.json` holds both numbers, and
   `enabled: false` switches the alert off (the status line stays). A call that never answered is
   counted as unanswered and does not trigger it: a dead stage is a stage failure, not a fallback
-  answer.
+  answer. While the pins are still broken the first watchdog run after a deploy alerts once for
+  each stage; that is the guard working. The legacy `combined` stage is not guarded (it is off as
+  shipped in `merged_call.enabled`); switching it on needs it added to `STAGE_PRIMARIES` in
+  `src/llm_fallback.py`, or the guard goes blind for whatever that stage replaces.
 - Remote-check verdicts (2026-10-18): each tier digest now has up to three sections, "Confirmed
   full-remote", "Remote, eligibility to check" (a short advice line says what to check) and
   "Work mode not stated". Only the last one is withheld from Telegram strong-match alerts; it

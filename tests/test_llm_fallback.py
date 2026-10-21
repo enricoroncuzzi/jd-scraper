@@ -206,3 +206,14 @@ def test_a_stage_with_nothing_answered_never_crosses_the_threshold(store_conn):
     # the share must never divide by zero: GuardConfig is public.
     call(store_conn, "scoring", None, outcome="error")
     assert run_guard(store_conn, GuardConfig(enabled=True, min_calls=0), Outbox(), NOW, ROME) == []
+
+
+def test_the_status_line_names_an_answering_fallback_once(store_conn):
+    # The incident shape: every call answered by the fallback. The line must not
+    # print the same model twice.
+    for _ in range(10):
+        call(store_conn, "scoring", FALLBACK)
+    lines = format_usage_lines(stage_usages(store_conn, NOW, ROME), CFG)
+    scoring = next(line for line in lines if "scoring" in line)
+    assert scoring.count(FALLBACK) == 1
+    assert "0% by the primary" in scoring

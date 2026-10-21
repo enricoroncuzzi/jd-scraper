@@ -19,7 +19,7 @@ Nothing here changes a pin, a fallback list or a prompt: measuring only.
 """
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from src.remote_verifier import _OPENROUTER_MODEL as _VERIFICATION_PRIMARY
@@ -109,20 +109,24 @@ def load_guard_config(path: str = CONFIG_PATH) -> GuardConfig:
     return GuardConfig(enabled=enabled, share=float(share), min_calls=min_calls)
 
 
-def _zone_name(zone) -> str:
-    return getattr(zone, "key", None) or str(zone)
+def _day_bounds(day: date, zone) -> tuple[datetime, datetime]:
+    """[start, end) of the calendar day in the operator's zone, so the day filter
+    stays a plain range on llm_calls.started_at and keeps its index."""
+    start = datetime(day.year, day.month, day.day, tzinfo=zone)
+    return start, start + timedelta(days=1)
 
 
 def stage_usage(conn, stage: str, now: datetime, zone=ROME) -> StageUsage:
     """Today's OpenRouter calls for one stage, grouped by the model that answered."""
     primary = STAGE_PRIMARIES[stage]
+    start, end = _day_bounds(now.astimezone(zone).date(), zone)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT response_model, count(*) FROM llm_calls "
             "WHERE provider = 'openrouter' AND stage = %s "
-            "AND (started_at AT TIME ZONE %s)::date = %s "
+            "AND started_at >= %s AND started_at < %s "
             "GROUP BY response_model",
-            (stage, _zone_name(zone), now.astimezone(zone).date()),
+            (stage, start, end),
         )
         rows = cur.fetchall()
     calls = sum(count for _model, count in rows)
@@ -205,10 +209,12 @@ def format_usage_lines(usages: list[StageUsage], config: GuardConfig) -> list[st
         if usage.unanswered:
             parts.append(f"{usage.unanswered} unanswered")
         parts.append(f"{round(100 * usage.primary_share)}% by the primary")
-        if usage.top_model is not None:
-            model, count = usage.top_model
-            parts.append(f"top answering model {model} ({count})")
-        if usage.fallbacks:
+        top = usage.top_model
+        if top is not None:
+            parts.append(f"top answering model {top[0]} ({top[1]})")
+        if usage.fallbacks and (top is None or top[0] == usage.primary):
+            # A fallback that is already the top answering model is named above;
+            # this clause only adds the best of the models behind the primary.
             model, count = usage.fallbacks[0]
             parts.append(f"fallback {model} ({count})")
         lines.append(f"  {usage.stage:<12} " + ", ".join(parts))

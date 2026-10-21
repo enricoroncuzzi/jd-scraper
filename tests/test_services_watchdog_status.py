@@ -1,3 +1,6 @@
+import json
+import subprocess
+import sys
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -297,3 +300,42 @@ def test_the_watchdog_alerts_when_a_fallback_model_answers_a_stage(
                         state_path=str(tmp_path / "state.json"), now=NOW)
     assert len(sent) == 1
     assert "scoring" in sent[0] and "liquid/lfm-2.5-2.6b:free" in sent[0]
+
+
+def test_a_failing_guard_does_not_stop_the_health_check(
+        store_conn, store_conn_factory, settings, tmp_path, monkeypatch, capsys):
+    from src import llm_fallback
+    for name in settings.expected_services:
+        heartbeat.start(store_conn, name, now=NOW)
+        heartbeat.beat(store_conn, name, "running",
+                       now=NOW if name != "deliver" else NOW - timedelta(hours=2))
+    store_conn.commit()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("the guard exploded")
+    monkeypatch.setattr(llm_fallback, "run_guard", boom)
+
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"store_down_sent_at": NOW.isoformat()}))
+    outbox = Outbox()
+    sent = watchdog.run(settings, outbox, connect_fn=lambda: store_conn_factory(store_conn),
+                        state_path=str(path), now=NOW)
+    # The health alerts still went out and the store-down note still cleared.
+    assert len(sent) == 2
+    assert "deliver has been silent for 2h00m" in sent[0]
+    assert sent[1] == "OK again: the job store is reachable"
+    assert not path.exists()
+    assert "fallback guard failed: RuntimeError: the guard exploded" in capsys.readouterr().err
+
+
+def test_the_watchdog_start_up_does_not_load_the_llm_stack():
+    # The watchdog is the safety net: an import failure in the LLM stack (a renamed
+    # pin, a dependency missing between git pull and pip install) must not stop it.
+    script = (
+        "import sys, src.services.watchdog; print(sorted(m for m in "
+        "('src.llm_fallback', 'src.scorer', 'src.remote_verifier', 'src.tailor.generate', "
+        "'openai', 'langchain_core') if m in sys.modules))"
+    )
+    result = subprocess.run([sys.executable, "-c", script], cwd=".", capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"

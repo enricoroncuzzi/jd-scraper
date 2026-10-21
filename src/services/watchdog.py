@@ -2,10 +2,11 @@
 
 It lives outside the services it watches, so it can report a dead `deliver`. It sends
 Telegram alerts when a service has been silent for over an hour, a daily source has
-missed its run or ended in error, or no LinkedIn request has succeeded for 24 h of
-open time (src/delivery/health.py), and when the job store itself cannot be reached,
-which it can only remember in a local file because the database that normally holds
-its ledger is the thing that is down.
+missed its run or ended in error, no LinkedIn request has succeeded for 24 h of open
+time (src/delivery/health.py), a fallback model is answering a stage's OpenRouter
+calls (src/llm_fallback.py), and when the job store itself cannot be reached, which
+it can only remember in a local file because the database that normally holds its
+ledger is the thing that is down.
 """
 import json
 import os
@@ -19,7 +20,6 @@ from src.delivery.health import (
 )
 from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore.db import connect, store_url, utcnow
-from src.llm_fallback import load_guard_config, run_guard
 from src.telegram import send_message
 
 STATE_PATH = "data/watchdog_state.json"
@@ -64,8 +64,16 @@ def run(settings: DeliverySettings, send, *, connect_fn=lambda: connect(store_ur
     try:
         sent = run_health_check(conn, settings, send, now, silence_allowance)
         # A fallback model answering a stage, at most one alert per stage per Rome
-        # day (src/llm_fallback.py).
-        sent.extend(run_guard(conn, load_guard_config(), send, now, settings.timezone))
+        # day (src/llm_fallback.py). Imported here and caught whole: the guard reads
+        # the LLM stack, and this watchdog is the safety net that must survive that
+        # stack failing to import or query - a guard fault may never cost a health
+        # alert or the store-down note below.
+        try:
+            from src.llm_fallback import load_guard_config, run_guard
+            sent.extend(run_guard(conn, load_guard_config(), send, now, settings.timezone))
+        except Exception as exc:  # noqa: BLE001 - the guard must not stop the health check
+            print(f"[watchdog] fallback guard failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+            conn.rollback()
         if _forget_store_down(state_path):
             text = "OK again: the job store is reachable"
             if send(text) is not False:
