@@ -7,7 +7,10 @@ import pytest
 from src.jobstore.sightings import CardInput, record_sighting
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
-from src.processor.remote import apply_deterministic_rules
+from src.processor.llm_stages import LlmKeys
+from src.processor.remote import (
+    SOURCE_HINT_REASON, apply_deterministic_rules, run_remote_batches, structured_verdict,
+)
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 FILLER = ("We build retrieval augmented generation pipelines with Python, PyTorch and FastAPI, "
@@ -87,6 +90,42 @@ def test_the_source_hint_settles_hybrid_before_any_text_rule(store_conn, cfg):
     job = _described(store_conn, cfg, 1, FILLER, remote_hint="hybrid")
     assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
     assert _row(store_conn, job)[:3] == ("filtered_out", "remote_rejected_structured", "rejected")
+
+
+def test_a_silent_text_with_a_remote_hint_is_advised(store_conn, cfg):
+    job = _described(store_conn, cfg, 6, FILLER, remote_hint="remote")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
+    stage, _reason, verdict, stored, advice = _row(store_conn, job)
+    assert (stage, verdict) == ("described", "advised")
+    assert stored == SOURCE_HINT_REASON
+    assert advice == "the source marks it remote"
+
+
+def test_a_silent_text_with_a_worldwide_hint_in_tier_three_carries_the_eligibility_advice(store_conn, cfg):
+    job = _described(store_conn, cfg, 7, FILLER, location="Berlin, Germany",
+                     tier_hint=3, remote_hint="remote_worldwide")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
+    assert _row(store_conn, job)[2:5] == ("advised", SOURCE_HINT_REASON,
+                                          "the source marks it remote - check eligibility")
+
+
+def test_a_hint_never_overrides_a_rule_that_already_decided(store_conn, cfg):
+    job = _described(store_conn, cfg, 8, FILLER + "This role is fully remote. Remote (UK).",
+                     location="London, United Kingdom", tier_hint=3, remote_hint="remote")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 1
+    assert _row(store_conn, job)[2::2] == ("advised", "remote, limited to the UK - check eligibility")
+
+
+def test_a_short_description_with_a_hint_still_goes_to_the_model(store_conn, cfg):
+    job = _described(store_conn, cfg, 9, "Python and LLM agents.", remote_hint="remote")
+    assert apply_deterministic_rules(store_conn, cfg, NOW) == 0
+    assert _row(store_conn, job)[2] is None
+
+
+def test_the_hint_advice_can_be_switched_off(store_conn, cfg):
+    job = _described(store_conn, cfg, 10, FILLER, remote_hint="remote")
+    assert apply_deterministic_rules(store_conn, replace(cfg, remote_hint_advice=False), NOW) == 1
+    assert _row(store_conn, job)[2] == "not_stated"
 
 
 def test_the_cloud_hybrid_guard_can_be_switched_off(store_conn, cfg):

@@ -15,6 +15,7 @@
   "title_prefilter": {"1": true, "2": true, "3": true, "4": true},
   "remote_rules": {"enabled": true, "occasional_presence": true, "cloud_hybrid": true},
   "structured_remote": {"enabled": true},
+  "remote_hint": {"advised_when_silent": true},
   "merged_call": {"enabled": false},
   "description_order": {
     "enabled": true,

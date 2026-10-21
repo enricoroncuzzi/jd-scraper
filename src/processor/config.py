@@ -60,6 +60,9 @@ class ProcessorConfig:
     # Technology-only "hybrid" wording (hybrid cloud, hybrid environments) is not
     # a work mode. Off restores the pre-2026-10-21 rule behaviour.
     cloud_hybrid_guard: bool = True
+    # A source "remote"/"remote_worldwide" hint plus a silent description is
+    # advised, not not_stated: the source's own field is evidence.
+    remote_hint_advice: bool = True
     merged_call_enabled: bool = False
     # Which waiting description is worth fetching next (src/processor/fetch_order.py).
     fetch_order: FetchOrder = DEFAULT_FETCH_ORDER
@@ -124,6 +127,8 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
         occasional_presence_guard=bool(
             data.get("remote_rules", {}).get("occasional_presence", True)),
         cloud_hybrid_guard=bool(data.get("remote_rules", {}).get("cloud_hybrid", True)),
+        remote_hint_advice=bool(
+            data.get("remote_hint", {}).get("advised_when_silent", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
     )

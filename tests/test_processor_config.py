@@ -80,3 +80,14 @@ def test_the_cloud_hybrid_guard_is_on_and_configurable(tmp_path):
     path = tmp_path / "processor.json"
     path.write_text(json.dumps(data))
     assert load_processor_config(str(path)).cloud_hybrid_guard is False
+
+
+def test_the_remote_hint_advice_is_on_and_configurable(tmp_path):
+    import json
+
+    assert load_processor_config().remote_hint_advice is True
+    data = json.load(open("config/processor.json"))
+    data["remote_hint"]["advised_when_silent"] = False
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    assert load_processor_config(str(path)).remote_hint_advice is False

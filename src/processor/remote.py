@@ -22,10 +22,17 @@ from src.processor.llm_stages import (
 from src.processor.llm_sink import batch_context
 from src.processor.state import defer, set_stage
 from src.remote_rules import RULE_PREFIX, classify
-from src.remote_verdicts import REJECTED
+from src.remote_verdicts import ADVISED, NOT_STATED, REJECTED
 from src.remote_verifier import _DEGRADED_REASON, verify_offers
 
 STRUCTURED_REASON = "Source states the work mode."
+SOURCE_REMOTE_HINTS = ("remote", "remote_worldwide")
+SOURCE_HINT_REASON = "Source marks the job remote; the text does not state the work mode."
+
+
+def source_hint_advice(require_italy_eligibility: bool) -> str:
+    return ("the source marks it remote - check eligibility" if require_italy_eligibility
+            else "the source marks it remote")
 
 
 def structured_verdict(remote_hint: str | None) -> tuple[str, str] | None:
@@ -67,7 +74,12 @@ def apply_deterministic_rules(conn, cfg: ProcessorConfig, now: datetime) -> int:
                         occasional_guard=cfg.occasional_presence_guard,
                         cloud_hybrid_guard=cfg.cloud_hybrid_guard)
                     if ruled is not None:
-                        verdict = (ruled.verdict, ruled.reason, ruled.advice)
+                        if (ruled.verdict == NOT_STATED and cfg.remote_hint_advice
+                                and row.remote_hint in SOURCE_REMOTE_HINTS):
+                            verdict = (ADVISED, SOURCE_HINT_REASON,
+                                       source_hint_advice(policy.require_italy_eligibility))
+                        else:
+                            verdict = (ruled.verdict, ruled.reason, ruled.advice)
                         if ruled.reason.startswith(RULE_PREFIX):
                             reason_code = "remote_rejected_rule"
             if verdict is None:
