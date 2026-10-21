@@ -120,6 +120,19 @@ def resolve_country(location: str) -> str | None:
     return None
 
 
+def is_country_only(location: str) -> bool:
+    """True when the card names a country and nothing else.
+
+    On LinkedIn's guest surface this is the remote signal: the search card drops
+    the "(Remote)" suffix, and a card whose location is exactly a country name is
+    the only one that carries the signal. Measured on the current pipeline, those
+    cards end remote-confirmed or advised 70% of the time against 4.2% for the
+    rest, so it is a strong ordering prior. It is only ever an ordering signal
+    here, never a skip: a city-level card is sometimes a fully remote job too.
+    """
+    return bool(location) and "," not in location and resolve_country(location) is not None
+
+
 def is_in_scope(location: str, allowed: frozenset[str] | None) -> bool:
     """True when this offer belongs to a tier whose scope is `allowed`.
 
