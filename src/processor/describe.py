@@ -158,7 +158,7 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     result = fetch_description(pace, linkedin_id, overdue=overdue, get=get, sleep=sleep)
     with conn.cursor() as cur:
         if result.status == "deferred":
-            # The schedule gate closed (a configured closed window or the daily cap) between
+            # The schedule gate closed (a configured closed window) between
             # requests. Leave the job exactly as it is; the next tick retries it.
             return "deferred"
         # Any attempt is this tier's turn in the rotation, whatever the outcome: a tier
@@ -214,8 +214,8 @@ def run_descriptions(conn, pace, cfg: ProcessorConfig, now: datetime, *,
     `skip_if_wait_over` is for a tick that already has other work: when the pace says the
     next LinkedIn turn is further away than that many seconds, do not queue for it.
 
-    The schedule gate is checked first: when LinkedIn is closed (a configured closed window, the shared
-    daily cap) the whole stage is skipped, so the rest of the tick's cheap
+    The schedule gate is checked first: when LinkedIn is closed (a configured closed window)
+    the whole stage is skipped, so the rest of the tick's cheap
     checks, verification and scoring still run."""
     if not pace.gate().open:
         return 0

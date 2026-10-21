@@ -224,12 +224,15 @@ configured in `config/schedule.json`:
 |---|---|---|
 | `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
 | `closed_hours` | `null` | no closed window: LinkedIn runs around the clock (set `[0, 6]` to restore the 00:00-06:00 Rome pause) |
-| `daily_caps.weekday` / `.weekend` | `1400` / `800` | shared cap on search + description requests per Rome day |
 | `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | the fixed base spacing, in seconds |
 | `pace.jitter` | `0.2` | every sleep is jittered +/-20 % |
 | `pace.description_turn_share` | `0.6667` | descriptions get this share of the turns when a search also waits (realised as a run of `round(share/(1-share))` = 2) |
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
+
+There is no daily request cap: an old or rolled-back `config/schedule.json` that still carries
+the removed `daily_caps` block loads anyway, the block is ignored and a `[schedule]` line names
+it, so a stale config never stops the service. Delete it when you next edit the file.
 
 `config/collector.json` sets the per-slice cadence and the page caps:
 
@@ -250,12 +253,11 @@ repeats at most once a day), and `config/sources.json` `spacing_seconds` (`[1, 2
 `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
 `max_wait_seconds` 300, `run_budget_seconds` 1700).
 
-The fixed pace has a floor derived from the cap and the open hours: with no closed window that
-is 24 h / 1400 = 62 s weekday and 24 h / 800 = 108 s weekend (restore `closed_hours`: `[0, 6]`
-and it becomes 18 h / 1400 = 46 s and 18 h / 800 = 81 s). The base is a constant 75 s / 110 s,
-never below the floor and never widened or tightened: a finished day changes nothing (the
-2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut throughput).
-A refusal honours
+The base is a constant 75 s / 110 s, jittered +/-20 %, and nothing clamps it: there is no
+request cap, so open hours do not set a floor and a finished day changes nothing (the
+2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut
+throughput). The shared counter still records each request per Rome calendar day, but it is
+operator information: it never closes the gate. A refusal honours
 `Retry-After` or waits 60 s, doubling each consecutive refusal to a 30 min cap, and the first
 clean response resets it; the spacing around it does not move. When both a search and a
 description are waiting, descriptions take two of every three turns (`pace.description_turn_share`,
@@ -263,7 +265,8 @@ realised as a run of two); a lone waiting kind always takes the turn. Once the o
 job is over `description_deadline_hours` old, an overdue description that the share says takes
 the next turn may spend more than one processor tick waiting for it. If a walk is refused three
 times in a row it stops, keeps its resume point, and the collector moves to the next due slice.
-The gate now closes only for the daily cap: there is no night window as shipped.
+The gate closes only for a configured `closed_hours` window: there is no night window as
+shipped and no daily cap.
 
 Which description goes next is decided by `src/processor/describe.py` `_next_job`, and it does
 not sweep the tiers in order: a job past `description_urgent_after_hours` (60 h) goes first
@@ -273,18 +276,16 @@ attempt is oldest goes next, then that tier's oldest job, ties to tier 1). The p
 column; deleting those rows just restarts the rotation from tier 1. The pace and the
 number of requests are unaffected, only who gets the turn.
 
-A flat 110 s over 24 h would be about 785 requests. The 108 s floor clamps the low jitter draws
-(110 x 0.8 = 88 s becomes 108 s), so the realised mean spacing is about 114.5 s and the weekend
-does about 754 requests, comfortably under the 800 cap, so the cap is not reached early; only if
-every jitter draw bottomed out at the 108 s floor would the 800th request land exactly at Rome
-midnight, when the counter resets. The evening is never stopped by the cap.
+A flat 110 s over 24 h would be about 785 requests; with the +/-20 % jitter the mean stays at
+110 s, so the weekend still does about 785 and the weekday about 1,152 at 75 s. Nothing stops
+the evening: the only limit on volume is the spacing itself.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
 `*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
 and at least 60 min clear of the 03:00 and 04:00 daily starts, so a resume run can never hold a
 source's lock when its daily run starts.
 
-`config/schedule.json` is read once when a service starts, so a change to a cap, the closed
+`config/schedule.json` is read once when a service starts, so a change to the closed
 window or the pace needs the three LinkedIn users restarted:
 
 ```bash
@@ -292,18 +293,18 @@ sudo systemctl restart jds-collect-linkedin jds-process jds-deliver
 ```
 
 Do that restart back to back, not one service per hour: the shared counter starts at its first
-restart on the new code, so a service still on the old code issues requests that are neither
-gated nor counted.
+restart on the new code, so a service still on the old code writes requests the new code never
+counts.
 
-Read the gate and the pace with `python -m src.services.status`. The gate line is one of:
+Read the gate and the pace with `python -m src.services.status`. The gate line reads:
 
 ```
-LinkedIn gate: 342/1400 requests today (weekday), window open
-LinkedIn gate: 1400/1400 requests today (weekday), daily cap reached
+LinkedIn gate: 342 requests today (weekday), window open
 ```
 
-With a restored `closed_hours` the open line also appears as
-`LinkedIn gate: 2/800 requests today (weekend), window closed until 06:00 Rome` during the pause.
+With a restored `closed_hours` the closed line appears as
+`LinkedIn gate: 2 requests today (weekend), window closed until 06:00 Rome` during the pause.
+The count resets at Rome midnight; it is reported, never enforced, and the line has no cap.
 
 The pace line shows the fixed spacing for both windows, the day's refusals, the refusals in a
 row and the last success, and adds any wait in Rome time:

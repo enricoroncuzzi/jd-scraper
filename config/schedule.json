@@ -1,10 +1,6 @@
 {
   "timezone": "Europe/Rome",
   "closed_hours": null,
-  "daily_caps": {
-    "weekday": 1400,
-    "weekend": 800
-  },
   "pace": {
     "start_spacing_seconds": {"weekday": 75, "weekend": 110},
     "jitter": 0.2,

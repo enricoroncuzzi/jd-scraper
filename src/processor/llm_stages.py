@@ -50,9 +50,11 @@ def due_batch(rows: list[JobRow], batch_size: int, flush_after_minutes: int,
 
 
 def waiting_rows(cur, condition: str, params: tuple, now: datetime) -> list[JobRow]:
+    """Rows due for the next batch of a stage, oldest first. `id` breaks a
+    `first_seen_at` tie so a batch's order does not depend on the scan order."""
     cur.execute(
         f"{SELECT_JOB} WHERE stage = 'described' AND next_attempt_at <= %s AND {condition} "
-        "ORDER BY tier, first_seen_at", (now, *params))
+        "ORDER BY tier, first_seen_at, id", (now, *params))
     return [JobRow(*row) for row in cur.fetchall()]
 
 

@@ -7,7 +7,7 @@ from src.linkedin.pace import (
     refusal_wait_seconds, roll_day,
 )
 from src.linkedin.schedule import (
-    PacePolicy, RefusalPolicy, ScheduleConfig, floor_spacing_seconds, start_spacing_seconds,
+    PacePolicy, RefusalPolicy, ScheduleConfig, start_spacing_seconds,
 )
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
@@ -23,16 +23,17 @@ def test_the_fixed_spacing_is_75s_weekday_and_110s_weekend():
     assert start_spacing_seconds(cfg, "weekend") == 110
 
 
-def test_each_spacing_is_jittered_twenty_percent_and_never_below_the_floor():
+def test_each_spacing_is_the_base_jittered_by_twenty_percent():
     cfg, low, high = ScheduleConfig(), (lambda a, b: a), (lambda a, b: b)
-    # With no closed window the cap-derived floor is 24 h / cap: 62 s weekday, 108 s weekend.
-    assert next_spacing(cfg, WED_NOON, low) == pytest.approx(24 * 3600 / 1400)
+    assert next_spacing(cfg, WED_NOON, low) == pytest.approx(60.0)
     assert next_spacing(cfg, WED_NOON, high) == pytest.approx(90.0)
-    assert next_spacing(cfg, SAT_NOON, low) == pytest.approx(108.0)
+    assert next_spacing(cfg, SAT_NOON, low) == pytest.approx(88.0)
     assert next_spacing(cfg, SAT_NOON, high) == pytest.approx(132.0)
-    # A config that starts under the cap-derived floor still cannot outrun the cap.
-    slow_cap = ScheduleConfig(pace=PacePolicy(start_weekday_seconds=1.0))
-    assert next_spacing(slow_cap, WED_NOON, low) == pytest.approx(floor_spacing_seconds(cfg, "weekday"))
+    # Nothing clamps a configured base from below: there is no cap to defend.
+    slow = ScheduleConfig(pace=PacePolicy(start_weekday_seconds=1.0,
+                                          start_weekend_seconds=2.0))
+    assert next_spacing(slow, WED_NOON, low) == pytest.approx(0.8)
+    assert next_spacing(slow, SAT_NOON, low) == pytest.approx(1.6)
 
 
 def test_a_stored_base_or_nudge_from_the_old_code_cannot_slow_the_fixed_pace():
@@ -109,10 +110,11 @@ def test_a_stale_marker_is_ignored():
     assert must_yield(state, "description", NOW_TS, run_cap=2) is False
 
 
-def test_the_gate_closes_only_for_the_daily_cap_with_no_closed_window():
+def test_the_gate_stays_open_all_day_with_no_closed_window():
     cfg = ScheduleConfig()
     assert evaluate_gate(cfg, WED_NOON, requests_today=0).reason == "open"
-    assert evaluate_gate(cfg, WED_NOON, requests_today=1400).reason == "daily_cap"
+    assert evaluate_gate(cfg, WED_NOON, requests_today=1400).reason == "open"
+    assert evaluate_gate(cfg, WED_NOON, requests_today=999999).reason == "open"
     night = datetime(2026, 10, 14, 1, 0, tzinfo=timezone.utc)  # 03:00 Rome
     assert evaluate_gate(cfg, night, requests_today=0).reason == "open"
 

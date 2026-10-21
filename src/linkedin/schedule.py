@@ -1,9 +1,10 @@
-"""The LinkedIn schedule: the optional closed window, the shared daily request budget and the
-steady-pace policy, loaded from config/schedule.json (spec section 4).
+"""The LinkedIn schedule: the optional closed window and the steady-pace policy, loaded
+from config/schedule.json (spec section 4).
 
 The collector and the processor share one PaceBudget on host `linkedin.com`, so
 this module holds only the policy: what the Rome clock and the per-day counters
-mean, and the numbers the pace is built from. Enforcement lives in
+mean, and the numbers the pace is built from. There is no daily request cap; the
+counters are operator information only. Enforcement lives in
 src/linkedin/pace.py, the single choke point every LinkedIn request passes through.
 """
 import json
@@ -42,21 +43,12 @@ class RefusalPolicy:
 class ScheduleConfig:
     timezone: str = "Europe/Rome"
     closed_hours: tuple[int, int] | None = None
-    weekday_cap: int = 1400
-    weekend_cap: int = 800
     pace: PacePolicy = PacePolicy()
     refusals: RefusalPolicy = RefusalPolicy()
 
     @property
     def zone(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
-
-
-def _require_int(data: dict, key: str, where: str, *, minimum: int) -> int:
-    value = data.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
-        raise ValueError(f"{where}.{key} must be an integer >= {minimum}, got {value!r}")
-    return value
 
 
 def _require_number(data: dict, key: str, where: str, *, minimum: float = 0.0,
@@ -146,11 +138,11 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
                              "with 0 <= start < end <= 24 and a window shorter than 24 hours")
         closed_hours = (closed[0], closed[1])
 
-    caps = data.get("daily_caps")
-    if not isinstance(caps, dict):
-        raise ValueError("schedule.daily_caps must be an object")
-    weekday_cap = _require_int(caps, "weekday", "schedule.daily_caps", minimum=1)
-    weekend_cap = _require_int(caps, "weekend", "schedule.daily_caps", minimum=1)
+    if data.pop("daily_caps", None) is not None:
+        # A stale or rolled-back config may still carry the removed caps: ignore them and
+        # never fail, so an old config can never stop the service.
+        print("[schedule] config/schedule.json still carries the removed daily_caps block; "
+              "it is ignored, delete it")
 
     if "breaker" in data:
         raise ValueError("schedule.breaker was removed (design 2026-10-16); delete it")
@@ -161,8 +153,6 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
     return ScheduleConfig(
         timezone=timezone_name,
         closed_hours=closed_hours,
-        weekday_cap=weekday_cap,
-        weekend_cap=weekend_cap,
         pace=_load_pace(data),
         refusals=_load_refusals(data),
     )
@@ -185,11 +175,6 @@ def window_name(schedule: ScheduleConfig, now: datetime | None = None) -> str:
     return "weekend" if is_weekend(schedule, now) else "weekday"
 
 
-def daily_cap(schedule: ScheduleConfig, now: datetime | None = None) -> int:
-    """The shared search+description request cap for the Rome day `now` falls in."""
-    return schedule.weekend_cap if is_weekend(schedule, now) else schedule.weekday_cap
-
-
 def in_closed_window(schedule: ScheduleConfig, now: datetime | None = None) -> bool:
     """Rome hours [start, end) when config sets a closed window, else False.
     The shipped config sets none, so LinkedIn runs around the clock."""
@@ -203,23 +188,6 @@ def requests_today_for(day: date | None, count: int, schedule: ScheduleConfig,
                        now: datetime | None = None) -> int:
     """A stored counter is only today's counter when the stored day is today."""
     return count if day == local_day(schedule, now) else 0
-
-
-def open_hours_per_day(schedule: ScheduleConfig) -> int:
-    """Hours of every day the gate is open: all 24 unless config sets a closed window."""
-    if schedule.closed_hours is None:
-        return HOURS_PER_DAY
-    start, end = schedule.closed_hours
-    return HOURS_PER_DAY - (end - start)
-
-
-def _cap_for_window(schedule: ScheduleConfig, window: str) -> int:
-    return schedule.weekend_cap if window == "weekend" else schedule.weekday_cap
-
-
-def floor_spacing_seconds(schedule: ScheduleConfig, window: str) -> float:
-    """The fastest steady pace the cap allows: open seconds divided by the cap."""
-    return open_hours_per_day(schedule) * 3600 / _cap_for_window(schedule, window)
 
 
 def start_spacing_seconds(schedule: ScheduleConfig, window: str) -> float:
