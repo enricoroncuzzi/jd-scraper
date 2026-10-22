@@ -4,7 +4,7 @@ import pytest
 
 from src.linkedin.windows import (
     EMPTY_SLICE_INTERVAL_SECONDS, FIRST_WALK_WINDOW_SECONDS, MARGIN_SECONDS, MAX_WINDOW_SECONDS,
-    RETRY_SOON_SECONDS, f_tpr, next_due, next_interval, window_seconds,
+    RETRY_SOON_SECONDS, STOPPED_REASON, f_tpr, next_due, next_interval, window_seconds,
 )
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
@@ -68,3 +68,13 @@ def test_an_unfinished_walk_returns_in_30_minutes_and_keeps_the_interval(reason)
 
 def test_a_finished_walk_is_due_after_its_interval():
     assert next_due(NOW, 48 * H, "end_of_results") == NOW + timedelta(hours=48)
+
+
+def test_a_stopped_walk_is_due_at_once_and_keeps_its_interval():
+    """A deploy stop is not the slice's fault: it resumes at the next start, the cadence
+    is untouched, and it never counts as empty (which would push it to daily)."""
+    assert next_due(NOW, 24 * H, STOPPED_REASON) == NOW
+    assert next_interval(base=48 * H, current=24 * H, stop_reason=STOPPED_REASON,
+                         consecutive_empty=0) == 24 * H
+    assert next_interval(base=48 * H, current=24 * H, stop_reason=STOPPED_REASON,
+                         consecutive_empty=3) == 24 * H

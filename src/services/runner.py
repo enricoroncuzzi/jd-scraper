@@ -1,10 +1,14 @@
 """The loop every long-running service shares: heartbeat, graceful stop, crash isolation.
 
 A service is `tick(conn) -> Tick`, called again and again. SIGTERM (what
-`systemctl stop` sends) is honoured between ticks, so a deploy never interrupts
-a tick halfway. An exception in a tick is printed, rolled back, and retried
-with backoff; it never ends the service. systemd's Restart= only has to cover
-the process itself dying.
+`systemctl stop` sends) sets one `threading.Event`, and the loop honours it between
+ticks, so a deploy never interrupts a tick halfway. A tick that can run longer than a
+few seconds - the LinkedIn collector's tick is one whole paced walk, up to 90 requests
+at 75 s spacing - must take that same event (`stop=`) and consult it, and sleep through
+`sleep_unless_stopped`, or the stop would only be honoured when the tick is done and
+systemd would kill the process at `TimeoutStopSec`. An exception in a tick is printed,
+rolled back, and retried with backoff; it never ends the service. systemd's Restart=
+only has to cover the process itself dying.
 """
 import signal
 import threading
@@ -17,6 +21,31 @@ from src.jobstore.schema import init_store
 from src.services import pulse as pulse_module
 
 MAX_BACKOFF_SECONDS = 300
+# How long a stop request may sit unnoticed inside one sleep. Small enough that a
+# paced wait ends in seconds (the systemd stop timeout is 300 s), large enough that a
+# long wait is not thousands of wake-ups.
+STOP_GRANULARITY_SECONDS = 1.0
+
+
+def sleep_unless_stopped(sleep, stop: threading.Event | None, seconds: float, *,
+                        granularity: float = STOP_GRANULARITY_SECONDS) -> bool:
+    """Sleep `seconds` through `sleep`, in slices of at most `granularity`, and return
+    True when a stop has been requested (then the caller must not start more work).
+
+    A request already in flight is never interrupted: only a wait is. Without a stop
+    event this is one plain sleep, exactly as an unshared service always did.
+    """
+    if stop is None:
+        sleep(seconds)
+        return False
+    remaining = seconds
+    while remaining > 0:
+        if stop.is_set():
+            return True
+        slice_seconds = min(remaining, granularity)
+        sleep(slice_seconds)
+        remaining -= slice_seconds
+    return stop.is_set()
 
 
 @dataclass

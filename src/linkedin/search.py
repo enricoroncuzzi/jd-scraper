@@ -18,7 +18,9 @@ import requests
 from src.http_session import retry_after_seconds
 from src.linkedin.captcha import looks_like_captcha
 from src.linkedin.cards import Card, parse_cards
+from src.linkedin.pace import PaceStopped
 from src.services.pulse import pulse
+from src.services.runner import sleep_unless_stopped
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
 HEADERS = {
@@ -51,7 +53,8 @@ class Page:
 
 
 def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
-               distrust_empty: bool = False, get=requests.get, sleep=time.sleep) -> Page:
+               distrust_empty: bool = False, get=requests.get, sleep=time.sleep,
+               stop=None) -> Page:
     params = {"keywords": role, "location": area, "f_TPR": f_tpr_value, "start": start}
     last_problem = "no attempt"
     for attempt in range(len(RETRY_WAITS) + 1):
@@ -118,5 +121,9 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
                 return value
             raise value
         if attempt < len(RETRY_WAITS):
-            sleep(RETRY_WAITS[attempt])
+            # A stop ends the retry ladder at once: the 5/15/45 s waits are not part of a
+            # shutdown. Nothing was recorded for the attempt that just failed beyond what
+            # the pace already stored for the request it granted.
+            if sleep_unless_stopped(sleep, stop, RETRY_WAITS[attempt]):
+                raise PaceStopped("stopping instead of retrying the LinkedIn search")
     raise SearchFailed(last_problem)

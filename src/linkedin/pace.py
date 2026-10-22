@@ -29,7 +29,9 @@ itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_af
 and cannot get a turn raises PaceBusy; a `packaging` request waits at least the longest
 jittered spacing of the base in effect (plus a second), read from the schedule at wait
 time, so the previous request's spacing can never make it give up. A caller that gives
-up writes only its own `wanting` markers.
+up writes only its own `wanting` markers. When the caller shares the service's stop
+event, a stop cuts any pace or refusal wait short and `slot` raises PaceStopped instead
+of starting a request: a stop is neither a refusal nor a block, so nothing is recorded.
 """
 import copy
 import json
@@ -59,6 +61,7 @@ from src.linkedin.schedule import (
     start_spacing_seconds,
 )
 from src.services.pulse import pulse
+from src.services.runner import sleep_unless_stopped
 
 HOST = "linkedin.com"
 # The one LinkedIn request a CV package needs (src/delivery/autopackage.py). It is a kind
@@ -96,6 +99,15 @@ class PaceGateClosed(RuntimeError):
 
 class PaceBusy(RuntimeError):
     """No LinkedIn turn was granted within `give_up_after`; nothing was sent."""
+
+
+class PaceStopped(RuntimeError):
+    """The service is stopping: no request was made and the pace recorded nothing.
+
+    A stop is neither a refusal nor a block signal, and the caller must not treat it as
+    one: it only means the wait for a turn ended because systemd asked the service to
+    exit. A request already in flight is left to finish and is recorded as what it was.
+    """
 
 
 def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int,
@@ -237,7 +249,7 @@ class PaceBudget:
                  uniform=random.uniform, service: str | None = None,
                  schedule: ScheduleConfig | None = None,
                  give_up_after: float | None = None,
-                 signal_reader=read_signals):
+                 signal_reader=read_signals, stop=None):
         self.conn = conn
         self.host = host
         self.key = _lock_key(host)
@@ -248,6 +260,7 @@ class PaceBudget:
         self.schedule = schedule or ScheduleConfig()
         self.give_up_after = give_up_after
         self.signal_reader = signal_reader
+        self.stop = stop
         self.run_cap = description_run_cap(self.schedule.pace.description_turn_share)
 
     # -- storage ---------------------------------------------------------
@@ -406,14 +419,30 @@ class PaceBudget:
         return evaluate_gate(self.schedule, self.clock(),
                              requests_today=state.requests_today, paused_day=paused)
 
+    def _stopping(self) -> bool:
+        """Whether the service has been asked to stop (no stop event: never)."""
+        return self.stop is not None and self.stop.is_set()
+
+    def _pause(self, seconds: float) -> None:
+        """One pace wait: a stop cuts it short instead of waiting out the spacing or a
+        refusal. The wait is the only thing interrupted; see `PaceStopped`."""
+        sleep_unless_stopped(self.sleep, self.stop, seconds)
+
+    def _stop_now(self, kind: str) -> None:
+        """Leave the queue without a request: no lock, no marker, nothing recorded."""
+        self._drop_markers([kind])
+        raise PaceStopped(f"stopping before the LinkedIn {kind} turn")
+
     @contextmanager
     def slot(self, kind: str, *, overdue: bool = False):
         started = self.clock()
         kinds = [kind]
         while True:
+            if self._stopping():
+                self._stop_now(kind)
             self._declare_wanting(kind)
             if not self._try_lock():
-                self.sleep(LOCK_POLL_SECONDS)
+                self._pause(LOCK_POLL_SECONDS)
                 continue
             now = self.clock()
             state = self._load()
@@ -422,6 +451,11 @@ class PaceBudget:
                 self._drop_markers(kinds)
                 self._unlock()
                 raise PaceGateClosed(gate)
+            if self._stopping():
+                # The turn is ours, but a stop that lands before the request goes out must
+                # never become a request. It is not a refusal, so nothing is recorded.
+                self._unlock()
+                self._stop_now(kind)
             ready = max(state.next_slot_at, state.wait_until or state.next_slot_at)
             wait = (ready - now).total_seconds()
             if wait <= 0 and not must_yield(state, kind, now.timestamp(), run_cap=self.run_cap):
@@ -439,7 +473,7 @@ class PaceBudget:
                 self._drop_markers(kinds)
                 raise PaceBusy(f"no LinkedIn {kind} turn within {bound:g}s")
             pulse({"linkedin_wait": round(max(wait, 0))})
-            self.sleep(pause)
+            self._pause(pause)
         slot = Slot()
         try:
             yield slot

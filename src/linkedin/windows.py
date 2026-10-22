@@ -22,6 +22,10 @@ RETRY_SOON_SECONDS = 30 * 60
 
 # Walks that did not finish the slice come back soon without touching the cadence.
 _RETRY_SOON_REASONS = frozenset({"throttled_empty", "rate_limited", "error"})
+# A service stop (a deploy or a restart) ends a walk early and judges nothing: the slice
+# is due again at once, so the next start resumes it where it stopped, and a stop never
+# moves the cadence the way a refusal or an error does.
+STOPPED_REASON = "stopped"
 
 
 def window_seconds(now: datetime, last_walked_at: datetime | None, *,
@@ -51,7 +55,7 @@ def next_interval(*, base: int, current: int, stop_reason: str, consecutive_empt
     """
     if stop_reason == "cap_hit":
         interval = max(current // 2, min_interval)
-    elif stop_reason in _RETRY_SOON_REASONS:
+    elif stop_reason in _RETRY_SOON_REASONS or stop_reason == STOPPED_REASON:
         interval = current
     else:
         interval = min(current * 2, base)
@@ -61,6 +65,8 @@ def next_interval(*, base: int, current: int, stop_reason: str, consecutive_empt
 
 
 def next_due(now: datetime, interval: int, stop_reason: str) -> datetime:
+    if stop_reason == STOPPED_REASON:
+        return now  # a stopped walk resumes at the next start, not after a rest
     if stop_reason in _RETRY_SOON_REASONS:
         return now + timedelta(seconds=RETRY_SOON_SECONDS)
     return now + timedelta(seconds=interval)
