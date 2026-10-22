@@ -232,9 +232,12 @@ loses nothing.
   directly, so it gets the new prompt guidance with no switch of its own.
 - Deploying new code: `git pull --ff-only && .venv/bin/pip install -r requirements.txt`, then
   restart one unit at a time (`sudo systemctl restart jds-process`; wait for `status` to show
-  it healthy; then the next). A restart sends SIGTERM and the service stops between jobs, so it
-  waits at most `TimeoutStopSec` (5 minutes) and then systemd kills it; killing mid-job is safe
-  because every stage commits per job or per batch. Database changes are applied
+  it healthy; then the next). A restart sends SIGTERM. `jds-collect-linkedin` stops within
+  seconds: a stop cuts any pace or refusal wait short and the walk ends after the page that is
+  already in flight, so no new LinkedIn request goes out. `jds-process` and `jds-deliver`
+  finish their current job or tick first, so those two can wait up to `TimeoutStopSec`
+  (5 minutes) and then systemd kills them; killing mid-job is safe because every stage commits
+  per job or per batch. Database changes are applied
   by `init_store` when a service starts. They are additive except for one migration in the
   2026-10-18 remote-verdict release: the first service start after that pull drops and
   recreates `jobs_remote_verdict_chk` so `advised`/`not_stated` can be stored (a validation
@@ -309,6 +312,12 @@ it, so a stale config never stops the service. Delete it when you next edit the 
 | `cadence_tolerance_hours` | `6` | a slice counts as past its cadence only beyond its interval plus this tolerance |
 | `area_max_pages` | ten countries at `20` | the page cap for the ten large tier-3 countries, a walk that reaches it ends as `area_cap` |
 | `refused_pages_to_defer` | `3` | refusals in a row before a walk defers its slice |
+
+A deploy stop (SIGTERM) ends a walk after the page already in flight: the pace wait is cut
+short, the pages recorded so far stay committed, and the slice is due again at once, so the
+next start resumes it where it stopped. That walk's journal line ends `stop=stopped` and its
+session in `slice_walks` has the same `stop_reason`; it is not a refusal, it does not touch the
+pace ladder, and it does not move the slice's cadence.
 
 Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
 point where an overdue description may spend more than one tick) and

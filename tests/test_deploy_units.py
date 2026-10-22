@@ -58,7 +58,9 @@ def test_long_running_services_restart_on_their_own_run_as_the_deploy_user_and_a
     assert service["Restart"] == "always" and service["User"] == "enrico"
     assert service["WorkingDirectory"] == "/home/enrico/jd-scraper"
     assert service["MemoryMax"].endswith(("M", "G")) and service["MemoryHigh"].endswith(("M", "G"))
-    assert int(service["TimeoutStopSec"]) >= 120  # SIGTERM is honoured between ticks, which can take minutes
+    # The collector stops within seconds of SIGTERM (the pace wait is cut short); the
+    # processor and the deliverer finish their current job or tick, so the ceiling covers them.
+    assert int(service["TimeoutStopSec"]) >= 120
     assert "postgresql.service" in _read(path)["Unit"]["Requires"]
 
 

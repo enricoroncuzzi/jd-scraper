@@ -1,4 +1,9 @@
-"""Walk one slice: page through its results and record every card as a sighting."""
+"""Walk one slice: page through its results and record every card as a sighting.
+
+A walk that is asked to stop (the service is exiting) ends after the page in flight,
+touches nothing in the pace ladder, keeps the pages it already committed, and leaves
+the slice unfinished so the next start resumes at the next unread offset.
+"""
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -7,18 +12,18 @@ import requests
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.catalog import CollectorConfig, SOURCE
-from src.linkedin.pace import PaceGateClosed
+from src.linkedin.pace import PaceGateClosed, PaceStopped
 from src.linkedin.search import Page, SearchFailed, SearchThrottled, fetch_page
 from src.linkedin.windows import (
-    DEFAULT_MAX_INTERVAL, DEFAULT_MIN_INTERVAL, f_tpr, next_due, next_interval,
+    DEFAULT_MAX_INTERVAL, DEFAULT_MIN_INTERVAL, STOPPED_REASON, f_tpr, next_due, next_interval,
     window_seconds,
 )
 from src.services.pulse import pulse
 
 # Stop reasons that leave the slice unfinished: it resumes from `next_start`.
-UNFINISHED = frozenset({"throttled_empty", "rate_limited", "error"})
+UNFINISHED = frozenset({"throttled_empty", "rate_limited", "error", STOPPED_REASON})
 # The same set, for the resume timers that walk only unfinished slices.
-RESUMABLE_STOPS = ("rate_limited", "error", "throttled_empty")
+RESUMABLE_STOPS = ("rate_limited", "error", "throttled_empty", STOPPED_REASON)
 
 
 @dataclass(frozen=True)
@@ -79,7 +84,10 @@ def _is_exhausted(page: Page, walk_seen: set[str]) -> bool:
 
 
 def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *,
-               get=requests.get, sleep=time.sleep) -> WalkResult:
+               get=requests.get, sleep=time.sleep, stop=None) -> WalkResult:
+    """Page through one slice. `stop` is the service's stop event: once it is set the
+    walk makes no further request and returns what it has, as an unfinished walk that
+    resumes at `next_start`. The page already fetched and recorded is never thrown away."""
     window = window_seconds(now, row.last_walked_at, margin=cfg.window_margin_hours * 3600)
     f_tpr_value = f_tpr(window)
     start = row.resume_start
@@ -93,10 +101,17 @@ def walk_slice(conn, pace, row: SliceRow, cfg: CollectorConfig, now: datetime, *
     distrust = False    # True right after a refusal: an empty 200 is not trusted
 
     while pages < cfg.max_pages_for(row.area):
+        if stop is not None and stop.is_set():
+            stop_reason = STOPPED_REASON
+            break
         pulse({"slice": f"{row.role} / {row.area}", "pages": pages, "new_jobs": new_jobs})
         try:
             page = fetch_page(pace, role=row.role, area=row.area, f_tpr_value=f_tpr_value,
-                              start=start, distrust_empty=distrust, get=get, sleep=sleep)
+                              start=start, distrust_empty=distrust, get=get, sleep=sleep,
+                              stop=stop)
+        except PaceStopped:
+            stop_reason = STOPPED_REASON
+            break
         except PaceGateClosed:
             stop_reason = "rate_limited"  # unfinished, resumes at `start`
             break

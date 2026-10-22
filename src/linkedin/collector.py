@@ -8,6 +8,7 @@ It never fetches a description (the processor does) and never judges a job.
 """
 import argparse
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -50,17 +51,22 @@ def sync_and_clamp(conn, specs, cfg: CollectorConfig) -> dict[str, int]:
 
 def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = None,
                  get=requests.get, sleep=time.sleep,
-                 schedule: ScheduleConfig | None = None) -> Tick:
+                 schedule: ScheduleConfig | None = None, stop=None) -> Tick:
     """Walk the next due slice, if any.
 
     The schedule gate (a configured closed window) is checked before a slice is
-    claimed, so a closed gate is one idle tick, not a request.
+    claimed, so a closed gate is one idle tick, not a request. `stop` is the service's
+    stop event: a tick that is asked to stop before it claims a slice claims nothing and
+    makes no request, and a stop mid-walk ends the walk where it is (the walk keeps
+    what it recorded and the next start resumes there).
 
     One slice's unexpected failure must not wedge the collector on a poison card:
     it becomes a retryable `error` (due again in 30 minutes, resuming where the
     last committed page stopped) and the next slice gets its turn. A connection
     that is actually gone is re-raised for the runner to reconnect.
     """
+    if stop is not None and stop.is_set():
+        return Tick(False, {"stopping": True})
     started = now or utcnow()
     schedule = schedule or ScheduleConfig()
     gate = pace.gate()
@@ -71,7 +77,7 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
     if row is None:
         return Tick(False, {"due_slices": 0})
     try:
-        result = walk_slice(conn, pace, row, cfg, started, get=get, sleep=sleep)
+        result = walk_slice(conn, pace, row, cfg, started, get=get, sleep=sleep, stop=stop)
     except (psycopg2.OperationalError, psycopg2.InterfaceError):
         raise
     except Exception as exc:  # noqa: BLE001 - a poison slice must not stop the service
@@ -88,15 +94,16 @@ def collect_once(conn, pace, cfg: CollectorConfig, *, now: datetime | None = Non
 
 
 def make_tick(pace, cfg: CollectorConfig, *, get=None, sleep=time.sleep,
-              schedule: ScheduleConfig | None = None):
-    """Build the collector's tick, reusing one LinkedIn HTTP session for every walk."""
+              schedule: ScheduleConfig | None = None, stop=None):
+    """Build the collector's tick, reusing one LinkedIn HTTP session for every walk.
+    `stop` is the service's stop event (see `run_service`)."""
     if get is None:
         get = new_session().get
 
     def tick(conn) -> Tick:
         if legacy_run_active(cfg.legacy_lock_path):
             return Tick(False, {"waiting": "legacy cron run holds the lock"})
-        return collect_once(conn, pace, cfg, get=get, sleep=sleep, schedule=schedule)
+        return collect_once(conn, pace, cfg, get=get, sleep=sleep, schedule=schedule, stop=stop)
     return tick
 
 
@@ -110,6 +117,9 @@ def main(argv: list[str] | None = None) -> int:
     schedule = load_schedule_config()
     specs = build_slices(load_tier_configs(), cfg.due_hours, cfg.area_due_hours, cfg.skip_slices,
                          cfg.area_max_pages)
+    # One stop event for the whole service: SIGTERM sets it, the tick and the shared pace
+    # consult it, so a stop ends a paced walk instead of waiting out the spacing.
+    stop = threading.Event()
 
     if args.sync_slices or args.once:
         conn = connect(store_url())
@@ -119,8 +129,9 @@ def main(argv: list[str] | None = None) -> int:
             conn.commit()
             print(f"[{SERVICE}] slices: {counts}, total configured {len(specs)}")
             if args.once:
-                pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=schedule)
-                collect_once(conn, pace, cfg, schedule=schedule)
+                pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=schedule,
+                                   stop=stop)
+                collect_once(conn, pace, cfg, schedule=schedule, stop=stop)
         finally:
             conn.close()
         return 0
@@ -132,8 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{SERVICE}] slices: {counts}")
         return Tick(False)
 
-    pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=schedule)
-    tick = make_tick(pace, cfg, schedule=schedule)
+    pace = ManagedPace(lambda: connect(store_url()), service=SERVICE, schedule=schedule, stop=stop)
+    tick = make_tick(pace, cfg, schedule=schedule, stop=stop)
     first = {"done": False}
 
     def tick_with_first_sync(conn) -> Tick:
@@ -142,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
             first["done"] = True
         return tick(conn)
 
-    return run_service(SERVICE, tick_with_first_sync, connect_fn=lambda: connect(store_url()))
+    return run_service(SERVICE, tick_with_first_sync, connect_fn=lambda: connect(store_url()),
+                       stop=stop)
 
 
 if __name__ == "__main__":

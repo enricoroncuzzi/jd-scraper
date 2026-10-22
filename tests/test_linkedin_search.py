@@ -67,6 +67,30 @@ def test_503_is_retried_without_slowing_the_pace():
     assert pace.events == [("search", "neutral"), ("search", "clean")]
 
 
+def test_a_stop_ends_the_retry_ladder_instead_of_waiting_out_the_next_5s():
+    import threading
+
+    from src.linkedin.pace import PaceStopped
+
+    stop, sleeps = threading.Event(), []
+    get = ScriptedGet(response(503), response(200, page_html(*ids(0, 1))))
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        stop.set()  # the SIGTERM lands during the wait between attempts
+
+    with pytest.raises(PaceStopped):
+        fetch_page(FakePace(), role="AI Engineer", area="Italy", f_tpr_value="r3600", start=10,
+                   get=get, sleep=sleep, stop=stop)
+    assert len(get.calls) == 1 and sleeps == [1.0]
+
+
+def test_without_a_stop_event_the_retry_waits_are_unchanged():
+    get = ScriptedGet(response(503), response(503), response(200, page_html(*ids(0, 1))))
+    _, _, sleeps = _fetch(get)
+    assert sleeps == list(RETRY_WAITS[:2])
+
+
 def test_a_400_means_the_offset_is_past_the_end():
     page, _, _ = _fetch(ScriptedGet(response(400)))
     assert page.end and page.cards == []
