@@ -13,7 +13,7 @@ SIGNALS = Signals(demand_waiting=5000, llm_requests_today=100, llm_stop_requests
                   llm_day=datetime(2026, 10, 20, tzinfo=timezone.utc).date(),
                   refreshed_at=None)
 START = datetime(2026, 10, 20, 3, 0, tzinfo=timezone.utc)
-FIXTURE = "tests/fixtures/pace_events_2026-10-20.csv"
+FIXTURE = str(Path(__file__).parent / "fixtures" / "pace_events_2026-10-20.csv")
 
 
 def event(offset, outcome, block=None, day=None, wait_seconds=None):
@@ -53,11 +53,10 @@ def test_a_drop_clears_the_window():
     assert result.final_state["trailing"] == []
 
 
-def test_the_clean_day_replay_halves_a_used_cooldown():
+def test_the_clean_day_replay_halves_the_cooldown():
     start = {**blank_state(POLICY), "active": True, "level": 1, "day": "2026-10-19",
              "day_requests": 100, "day_drops": 0, "day_brakes": 0}
     start["levels"]["3"]["cooldown_hours"] = 8.0
-    start["levels"]["3"]["cooldown_used"] = True
     events = [ReplayEvent(datetime(2026, 10, 20, 0, 1, tzinfo=timezone.utc)
                           + timedelta(seconds=75 * i), "clean",
                           day=datetime(2026, 10, 20).date()) for i in range(101)]

@@ -13,7 +13,7 @@ import json
 import os
 import sys
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date
 from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

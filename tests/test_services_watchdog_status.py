@@ -360,7 +360,7 @@ def test_the_status_line_shows_the_level_the_last_move_and_the_next_climb(store_
              "levels": {"2": {"requests": 40, "refusals": 1, "successes": 39,
                                "active_seconds": 2000.0, "first_at": None,
                                "last_at": None, "cooldown_hours": 2.0,
-                               "cooldown_used": False, "blocked_until": None}},
+                               "blocked_until": None}},
              "last_move": {"at": NOW.isoformat(), "kind": "climb", "from": 1, "to": 2,
                             "reason": "climb: cautious upper 11.4%, 43/h vs 14/h"}}
     text = _render_adaptive(store_conn, state)
@@ -376,11 +376,10 @@ def test_the_status_line_shows_a_blocked_target_level(store_conn):
                           "llm_stop": 800, "at": NOW.isoformat()},
              "levels": {"2": {"requests": 200, "refusals": 0, "successes": 200,
                                "active_seconds": 15000.0, "first_at": None, "last_at": None,
-                               "cooldown_hours": 2.0, "cooldown_used": False,
-                               "blocked_until": None},
+                               "cooldown_hours": 2.0, "blocked_until": None},
                         "3": {"requests": 0, "refusals": 0, "successes": 0,
                                "active_seconds": 0.0, "first_at": None, "last_at": None,
-                               "cooldown_hours": 2.0, "cooldown_used": True,
+                               "cooldown_hours": 2.0,
                                "blocked_until": (NOW + timedelta(hours=2)).isoformat()}}}
     text = _render_adaptive(store_conn, state)
     assert "next climb: level 3 blocked until" in text

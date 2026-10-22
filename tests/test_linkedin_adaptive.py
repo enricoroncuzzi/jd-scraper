@@ -99,7 +99,6 @@ def test_a_drop_remembers_the_level_for_two_hours_then_four():
                for blocker in climb_blockers(POLICY, at_level_2, NOW, HIGH))
     second = {**blank_state(POLICY), "active": True, "level": 3}
     second["levels"]["3"]["cooldown_hours"] = 4
-    second["levels"]["3"]["cooldown_used"] = True
     second = feed([("refused", None)] * 4, start=second)
     assert parse_iso(_level(second, 3)["blocked_until"]) == drop_at + timedelta(hours=4)
     assert _level(second, 3)["cooldown_hours"] == 8
@@ -109,7 +108,6 @@ def test_a_clean_day_halves_the_memory():
     state = {**blank_state(POLICY), "active": True, "level": 1, "day": "2026-10-19",
              "day_requests": 100, "day_drops": 0, "day_brakes": 0}
     state["levels"]["3"]["cooldown_hours"] = 8
-    state["levels"]["3"]["cooldown_used"] = True
     result = review(state, POLICY, NOW, day=NOW.date(), outcome="clean", level=1,
                     signals=HIGH)
     assert result["levels"]["3"]["cooldown_hours"] == 4
@@ -119,11 +117,28 @@ def test_a_clean_day_halves_the_memory():
     assert result["levels"]["3"]["cooldown_hours"] == 8
 
 
+def test_a_level_re_climbed_after_a_drop_still_halves_its_wait():
+    dropped = feed([("refused", None)] * 4, start_level=3)
+    assert current_level(dropped) == 1
+    assert _level(dropped, 3)["cooldown_hours"] == 4
+    dropped["level"] = 2
+    dropped["levels"]["2"] = _stint(requests=200)
+    later = NOW + timedelta(hours=3)
+    reclimbed = review(dropped, POLICY, later, day=later.date(), outcome="clean", level=2,
+                       signals=HIGH, throughput_check=False)
+    assert current_level(reclimbed) == 3
+    assert _level(reclimbed, 3)["cooldown_hours"] == 4
+    state = {**reclimbed, "day": "2026-10-19", "day_requests": 200,
+             "day_drops": 0, "day_brakes": 0}
+    result = review(state, POLICY, later, day=later.date(), outcome="clean", level=3,
+                    signals=HIGH)
+    assert result["levels"]["3"]["cooldown_hours"] == 2
+
+
 def test_the_memory_floor_is_the_first_wait():
     state = {**blank_state(POLICY), "active": True, "level": 1, "day": "2026-10-19",
              "day_requests": 100, "day_drops": 0, "day_brakes": 0}
     state["levels"]["3"]["cooldown_hours"] = 2
-    state["levels"]["3"]["cooldown_used"] = True
     result = review(state, POLICY, NOW, day=NOW.date(), outcome="clean", level=1,
                     signals=HIGH)
     assert result["levels"]["3"]["cooldown_hours"] == 2
@@ -148,7 +163,20 @@ def test_climb_needs_200_requests_and_a_low_cautious_upper_bound():
 def _stint(requests=200, successes=200, refusals=0, seconds=15000.0):
     return {"requests": requests, "refusals": refusals, "successes": successes,
             "active_seconds": seconds, "first_at": None, "last_at": None,
-            "cooldown_hours": 2.0, "cooldown_used": False, "blocked_until": None}
+            "cooldown_hours": 2.0, "blocked_until": None}
+
+
+def test_the_climb_never_fires_on_a_refused_request_or_inside_a_streak():
+    state = feed([("clean", None)] * 195 + [("refused", None)] * 5, start_level=1)
+    assert _level(state, 1)["requests"] == 200
+    assert current_level(state) == 1
+    state = feed([("clean", None)], start=state)
+    assert current_level(state) == 1
+    state = feed([("clean", None)] * 2, start=state)
+    assert current_level(state) == 1
+    state = feed([("clean", None)], start=state)
+    assert current_level(state) == 2
+    assert state["last_move"]["kind"] == "climb"
 
 
 def test_climb_requires_more_successes_per_hour_than_the_level_below():
@@ -270,6 +298,20 @@ def test_a_block_persisting_for_an_hour_pauses_the_day():
     again = review(state, POLICY, NOW + timedelta(minutes=62), day=NOW.date(),
                    outcome="neutral", level=1, block="http_999", signals=HIGH)
     assert paused_day(again) == NOW.date()
+
+
+def test_a_block_after_a_clean_stretch_does_not_pause_the_day():
+    state = {**blank_state(POLICY), "active": True, "level": 3}
+    state = review(state, POLICY, NOW, day=NOW.date(), outcome="neutral", level=3,
+                   block="http_403", signals=HIGH)
+    assert state["brake"] is not None
+    for offset in range(19):
+        state = review(state, POLICY, NOW + timedelta(seconds=150 * (offset + 1)),
+                       day=NOW.date(), outcome="clean", level=1, signals=HIGH)
+    state = review(state, POLICY, NOW + timedelta(minutes=61), day=NOW.date(),
+                   outcome="neutral", level=1, block="http_403", signals=HIGH)
+    assert paused_day(state) is None
+    assert state["brake"] is not None
 
 
 def test_the_next_rome_day_clears_the_pause_and_restarts_at_level_1():

@@ -7,14 +7,15 @@ database; `review` is a pure function of its arguments.
 
 The ladder has five levels, the same on every day. After every request it protects
 itself on the trailing window (30 percent or more refused drops one level; 50 percent
-or four in a row drops two), climbs only after 200 requests at the level with a
-cautious upper refusal estimate under 12 percent, remembers a level that caused a
-drop, eases back when the description backlog is small, and brakes to 150 s when a
-real block signal arrives. `review` returns JSON-native values only: datetimes are
-ISO-8601 strings and every read goes through `parse_iso`.
+or four in a row drops two), climbs only on a clean answer after 200 requests at the
+level with a cautious upper refusal estimate under 12 percent, a refused share in the
+recent window below the protect drop rate and no refusal in the last few requests,
+remembers a level that caused a drop, eases back when the description
+backlog is small, and brakes to 150 s when a real block signal arrives. `review`
+returns JSON-native values only: datetimes are ISO-8601 strings and every read goes
+through `parse_iso`.
 """
 import copy
-import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -95,7 +96,6 @@ def _blank_stint(cooldown_hours: float) -> dict:
         "first_at": None,
         "last_at": None,
         "cooldown_hours": float(cooldown_hours),
-        "cooldown_used": False,
         "blocked_until": None,
     }
 
@@ -137,7 +137,6 @@ def _normalize_stint(raw, cooldown_hours: float) -> dict:
     cooldown = raw.get("cooldown_hours", cooldown_hours)
     if isinstance(cooldown, (int, float)) and not isinstance(cooldown, bool) and cooldown > 0:
         stint["cooldown_hours"] = float(cooldown)
-    stint["cooldown_used"] = bool(raw.get("cooldown_used", False))
     stint["blocked_until"] = _iso(raw.get("blocked_until"))
     return stint
 
@@ -258,6 +257,17 @@ def _level_stint(state: dict, level: int) -> dict:
     return state["levels"][str(max(1, min(LEVEL_COUNT, level)))]
 
 
+def _window_calm(policy: AdaptivePolicy, trailing: list) -> bool:
+    """True when the recent window shows no refusal pressure: the refused share is
+    below the protect drop rate and the last requests include no refusal, so a climb
+    never starts on a refused answer or in the middle of a refusal streak."""
+    if not trailing:
+        return True
+    if trailing.count("refused") / len(trailing) >= policy.protect_drop_rate:
+        return False
+    return "refused" not in trailing[-policy.protect_drop_streak:]
+
+
 def climb_blockers(policy: AdaptivePolicy, state: dict, now: datetime,
                    signals: Signals | None, zone=None,
                    throughput_check: bool = True) -> list[str]:
@@ -288,6 +298,8 @@ def climb_blockers(policy: AdaptivePolicy, state: dict, now: datetime,
     upper = wilson_upper(stint["refusals"], stint["requests"])
     if upper >= policy.climb_max_upper_refusal_rate:
         blockers.append(f"cautious upper {upper:.1%} >= {policy.climb_max_upper_refusal_rate:.0%}")
+    if not _window_calm(policy, state["trailing"]):
+        blockers.append("refusals in the recent window")
     if signals is not None and _signals_fresh(policy, signals, now):
         if signals.demand_waiting < policy.demand_min_waiting:
             blockers.append(f"backlog {signals.demand_waiting} < {policy.demand_min_waiting}")
@@ -317,12 +329,15 @@ def _move(state: dict, now: datetime, kind: str, source: int, target: int, reaso
 
 def _enter_brake(state: dict, now: datetime, reason: str) -> None:
     brake = state.get("brake")
-    since = parse_iso(brake.get("since")) if isinstance(brake, dict) else None
+    previous = brake if isinstance(brake, dict) else {}
+    since = parse_iso(previous.get("since"))
     old_level = current_level(state)
     state["brake"] = {
         "since": (since or now).isoformat(),
         "reason": reason,
         "clean": 0,
+        "last_block_at": now.isoformat(),
+        "clean_before_block": _int(previous.get("clean")),
     }
     state["level"] = 1
     _reset_stint(state, 1)
@@ -332,10 +347,18 @@ def _enter_brake(state: dict, now: datetime, reason: str) -> None:
 
 
 def _brake_persisted(state: dict, now: datetime, policy: AdaptivePolicy) -> bool:
+    """True when a block has persisted for the whole pause window. Age alone is not
+    enough: the traffic between the previous block and this one must also still be
+    short of the clean stretch that would have cleared the brake, otherwise two stray
+    block signals an hour apart would shut LinkedIn down for the day."""
     brake = state.get("brake")
-    since = parse_iso(brake.get("since")) if isinstance(brake, dict) else None
-    return (since is not None
-            and now - since >= timedelta(seconds=policy.pause_after_block_seconds))
+    if not isinstance(brake, dict):
+        return False
+    since = parse_iso(brake.get("since"))
+    if since is None or now - since < timedelta(seconds=policy.pause_after_block_seconds):
+        return False
+    cleared = max(1, policy.emergency_clear_requests // 2)
+    return _int(brake.get("clean_before_block")) < cleared
 
 
 def _pause(state: dict, now: datetime, day: date) -> None:
@@ -382,7 +405,7 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
                 and state["day_requests"] >= policy.clean_day_min_requests
                 and state["day_drops"] == 0 and state["day_brakes"] == 0):
             for stint in state["levels"].values():
-                if stint["cooldown_used"]:
+                if stint["cooldown_hours"] > float(policy.memory_first_hours):
                     stint["cooldown_hours"] = max(
                         float(policy.memory_first_hours), stint["cooldown_hours"] / 2)
         state["day"] = day.isoformat()
@@ -469,7 +492,6 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
             wait = stint["cooldown_hours"]
             stint["blocked_until"] = (now + timedelta(hours=wait)).isoformat()
             stint["cooldown_hours"] = min(float(policy.memory_max_hours), wait * 2)
-            stint["cooldown_used"] = True
             state["day_drops"] += 1
             target = max(1, level - drop)
             state["level"] = target
@@ -493,7 +515,8 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
             _move(state, now, "demand", level, target, "demand fell")
             return state
 
-    if not climb_blockers(policy, state, now, signals, throughput_check=throughput_check):
+    if outcome == "clean" and not climb_blockers(policy, state, now, signals,
+                                                 throughput_check=throughput_check):
         stint = _level_stint(state, level)
         upper = wilson_upper(stint["refusals"], stint["requests"])
         rate = _rate(stint)

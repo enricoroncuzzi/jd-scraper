@@ -284,7 +284,7 @@ configured in `config/schedule.json`:
 | `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25` | the five levels (1x to 3x), the same every day |
 | `adaptive.protect_window_requests` / `protect_min_requests` | `20` / `10` | the trailing window and the minimum sample for the share tiers |
 | `adaptive.protect_drop_rate` / `protect_drop_two_rate` / `protect_drop_streak` | `0.30` / `0.50` / `4` | one level at 30 % refused, two at 50 % or four in a row |
-| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate (Wilson upper bound) |
+| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
 | `adaptive.climb_max_gap_seconds` | `3600` | a gap longer than this is capped when measuring successes per hour |
 | `adaptive.memory_first_hours` / `memory_max_hours` | `2` / `24` | a level that caused a drop waits 2, 4, 8, ... up to 24 h |
 | `adaptive.clean_day_min_requests` | `100` | a clean day with at least this many requests halves the memory |
@@ -294,7 +294,7 @@ configured in `config/schedule.json`:
 | `adaptive.llm_climb_stop_share` | `0.8` | stop climbing at 80 % of the OpenRouter daily limit from `config/llm_limits.json` |
 | `adaptive.emergency_spacing_seconds` / `emergency_clear_requests` | `150` / `20` | the brake spacing and the clean requests needed to clear it |
 | `adaptive.emergency_connection_errors` / `emergency_connection_window_seconds` | `3` / `600` | a connection brake needs 3 dropped connections within 10 min |
-| `adaptive.pause_after_block_seconds` | `3600` | a brake that persists this long pauses LinkedIn for the Rome day |
+| `adaptive.pause_after_block_seconds` | `3600` | a block that keeps recurring for this long pauses LinkedIn for the Rome day (a clean stretch between two block signals is not persistence) |
 
 There is no daily request cap: an old or rolled-back `config/schedule.json` that still carries
 the removed `daily_caps` block loads anyway, the block is ignored and a `[schedule]` line names
@@ -461,7 +461,7 @@ The study found the refusal rate did not depend on the pace between 3 s and 390 
 can change the level adaptively while the off switch keeps the fixed 75 s. The off switch accepts
 the refusal rate the fixed pace produces; the ladder exists to learn from it. The one thing the study could not see is
 a long run above the 29 requests/hour it observed, so watch the first days. Revert to the cautious
-91 s / 133 s if any of these happens:
+91 s if any of these happens:
 
 - the daily refusal rate goes above about 35 %;
 - LinkedIn returns a status code the pace does not already know;
