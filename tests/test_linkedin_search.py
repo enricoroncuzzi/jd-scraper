@@ -90,3 +90,46 @@ def test_a_neutral_retry_beats_before_every_attempt(pulses):
     _fetch(get)
     assert [call["attempt"] for call in pulses] == [1, 2, 3]
     assert pulses[0] == {"search": "AI Engineer / Italy", "start": 20, "attempt": 1}
+
+
+def test_a_403_records_the_block_and_still_fails():
+    pace = FakePace()
+    with pytest.raises(SearchFailed):
+        _fetch(ScriptedGet(response(403)), pace=pace)
+    assert pace.block_reasons == ["http_403"]
+
+
+def test_a_999_records_the_block():
+    pace = FakePace()
+    with pytest.raises(SearchThrottled):
+        _fetch(ScriptedGet(response(999)), pace=pace)
+    assert pace.block_reasons == ["http_999"]
+
+
+def test_a_connection_error_records_the_block():
+    pace = FakePace()
+    with pytest.raises(SearchFailed):
+        _fetch(ScriptedGet(*[requests.ConnectionError("down") for _ in range(4)]), pace=pace)
+    assert pace.block_reasons == ["connection"] * 4
+
+
+def test_a_timeout_does_not_record_a_block():
+    pace = FakePace()
+    with pytest.raises(SearchFailed):
+        _fetch(ScriptedGet(*[requests.Timeout("slow") for _ in range(4)]), pace=pace)
+    assert pace.block_reasons == []
+
+
+def test_a_captcha_page_records_the_block_and_fails():
+    pace = FakePace()
+    with pytest.raises(SearchFailed, match="CAPTCHA"):
+        _fetch(ScriptedGet(response(200, "<html>/checkpoint/challenge</html>")), pace=pace)
+    assert pace.block_reasons == ["captcha"]
+
+
+def test_a_normal_empty_page_or_a_job_word_is_not_a_captcha():
+    pace = FakePace()
+    page = fetch_page(pace, role="AI Engineer", area="Italy", f_tpr_value="r3600", start=10,
+                      get=ScriptedGet(response(200, "<h1>Checkpoint Firewall Engineer</h1>")),
+                      sleep=lambda _s: None)
+    assert page.cards == [] and pace.block_reasons == []

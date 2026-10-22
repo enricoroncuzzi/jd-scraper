@@ -52,6 +52,7 @@ class FakePace:
 
     def __init__(self, wait: float = 0.0, gate: Gate | None = None):
         self.events = []
+        self.block_reasons = []
         self.retry_afters = []
         self.overdue_flags = []
         self.wait = wait
@@ -69,6 +70,8 @@ class FakePace:
         slot = Slot()
         yield slot
         self.events.append((kind, slot.outcome))
+        if slot.block_reason is not None:
+            self.block_reasons.append(slot.block_reason)
         if slot.outcome == "throttled":
             self.retry_afters.append(slot.retry_after)
 

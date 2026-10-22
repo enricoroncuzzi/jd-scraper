@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import requests
 
 from src.http_session import retry_after_seconds
+from src.linkedin.captcha import looks_like_captcha
 from src.linkedin.cards import Card, parse_cards
 from src.services.pulse import pulse
 
@@ -59,6 +60,19 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
         with pace.slot("search") as slot:
             try:
                 response = get(SEARCH_URL, params=params, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            except requests.ConnectTimeout as exc:
+                slot.neutral()
+                last_problem = f"network error: {exc}"
+                response = None
+            except requests.Timeout as exc:
+                slot.neutral()
+                last_problem = f"network error: {exc}"
+                response = None
+            except requests.ConnectionError as exc:
+                slot.neutral()
+                slot.block("connection")
+                last_problem = f"network error: {exc}"
+                response = None
             except requests.RequestException as exc:
                 slot.neutral()
                 last_problem = f"network error: {exc}"
@@ -67,7 +81,11 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
                 status = response.status_code
                 if status == 200:
                     cards = parse_cards(response.text)
-                    if distrust_empty and not cards:
+                    if not cards and looks_like_captcha(response.text):
+                        slot.neutral(200)
+                        slot.block("captcha")
+                        outcome = ("raise", SearchFailed("LinkedIn CAPTCHA page"))
+                    elif distrust_empty and not cards:
                         slot.throttled(status)
                         outcome = ("return", Page([], throttled=True))
                     else:
@@ -80,8 +98,14 @@ def fetch_page(pace, *, role: str, area: str, f_tpr_value: str, start: int,
                     retry_after = retry_after_seconds(
                         response.headers.get("Retry-After"), datetime.now(timezone.utc))
                     slot.throttled(status, retry_after=retry_after)
+                    if status == 999:
+                        slot.block("http_999")
                     last_problem = f"HTTP {status}"
                     outcome = ("raise", SearchThrottled(last_problem))
+                elif status == 403:
+                    slot.neutral(status)
+                    slot.block("http_403")
+                    outcome = ("raise", SearchFailed("LinkedIn search returned HTTP 403"))
                 elif status in TRANSIENT_STATUSES:
                     slot.neutral(status)
                     last_problem = f"HTTP {status}"
