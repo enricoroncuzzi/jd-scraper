@@ -280,7 +280,7 @@ configured in `config/schedule.json`:
 | `pace.description_turn_share` | `0.6667` | descriptions get this share of the turns when a search also waits (realised as a run of `round(share/(1-share))` = 2); a waiting `packaging` request (the one LinkedIn request a CV package needs) takes the next turn instead |
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
-| `adaptive.enabled` | `false` | the ladder's off switch; `false` means exactly 75 s |
+| `adaptive.enabled` | `true` | the ladder's off switch; `false` returns to exactly 75 s |
 | `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25` | the five levels (1x to 3x), the same every day |
 | `adaptive.protect_window_requests` / `protect_min_requests` | `20` / `10` | the trailing window and the minimum sample for the share tiers |
 | `adaptive.protect_drop_rate` / `protect_drop_two_rate` / `protect_drop_streak` | `0.30` / `0.50` / `4` | one level at 30 % refused, two at 50 % or four in a row |
@@ -513,16 +513,14 @@ that first.
 3. `sudo systemctl restart jds-process`; check `python -m src.services.status` shows the gate and
    the pace line. Then restart `jds-collect-linkedin` and `jds-deliver` back to back. The schema
    is already current, so their `init_store` runs no DDL.
-4. Leave `adaptive.enabled` false. The pace line must read `LinkedIn pace: adaptive off, fixed
-   75s`. The old live row may still carry `weekday_spacing_seconds`, `weekend_spacing_seconds`
-   and `nudge`; they are ignored.
-5. To enable the ladder, set `adaptive.enabled` to true in `config/schedule.json` (the tracked
-   file: commit the flip, or reset it before the next `git pull --ff-only`) and restart the three
-   LinkedIn units back to back. Enabling requires `adaptive.levels_seconds[0]` to match
-   `pace.start_spacing_seconds` (75 as shipped).
-6. To turn it off, set `adaptive.enabled` back to false and restart the three units; the next
-   request runs at exactly 75 s. The pause state is ignored while the ladder is off, so the off
-   switch also reopens a paused gate.
+4. The ladder ships on: `adaptive.enabled` is true, so the pace line must read `LinkedIn pace:
+   adaptive level 1/5 (75s, 1x)`. The old live row may still carry `weekday_spacing_seconds`,
+   `weekend_spacing_seconds` and `nudge`; they are ignored.
+5. Enabling the ladder requires `adaptive.levels_seconds[0]` to match
+   `pace.start_spacing_seconds` (75 as shipped); change the two together or not at all.
+6. To turn it off, set `adaptive.enabled` to false in `config/schedule.json` and restart the three
+   units; the next request runs at exactly 75 s. The pause state is ignored while the ladder is
+   off, so the off switch also reopens a paused gate.
 7. Rollback: `git checkout -- config/schedule.json` first, then `git checkout <previous>` and
    restart `jds-process` first (the old DDL fingerprint differs, so its first start re-runs the
    verdict-constraint rescan), then the other units. The new columns stay and are never dropped;
@@ -531,14 +529,15 @@ that first.
    `psql jds -c "UPDATE pace_budgets SET adaptive_state = '{}'::jsonb WHERE host = 'linkedin.com';"`
    The next request starts at level 1. The legacy columns may be left as they are.
 
-The pre-change weekend pace of 110 s becomes 75 s with the controller off. That is the brief's
-"no weekday/weekend split" change, but an operator will notice it. Note also that the ladder-off
-request path makes no extra `jobs` or `llm_budget` read. A 65 s network blip can produce four
-dropped-connection events because a description request retries (5/15/45 s); three within ten
-minutes brake the pace. The climb gate admits at most 14 refusals in 200 (7.0 percent), just
-under the 2026-10-19 rate (7.7 percent), so the ladder rarely climbs on a typical 6 to 8 percent
-day. The 3x level is a ceiling, not a promise: descriptions run last in a processor tick and are
-bounded by `description_seconds_per_tick`.
+The pre-change weekend pace of 110 s becomes 75 s at level 1. That is the brief's
+"no weekday/weekend split" change, but an operator will notice it. Note also that the ladder-on
+request path reads the `jobs` waiting count and the `llm_budget` row at most once per
+`adaptive.signal_refresh_seconds`; the off switch removes both reads. A 65 s network blip can
+produce four dropped-connection events because a description request retries (5/15/45 s); three
+within ten minutes brake the pace. The climb gate admits at most 14 refusals in 200 (7.0
+percent), just under the 2026-10-19 rate (7.7 percent), so the ladder rarely climbs on a typical
+6 to 8 percent day. The 3x level is a ceiling, not a promise: descriptions run last in a
+processor tick and are bounded by `description_seconds_per_tick`.
 
 ### Week one review (design 4.6 C and section 8)
 

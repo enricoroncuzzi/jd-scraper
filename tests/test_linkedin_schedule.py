@@ -267,11 +267,11 @@ ADAPTIVE = {
 }
 
 
-def test_the_adaptive_block_ships_off_with_the_approved_defaults():
+def test_the_adaptive_block_ships_on_with_the_approved_defaults():
     shipped = json.loads(Path("config/schedule.json").read_text())["adaptive"]
     cfg = load_schedule_config()
     a = cfg.adaptive
-    assert shipped["enabled"] is False and a.enabled is False
+    assert shipped["enabled"] is True and a.enabled is True
     assert a.levels_seconds == (75, 50, 37.5, 30, 25)
     assert (a.protect_window_requests, a.protect_min_requests) == (20, 10)
     assert (a.protect_drop_rate, a.protect_drop_two_rate, a.protect_drop_streak) == (0.30, 0.50, 4)
