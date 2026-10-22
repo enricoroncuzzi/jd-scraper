@@ -9,7 +9,8 @@ import pytest
 from src.delivery.settings import DeliverySettings
 from src.jobstore import budget, heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
-from src.linkedin.schedule import ScheduleConfig, local_day
+from src.linkedin.adaptive import blank_state
+from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig, local_day
 from src.processor.cheap import check_one
 from src.processor.config import load_processor_config
 from src.services import status, watchdog
@@ -146,7 +147,7 @@ def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     store_conn.commit()
     text = status.render(store_conn, NOW)
     assert "tier -  seen" in text and "linkedin" in text
-    assert "LinkedIn pace: fixed 75s weekday / 110s weekend, 0/0 refused today, 0 refusals in a row" in text
+    assert "LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, 0/0 refused today, 0 refusals in a row" in text
     assert "linkedin   cadence: 4h x1" in text
     assert "openrouter today (UTC): 7 requests" in text and "process" in text
 
@@ -157,7 +158,7 @@ def test_status_shows_the_schedule_gate_count_and_window(store_conn):
                     "VALUES ('linkedin.com', %s, 5, %s)", (NOW, NOW.date()))
     store_conn.commit()
     text = status.render(store_conn, NOW, ScheduleConfig())
-    assert "LinkedIn gate: 5 requests today (weekday), window open" in text
+    assert "LinkedIn gate: 5 requests today, window open" in text
 
 
 def test_status_shows_a_restored_closed_quiet_window(store_conn):
@@ -179,7 +180,7 @@ def test_status_shows_the_gate_open_at_night_without_a_closed_window(store_conn)
                     "VALUES ('linkedin.com', %s, 2, %s)", (night, local_day(schedule, night)))
     store_conn.commit()
     text = status.render(store_conn, night, schedule)
-    assert "LinkedIn gate: 2 requests today (weekday), window open" in text
+    assert "LinkedIn gate: 2 requests today, window open" in text
 
 
 def test_status_does_not_show_yesterdays_refusals_as_today(store_conn):
@@ -339,3 +340,87 @@ def test_the_watchdog_start_up_does_not_load_the_llm_stack():
     result = subprocess.run([sys.executable, "-c", script], cwd=".", capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "[]"
+
+
+ACTIVE = ScheduleConfig(adaptive=AdaptivePolicy(enabled=True))
+
+
+def _render_adaptive(store_conn, state, schedule=ACTIVE):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, adaptive_state) VALUES "
+                    "('linkedin.com', %s, %s::jsonb) ON CONFLICT (host) DO UPDATE "
+                    "SET adaptive_state = EXCLUDED.adaptive_state", (NOW, json.dumps(state)))
+    store_conn.commit()
+    return status.render(store_conn, NOW, schedule)
+
+
+def test_the_status_line_shows_the_level_the_last_move_and_the_next_climb(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 2,
+             "trailing": ["clean"] * 18 + ["refused"] * 2,
+             "levels": {"2": {"requests": 40, "refusals": 1, "successes": 39,
+                               "active_seconds": 2000.0, "first_at": None,
+                               "last_at": None, "cooldown_hours": 2.0,
+                               "blocked_until": None}},
+             "last_move": {"at": NOW.isoformat(), "kind": "climb", "from": 1, "to": 2,
+                            "reason": "climb: cautious upper 11.4%, 43/h vs 14/h"}}
+    text = _render_adaptive(store_conn, state)
+    assert "LinkedIn pace: adaptive level 2/5 (50s, 1.5x)" in text
+    assert "2/20 refused in trailing 20" in text
+    assert "last move: climb 1 -> 2" in text
+    assert "next climb: 40/200 requests at this level" in text
+
+
+def test_the_status_line_shows_a_blocked_target_level(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 2,
+             "signals": {"demand": 5000, "llm": 100, "llm_day": "2026-10-14",
+                          "llm_stop": 800, "at": NOW.isoformat()},
+             "levels": {"2": {"requests": 200, "refusals": 0, "successes": 200,
+                               "active_seconds": 15000.0, "first_at": None, "last_at": None,
+                               "cooldown_hours": 2.0, "blocked_until": None},
+                        "3": {"requests": 0, "refusals": 0, "successes": 0,
+                               "active_seconds": 0.0, "first_at": None, "last_at": None,
+                               "cooldown_hours": 2.0,
+                               "blocked_until": (NOW + timedelta(hours=2)).isoformat()}}}
+    text = _render_adaptive(store_conn, state)
+    assert "next climb: level 3 blocked until" in text
+
+
+def test_the_status_line_shows_the_emergency_brake(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 1,
+             "brake": {"since": (NOW - timedelta(minutes=5)).isoformat(),
+                       "reason": "http_999", "clean": 0}}
+    text = _render_adaptive(store_conn, state)
+    assert "adaptive emergency 150s" in text and "climbing frozen" in text
+
+
+def test_the_status_line_shows_the_paused_gate(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 1,
+             "paused": {"day": "2026-10-14", "reason": "http_999"}}
+    text = _render_adaptive(store_conn, state)
+    assert "LinkedIn gate: 0 requests today, LinkedIn paused for the rest of the day" in text
+
+
+def test_the_status_keeps_the_drop_reason_after_more_refusals_at_level_1(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 1,
+             "trailing": ["refused"] * 10,
+             "last_move": {"at": NOW.isoformat(), "kind": "drop", "from": 3, "to": 1,
+                            "reason": "protect: trailing 20 refused 30%"}}
+    text = _render_adaptive(store_conn, state)
+    assert "last move: drop 3 -> 1" in text
+    assert "protect at floor" not in text
+
+
+def test_status_renders_corrupt_state(store_conn):
+    for schedule in (ACTIVE, ScheduleConfig()):
+        for bad in ({"paused": 3}, {"paused": {"day": 5}}, {"level": "x"}, "nope", {}):
+            assert "LinkedIn pace:" in _render_adaptive(store_conn, bad, schedule)
+
+
+def test_the_status_line_shows_the_off_switch(store_conn):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at) VALUES ('linkedin.com', %s)", (NOW,))
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert ("LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, "
+            "0/0 refused today, 0 refusals in a row") in text
+    assert "last move: disabled" in text

@@ -17,23 +17,23 @@ MID = lambda a, b: (a + b) / 2  # noqa: E731 - no jitter
 RUN_CAP = description_run_cap(ScheduleConfig().pace.description_turn_share)
 
 
-def test_the_fixed_spacing_is_75s_weekday_and_110s_weekend():
+def test_the_fixed_spacing_is_75s_on_every_day():
     cfg = ScheduleConfig()
-    assert start_spacing_seconds(cfg, "weekday") == 75
-    assert start_spacing_seconds(cfg, "weekend") == 110
+    assert start_spacing_seconds(cfg) == 75
+    assert next_spacing(cfg, WED_NOON, MID) == pytest.approx(75.0)
+    assert next_spacing(cfg, SAT_NOON, MID) == pytest.approx(75.0)
 
 
 def test_each_spacing_is_the_base_jittered_by_twenty_percent():
     cfg, low, high = ScheduleConfig(), (lambda a, b: a), (lambda a, b: b)
     assert next_spacing(cfg, WED_NOON, low) == pytest.approx(60.0)
     assert next_spacing(cfg, WED_NOON, high) == pytest.approx(90.0)
-    assert next_spacing(cfg, SAT_NOON, low) == pytest.approx(88.0)
-    assert next_spacing(cfg, SAT_NOON, high) == pytest.approx(132.0)
+    assert next_spacing(cfg, SAT_NOON, low) == pytest.approx(60.0)
+    assert next_spacing(cfg, SAT_NOON, high) == pytest.approx(90.0)
     # Nothing clamps a configured base from below: there is no cap to defend.
-    slow = ScheduleConfig(pace=PacePolicy(start_weekday_seconds=1.0,
-                                          start_weekend_seconds=2.0))
+    slow = ScheduleConfig(pace=PacePolicy(start_spacing_seconds=1.0))
     assert next_spacing(slow, WED_NOON, low) == pytest.approx(0.8)
-    assert next_spacing(slow, SAT_NOON, low) == pytest.approx(1.6)
+    assert next_spacing(slow, SAT_NOON, low) == pytest.approx(0.8)
 
 
 def test_a_stored_base_or_nudge_from_the_old_code_cannot_slow_the_fixed_pace():
@@ -114,7 +114,9 @@ def test_the_gate_stays_open_all_day_with_no_closed_window():
     cfg = ScheduleConfig()
     assert evaluate_gate(cfg, WED_NOON, requests_today=0).reason == "open"
     assert evaluate_gate(cfg, WED_NOON, requests_today=1400).reason == "open"
-    assert evaluate_gate(cfg, WED_NOON, requests_today=999999).reason == "open"
+    gate = evaluate_gate(cfg, WED_NOON, requests_today=10000)
+    assert gate.open and gate.reason == "open" and gate.requests_today == 10000
+    assert not hasattr(gate, "window") and not hasattr(gate, "cap")
     night = datetime(2026, 10, 14, 1, 0, tzinfo=timezone.utc)  # 03:00 Rome
     assert evaluate_gate(cfg, night, requests_today=0).reason == "open"
 

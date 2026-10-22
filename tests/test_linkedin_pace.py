@@ -4,8 +4,11 @@ import pytest
 from psycopg2.extras import Json
 
 from src.linkedin import pace as pace_module
+from src.linkedin.adaptive import (
+    Signals, blank_state, maybe_refresh_signals, read_signals,
+)
 from src.linkedin.pace import ManagedPace, PaceBudget, PaceBusy, PaceGateClosed
-from src.linkedin.schedule import ScheduleConfig
+from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
 WINDOWED = ScheduleConfig(closed_hours=(0, 6))
@@ -550,29 +553,309 @@ def test_an_overdue_next_in_line_description_gives_up_on_a_long_wait(make_budget
 SAT_NOON = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Saturday
 
 
-def _weekend_request_right_after_a_request(make_budget):
+def _request_right_after_a_request(make_budget):
     fake = FakeTime(SAT_NOON)
     first = make_budget(fake)
     with first.slot("search") as slot:
         slot.clean(200)
-    budget = make_budget(fake, give_up_after=120)
-    # the previous request drew the longest jittered spacing of the weekend window
-    _set(budget, next_slot_at=fake.now + timedelta(seconds=132))
+    budget = make_budget(fake, give_up_after=60)
+    # the previous request drew the longest jittered spacing of the window
+    _set(budget, next_slot_at=fake.now + timedelta(seconds=90))
     return fake, budget
 
 
-def test_a_packaging_request_outwaits_the_longest_weekend_spacing(make_budget):
-    fake, budget = _weekend_request_right_after_a_request(make_budget)
+def test_a_packaging_request_outwaits_the_longest_spacing(make_budget):
+    fake, budget = _request_right_after_a_request(make_budget)
     started = fake.now
     with budget.slot("packaging") as slot:
         slot.clean(200)
-    assert (fake.now - started).total_seconds() == pytest.approx(132)
+    assert (fake.now - started).total_seconds() == pytest.approx(90)
     assert [kind for (kind,) in _events(budget, "kind")] == ["search", "packaging"]
 
 
-def test_a_description_request_still_gives_up_at_the_tick_budget_on_a_weekend(make_budget):
-    fake, budget = _weekend_request_right_after_a_request(make_budget)
+def test_a_description_request_gives_up_at_the_tick_budget(make_budget):
+    fake, budget = _request_right_after_a_request(make_budget)
     with pytest.raises(PaceBusy):
         with budget.slot("description"):
             raise AssertionError("no request may be made")
     assert [kind for (kind,) in _events(budget, "kind")] == ["search"]
+
+
+ADAPTIVE_ON = ScheduleConfig(adaptive=AdaptivePolicy(enabled=True))
+ADAPTIVE_OFF = ScheduleConfig()
+HIGH = lambda now: Signals(5000, 100, now.date(), 800, None)  # noqa: E731
+
+
+def _adaptive(budget, state):
+    budget.snapshot()
+    _set(budget, adaptive_state=Json(state))
+
+
+def test_the_off_switch_spaces_every_request_at_75_seconds(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_OFF)
+    _adaptive(budget, {**blank_state(), "active": True, "level": 4})
+    with budget.slot("search") as slot:
+        slot.clean(200)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=75),)
+    assert budget.snapshot().controller["level"] == 1
+
+
+def test_the_off_switch_never_reads_signals(make_budget, capsys):
+    fake = FakeTime()
+    calls = []
+
+    def reader(conn, now, policy):
+        calls.append(now)
+        raise RuntimeError("must not be called")
+
+    budget = make_budget(fake, ADAPTIVE_OFF, signal_reader=reader)
+    _adaptive(budget, {**blank_state(), "active": True, "level": 4})
+    with budget.slot("search") as slot:
+        slot.clean(200)
+        at = fake.now
+    assert calls == []
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=75),)
+    assert "[pace] adaptive" not in capsys.readouterr().out
+
+
+def test_a_drop_changes_the_next_spacing_and_survives_a_restart(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    for _ in range(4):
+        with budget.slot("search") as slot:
+            slot.throttled(429)
+    state = budget.snapshot().controller
+    assert state["level"] == 1 and state["levels"]["3"]["blocked_until"]
+    with budget.slot("search") as slot:
+        slot.clean(200)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=75),)
+    budget.conn.close()
+    restarted = make_budget(fake, ADAPTIVE_ON)
+    assert restarted.snapshot().controller["level"] == 1
+
+
+def test_six_refusals_reach_the_max_wait_and_brake(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    for _ in range(6):
+        with budget.slot("search") as slot:
+            slot.throttled(429)
+    state = budget.snapshot().controller
+    assert state["brake"] is not None and state["level"] == 1
+    with budget.slot("search") as slot:
+        slot.clean(200)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=150),)
+
+
+def test_a_failing_signal_reader_keeps_the_level_spacing(make_budget):
+    fake = FakeTime()
+
+    def broken(conn, now, policy):
+        raise RuntimeError("signal read failed")
+
+    budget = make_budget(fake, ADAPTIVE_ON, signal_reader=broken)
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    with budget.slot("search") as slot:
+        slot.clean(200)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=37.5),)
+    state = budget.snapshot().controller
+    assert state["level"] == 3 and state["levels"]["3"]["requests"] == 1
+
+
+def test_a_failing_signal_reader_still_runs_the_protect_loop(make_budget):
+    fake = FakeTime()
+
+    def broken(conn, now, policy):
+        raise RuntimeError("signal read failed")
+
+    budget = make_budget(fake, ADAPTIVE_ON, signal_reader=broken)
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    for _ in range(4):
+        with budget.slot("search") as slot:
+            slot.throttled(429)
+    assert budget.snapshot().controller["level"] == 1
+
+
+def test_a_failing_signal_reader_still_brakes_on_999(make_budget):
+    fake = FakeTime()
+
+    def broken(conn, now, policy):
+        raise RuntimeError("signal read failed")
+
+    budget = make_budget(fake, ADAPTIVE_ON, signal_reader=broken)
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    with budget.slot("search") as slot:
+        slot.throttled(999)
+        slot.block("http_999")
+    assert budget.snapshot().controller["brake"] is not None
+    with budget.slot("search") as slot:
+        slot.clean(200)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=150),)
+
+
+def test_a_corrupt_adaptive_state_degrades_to_the_base_spacing(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    _adaptive(budget, {"level": "x", "levels": 3})
+    with budget.slot("search") as slot:
+        slot.throttled(429)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=75),)
+    assert _row(budget, "cooldown_until") == (at + timedelta(seconds=60),)
+
+
+def test_a_datetime_in_the_controller_state_is_a_controller_failure(make_budget, monkeypatch):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    real = pace_module.review
+
+    def broken_review(state, *args, **kwargs):
+        result = real(state, *args, **kwargs)
+        result["levels"]["1"]["first_at"] = fake.now
+        return result
+
+    monkeypatch.setattr(pace_module, "review", broken_review)
+    with budget.slot("search") as slot:
+        slot.throttled(429)
+        at = fake.now
+    assert _row(budget, "next_slot_at") == (at + timedelta(seconds=75),)
+    assert _row(budget, "cooldown_until") == (at + timedelta(seconds=60),)
+    assert _row(budget, "requests_today") == (1,)
+
+
+def test_the_off_switch_reopens_a_paused_gate(make_budget):
+    fake = FakeTime()
+    paused = {**blank_state(), "active": True, "level": 1,
+              "paused": {"day": "2026-10-14", "reason": "http_999"}}
+    off = make_budget(fake, ADAPTIVE_OFF)
+    _adaptive(off, paused)
+    assert off.gate().open
+    with off.slot("search") as slot:
+        slot.clean(200)
+    on = make_budget(fake, ADAPTIVE_ON)
+    _adaptive(on, paused)
+    assert on.gate().reason == "blocked"
+    with pytest.raises(PaceGateClosed):
+        with on.slot("search"):
+            raise AssertionError("no request may be made")
+
+
+def test_a_packaging_neutral_does_not_brake_at_the_pace(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    for _ in range(4):
+        with budget.slot("packaging") as slot:
+            slot.neutral()
+    state = budget.snapshot().controller
+    assert state["brake"] is None and state["level"] == 3
+    assert state["trailing"] == ["neutral"] * 4
+
+
+def test_read_signals_counts_the_waiting_descriptions(store_conn):
+    with store_conn.cursor() as cur:
+        for status, due in (("pending", True), ("rate_limited", True), ("pending", False)):
+            cur.execute("INSERT INTO jobs (canonical_url, title, company, company_norm, "
+                        "title_norm, stage, tier, description_status, next_attempt_at) "
+                        "VALUES (%s, 'AI', 'Acme', 'acme', 'ai', 'seen', 1, %s, %s)",
+                        (f"https://l/{status}-{due}", status,
+                         WED_NOON if due else WED_NOON + timedelta(hours=1)))
+        cur.execute("INSERT INTO jobs (canonical_url, title, company, company_norm, title_norm, "
+                    "stage, description_status) VALUES "
+                    "('https://l/described', 'AI', 'Acme', 'acme', 'ai', 'described', 'ok')")
+        cur.execute("INSERT INTO llm_budget (day, provider, requests) VALUES "
+                    "(%s, 'openrouter', 7) ON CONFLICT (day, provider) "
+                    "DO UPDATE SET requests = 7", (WED_NOON.date(),))
+    store_conn.commit()
+    from datetime import date
+    from src.jobstore.budget import utc_day
+    from src.llm_limits import Limit
+    policy = AdaptivePolicy(enabled=True)
+    signals = read_signals(store_conn, WED_NOON, policy,
+                           limits=[Limit("openrouter", "*", "requests", 1000)])
+    assert signals.demand_waiting == 2
+    assert signals.llm_requests_today == 7
+    assert signals.llm_stop_requests == 800
+    assert signals.llm_day == utc_day(WED_NOON)
+    assert read_signals(store_conn, WED_NOON, policy,
+                        limits=[Limit("openrouter", "*", "requests", 500)]).llm_stop_requests == 400
+    assert read_signals(store_conn, WED_NOON, policy, limits=[]).llm_stop_requests == 800
+    assert read_signals(store_conn, WED_NOON, policy,
+                        limits=[Limit("openrouter", "*", "requests", None)]).llm_stop_requests == 800
+
+
+def test_maybe_refresh_signals_caches_for_the_refresh_seconds():
+    calls = []
+    policy = AdaptivePolicy(enabled=True)
+
+    def reader(conn, now, policy):
+        calls.append(now)
+        return Signals(5000, 100, now.date(), 800, None)
+
+    state = maybe_refresh_signals(None, blank_state(policy), policy, WED_NOON, reader=reader)
+    assert len(calls) == 1
+    maybe_refresh_signals(None, state, policy, WED_NOON + timedelta(seconds=299), reader=reader)
+    assert len(calls) == 1
+    maybe_refresh_signals(None, state, policy, WED_NOON + timedelta(seconds=301), reader=reader)
+    assert len(calls) == 2
+
+
+def test_maybe_refresh_signals_refreshes_on_a_new_utc_day():
+    calls = []
+    policy = AdaptivePolicy(enabled=True)
+
+    def reader(conn, now, policy):
+        calls.append(now)
+        return Signals(5000, 100, now.date(), 800, None)
+
+    state = blank_state(policy)
+    state["signals"] = {"demand": 1, "llm": 1, "llm_day": "2026-10-13", "llm_stop": 800,
+                        "at": WED_NOON.isoformat()}
+    maybe_refresh_signals(None, state, policy, WED_NOON, reader=reader)
+    assert len(calls) == 1
+
+
+def test_the_request_logs_its_level(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    _adaptive(budget, {**blank_state(), "active": True, "level": 3})
+    with budget.slot("search") as slot:
+        slot.clean(200)
+    assert _events(budget, "level") == [(3,)]
+
+
+def test_corrupt_controller_values_do_not_close_the_gate(make_budget):
+    fake = FakeTime()
+    budget = make_budget(fake, ADAPTIVE_ON,
+                         signal_reader=lambda conn, now, policy: HIGH(now))
+    for bad in ({"paused": 3}, {"paused": {"day": 5}}, {"level": "x"}, {}, "nope"):
+        _adaptive(budget, bad)
+        assert budget.gate().open
+        with budget.slot("search") as slot:
+            slot.clean(200)
+
+
+def test_a_give_up_does_not_overwrite_adaptive_state(make_budget):
+    fake = FakeTime()
+    collector, processor = make_budget(fake), make_budget(fake, give_up_after=0.1)
+    _adaptive(collector, {**blank_state(), "active": True, "level": 3})
+    _set(processor, next_slot_at=fake.now + timedelta(seconds=100))
+    with pytest.raises(PaceBusy):
+        with processor.slot("description"):
+            raise AssertionError("no request may be made")
+    assert collector.snapshot().controller["level"] == 3

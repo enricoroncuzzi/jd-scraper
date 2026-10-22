@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import requests
 
 from src.jobstore.sightings import CardInput, record_sighting
 from src.linkedin.description import extract_description, extract_posted_text, fetch_description
@@ -285,7 +286,7 @@ class _ClosedPace:
     """A pace whose schedule gate is closed: every slot raises, no request happens."""
 
     def gate(self):
-        return Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
+        return Gate(open=False, reason="closed_hours", requests_today=0)
 
     @contextmanager
     def slot(self, kind, *, overdue=False):
@@ -810,3 +811,61 @@ def test_the_description_pick_stays_index_backed_on_a_three_thousand_row_queue(s
             if label != "urgent":   # the urgent query stops at the oldest row: rows=1 is correct
                 assert any(int(n) > 1000
                            for n in re.findall(r"actual time=[\d.]+\.[\d.]+ rows=(\d+)", plan))
+
+
+def test_a_403_description_records_the_block():
+    pace = FakePace()
+    result = fetch_description(pace, "3900000001", get=ScriptedGet(*[response(403)] * 4),
+                               sleep=lambda _s: None)
+    assert result.status == "refused"
+    assert pace.block_reasons == ["http_403"] * 4
+
+
+def test_a_999_description_records_the_block():
+    pace = FakePace()
+    result = fetch_description(pace, "3900000001", get=ScriptedGet(response(999)),
+                               sleep=lambda _s: None)
+    assert result.status == "throttled"
+    assert pace.block_reasons == ["http_999"]
+
+
+def test_a_connection_error_description_records_the_block():
+    pace = FakePace()
+    result = fetch_description(pace, "3900000001",
+                               get=ScriptedGet(*[requests.ConnectionError("down")] * 4),
+                               sleep=lambda _s: None)
+    assert result.status == "refused"
+    assert pace.block_reasons == ["connection"] * 4
+
+
+def test_a_timeout_description_does_not_record_a_block():
+    pace = FakePace()
+    result = fetch_description(pace, "3900000001",
+                               get=ScriptedGet(*[requests.Timeout("slow")] * 4),
+                               sleep=lambda _s: None)
+    assert result.status == "refused"
+    assert pace.block_reasons == []
+
+
+def test_a_captcha_description_is_deferred_not_failed():
+    pace = FakePace()
+    result = fetch_description(pace, "3900000001",
+                               get=ScriptedGet(response(200, "<html>/checkpoint/challenge</html>")),
+                               sleep=lambda _s: None)
+    assert result.status == "deferred"
+    assert pace.block_reasons == ["captcha"]
+
+
+def test_a_404_description_is_gone_without_a_block():
+    pace = FakePace()
+    result = fetch_description(pace, "3900000001", get=ScriptedGet(response(404)),
+                               sleep=lambda _s: None)
+    assert result.status == "gone" and pace.block_reasons == []
+
+
+def test_a_valid_description_containing_the_word_challenge_is_not_a_captcha():
+    pace = FakePace()
+    body = FRAGMENT.replace("cloud infrastructure", "cloud infrastructure and challenge")
+    result = fetch_description(pace, "3900000001", get=ScriptedGet(response(200, body)),
+                               sleep=lambda _s: None)
+    assert result.status == "ok" and pace.block_reasons == []

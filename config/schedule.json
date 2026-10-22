@@ -2,12 +2,43 @@
   "timezone": "Europe/Rome",
   "closed_hours": null,
   "pace": {
-    "start_spacing_seconds": {"weekday": 75, "weekend": 110},
+    "start_spacing_seconds": 75,
     "jitter": 0.2,
     "description_turn_share": 0.6667
   },
   "refusals": {
     "first_wait_seconds": 60,
     "max_wait_seconds": 1800
+  },
+  "adaptive": {
+    "enabled": false,
+    "levels_seconds": [
+      75,
+      50,
+      37.5,
+      30,
+      25
+    ],
+    "protect_window_requests": 20,
+    "protect_min_requests": 10,
+    "protect_drop_rate": 0.3,
+    "protect_drop_two_rate": 0.5,
+    "protect_drop_streak": 4,
+    "climb_min_requests": 200,
+    "climb_max_upper_refusal_rate": 0.12,
+    "climb_max_gap_seconds": 3600,
+    "memory_first_hours": 2,
+    "memory_max_hours": 24,
+    "clean_day_min_requests": 100,
+    "demand_min_waiting": 1000,
+    "demand_ease_waiting": 250,
+    "demand_ease_interval_seconds": 3600,
+    "signal_refresh_seconds": 300,
+    "llm_climb_stop_share": 0.8,
+    "emergency_spacing_seconds": 150,
+    "emergency_clear_requests": 20,
+    "emergency_connection_errors": 3,
+    "emergency_connection_window_seconds": 600,
+    "pause_after_block_seconds": 3600
   }
 }

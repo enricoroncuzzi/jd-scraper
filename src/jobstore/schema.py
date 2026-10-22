@@ -233,6 +233,9 @@ DDL: list[str] = [
     # are no longer read. description_run is how many descriptions have taken the last turns
     # in a row, so the collector and processor share the two-of-three turn share.
     "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS description_run INTEGER NOT NULL DEFAULT 0",
+    # Adaptive pace ladder (2026-10-22): one JSONB state per host, and the level each
+    # request was made at, for replay and operations. Additive, so old code ignores them.
+    "ALTER TABLE pace_budgets ADD COLUMN IF NOT EXISTS adaptive_state JSONB NOT NULL DEFAULT '{}'::jsonb",
     """
     CREATE TABLE IF NOT EXISTS pace_events (
         id             BIGSERIAL PRIMARY KEY,
@@ -248,6 +251,7 @@ DDL: list[str] = [
     "CREATE INDEX IF NOT EXISTS pace_events_at_idx ON pace_events (at)",
     "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS spacing_seconds DOUBLE PRECISION",
     "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS wait_seconds DOUBLE PRECISION",
+    "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS level INTEGER",
     """
     CREATE TABLE IF NOT EXISTS slice_walks (
         id             BIGSERIAL PRIMARY KEY,

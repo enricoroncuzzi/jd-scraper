@@ -17,7 +17,10 @@ from datetime import datetime, timedelta
 
 from src.jobstore import heartbeat
 from src.delivery.settings import DeliverySettings
-from src.linkedin.schedule import ScheduleConfig, load_schedule_config, open_seconds_between
+from src.linkedin.adaptive import normalize_state, paused_day
+from src.linkedin.schedule import (
+    ScheduleConfig, load_schedule_config, local_day, open_seconds_between,
+)
 
 SERVICE_DOWN_AFTER = timedelta(hours=1)
 REPEAT_ALERT_AFTER = timedelta(hours=6)
@@ -113,12 +116,33 @@ def linkedin_blocked_issue(conn, settings: DeliverySettings, now: datetime,
                        f"(last success {last_rome} Rome)")
 
 
+def linkedin_paused_issue(conn, settings: DeliverySettings, now: datetime,
+                          schedule: ScheduleConfig | None = None) -> HealthIssue | None:
+    """One alert when the adaptive ladder paused LinkedIn for the rest of the Rome day.
+    None with the ladder off, a missing row or a state that is not a paused day."""
+    schedule = schedule or load_schedule_config()
+    if not schedule.adaptive.enabled:
+        return None
+    with conn.cursor() as cur:
+        cur.execute("SELECT adaptive_state FROM pace_budgets WHERE host = 'linkedin.com'")
+        row = cur.fetchone()
+    if row is None:
+        return None
+    state = normalize_state(row[0], schedule.adaptive)
+    if paused_day(state) != local_day(schedule, now):
+        return None
+    reason = (state.get("paused") or {}).get("reason", "block")
+    return HealthIssue("linkedin_paused",
+                       f"LinkedIn paused for the rest of the day (block persisted 1h: {reason})")
+
+
 def evaluate_health(conn, settings: DeliverySettings, now: datetime,
                     silence_allowance: dict[str, timedelta] | None = None,
                     schedule: ScheduleConfig | None = None) -> list[HealthIssue]:
     issues = service_issues(conn, settings, now, silence_allowance)
     blocked = linkedin_blocked_issue(conn, settings, now, schedule)
-    return issues + ([blocked] if blocked else [])
+    paused = linkedin_paused_issue(conn, settings, now, schedule)
+    return issues + ([blocked] if blocked else []) + ([paused] if paused else [])
 
 
 def health_lines(conn, settings: DeliverySettings, now: datetime,
@@ -141,7 +165,7 @@ def health_lines(conn, settings: DeliverySettings, now: datetime,
 def repeat_after(key: str, settings: DeliverySettings) -> timedelta:
     """How long before one alert key fires again: the LinkedIn block at most once a
     day, every other alert every six hours."""
-    if key == "linkedin_blocked":
+    if key in ("linkedin_blocked", "linkedin_paused"):
         return timedelta(hours=settings.linkedin_blocked_repeat_hours)
     return REPEAT_ALERT_AFTER
 
@@ -153,12 +177,14 @@ def _ledger(conn) -> dict[str, datetime]:
 
 
 def run_health_check(conn, settings: DeliverySettings, send, now: datetime,
-                     silence_allowance: dict[str, timedelta] | None = None) -> list[str]:
+                     silence_allowance: dict[str, timedelta] | None = None,
+                     schedule: ScheduleConfig | None = None) -> list[str]:
     """Send alerts for new or long-running issues and a note for cleared ones. Returns
     the messages sent. A failed send is retried on the next check; a service alert
     repeats every six hours and the LinkedIn silence at most once a day. Any leftover
     ledger row from an older check is cleared once with an "OK again" note."""
-    issues = {issue.key: issue for issue in evaluate_health(conn, settings, now, silence_allowance)}
+    issues = {issue.key: issue for issue in evaluate_health(
+        conn, settings, now, silence_allowance, schedule)}
     ledger = _ledger(conn)
     sent = []
     with conn.cursor() as cur:

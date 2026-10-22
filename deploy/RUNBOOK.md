@@ -275,11 +275,26 @@ configured in `config/schedule.json`:
 |---|---|---|
 | `timezone` | `Europe/Rome` | the clock the window and the day boundary use |
 | `closed_hours` | `null` | no closed window: LinkedIn runs around the clock (set `[0, 6]` to restore the 00:00-06:00 Rome pause) |
-| `pace.start_spacing_seconds.weekday` / `.weekend` | `75` / `110` | the fixed base spacing, in seconds |
+| `pace.start_spacing_seconds` | `75` | the one base spacing, on every day of the week |
 | `pace.jitter` | `0.2` | every sleep is jittered +/-20 % |
 | `pace.description_turn_share` | `0.6667` | descriptions get this share of the turns when a search also waits (realised as a run of `round(share/(1-share))` = 2); a waiting `packaging` request (the one LinkedIn request a CV package needs) takes the next turn instead |
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
+| `adaptive.enabled` | `false` | the ladder's off switch; `false` means exactly 75 s |
+| `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25` | the five levels (1x to 3x), the same every day |
+| `adaptive.protect_window_requests` / `protect_min_requests` | `20` / `10` | the trailing window and the minimum sample for the share tiers |
+| `adaptive.protect_drop_rate` / `protect_drop_two_rate` / `protect_drop_streak` | `0.30` / `0.50` / `4` | one level at 30 % refused, two at 50 % or four in a row |
+| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
+| `adaptive.climb_max_gap_seconds` | `3600` | a gap longer than this is capped when measuring successes per hour |
+| `adaptive.memory_first_hours` / `memory_max_hours` | `2` / `24` | a level that caused a drop waits 2, 4, 8, ... up to 24 h |
+| `adaptive.clean_day_min_requests` | `100` | a clean day with at least this many requests halves the memory |
+| `adaptive.demand_min_waiting` / `demand_ease_waiting` | `1000` / `250` | no climb below 1,000 waiting descriptions; ease one level below 250 |
+| `adaptive.demand_ease_interval_seconds` | `3600` | at most one demand-ease step per hour |
+| `adaptive.signal_refresh_seconds` | `300` | the demand and OpenRouter signals are cached this long |
+| `adaptive.llm_climb_stop_share` | `0.8` | stop climbing at 80 % of the OpenRouter daily limit from `config/llm_limits.json` |
+| `adaptive.emergency_spacing_seconds` / `emergency_clear_requests` | `150` / `20` | the brake spacing and the clean requests needed to clear it |
+| `adaptive.emergency_connection_errors` / `emergency_connection_window_seconds` | `3` / `600` | a connection brake needs 3 dropped connections within 10 min |
+| `adaptive.pause_after_block_seconds` | `3600` | a block that keeps recurring for this long pauses LinkedIn for the Rome day; a clean stretch of half `emergency_clear_requests` between two block signals starts a new clock, and a block retried inside one episode is still one episode |
 
 There is no daily request cap: an old or rolled-back `config/schedule.json` that still carries
 the removed `daily_caps` block loads anyway, the block is ignored and a `[schedule]` line names
@@ -328,10 +343,11 @@ or either keyword list changes the ranks, so run
 `psql jds -c "UPDATE jobs SET description_class = NULL WHERE stage = 'seen' AND tier IS NOT NULL AND description_status IN ('pending', 'rate_limited');"`
 and let the next ticks reclassify the backlog at `description_order.backfill_per_tick`.
 
-The base is a constant 75 s / 110 s, jittered +/-20 %, and nothing clamps it: there is no
+The base is a constant 75 s on every day, jittered +/-20 %, and nothing clamps it: there is no
 request cap, so open hours do not set a floor and a finished day changes nothing (the
 2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut
-throughput). The shared counter still records each request per Rome calendar day, but it is
+throughput). When the ladder is enabled it replaces the base with one of the five levels; when
+it is off the request path is exactly the fixed 75 s and makes no extra reads. The shared counter still records each request per Rome calendar day, but it is
 operator information: it never closes the gate. A refusal honours
 `Retry-After` or waits 60 s, doubling each consecutive refusal to a 30 min cap, and the first
 clean response resets it; the spacing around it does not move. When both a search and a
@@ -351,7 +367,7 @@ takes effect only when all three LinkedIn services run this code: `jds-process` 
 race. After the deploy, `psql jds -c "SELECT kind, count(*) FROM pace_events WHERE at >
 now() - interval '1 hour' GROUP BY 1"` shows `packaging` rows as packages come due. The
 packaging wait is not the 120 s tick budget: it is at least the longest jittered spacing
-of the window in effect (weekend 110 s base, up to 132 s) plus a second, read from the
+of the window in effect (75 s base, up to 90 s) plus a second, read from the
 schedule at wait time, so a request that arrives just after the previous one still gets its
 turn. Once the oldest waiting job is over `description_deadline_hours` old, an overdue
 description that the share says takes the next turn may spend more than one processor tick waiting for it. If a walk is refused three
@@ -386,9 +402,10 @@ description capacity is about half of the inflow. `description_order.quota_one_i
 that trades high-value latency against that tail (1 = pure FIFO, 4 = shipped); more description
 capacity is a pace decision outside this change.
 
-A flat 110 s over 24 h would be about 785 requests; with the +/-20 % jitter the mean stays at
-110 s, so the weekend still does about 785 and the weekday about 1,152 at 75 s. Nothing stops
-the evening: the only limit on volume is the spacing itself.
+A flat 75 s over 24 h is about 1,152 requests; with the +/-20 % jitter the mean stays at 75 s.
+Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's 3x
+level (25 s) is a ceiling of about 3,456 requests, not a promise: descriptions run last in a
+processor tick and are bounded by `description_seconds_per_tick`.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
 `*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
@@ -409,27 +426,26 @@ counts.
 Read the gate and the pace with `python -m src.services.status`. The gate line reads:
 
 ```
-LinkedIn gate: 342 requests today (weekday), window open
+LinkedIn gate: 342 requests today, window open
 ```
 
 With a restored `closed_hours` the closed line appears as
-`LinkedIn gate: 2 requests today (weekend), window closed until 06:00 Rome` during the pause.
+`LinkedIn gate: 2 requests today, window closed until 06:00 Rome` during the pause, or `LinkedIn gate: 0 requests today, LinkedIn paused for the rest of the day (block persisted 1h: http_999)` after a pause.
 The count resets at Rome midnight; it is reported, never enforced, and the line has no cap.
 
 The pace line shows the fixed spacing for both windows, the day's refusals, the refusals in a
 row and the last success, and adds any wait in Rome time:
 
 ```
-LinkedIn pace: fixed 75s weekday / 110s weekend, 0/342 refused today, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome
-LinkedIn pace: fixed 75s weekday / 110s weekend, 2/350 refused today, 2 refusals in a row, last request: packaging, last success 2026-10-14 11:40 Rome, waiting until 12:04:00 Rome
+LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, 0/342 refused today, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome, last move: disabled
+LinkedIn pace: adaptive level 2/5 (50s, 1.5x), 3/20 refused in trailing 20, 7/342 refused today, 1 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, last move: climb 1 -> 2 at 09:34 Rome (cautious upper 11.4%, 43/h vs 14/h), next climb: 41/200 requests at this level
 ```
 
 `last request` names the kind of the last request: `search`, `description` or `packaging`.
 
 The stored `weekday_spacing_seconds`, `weekend_spacing_seconds` and `nudge` columns from the
 old adaptive pace are ignored by the fixed code, so the live row's 99 s / 133 s base and x3
-nudge cannot slow the deploy: it runs at 75 s / 110 s from the first request, no manual step
-needed. To clear a stuck turn share (give descriptions the next turn) or reset today's counter:
+nudge cannot slow the deploy: it runs at 75 s from the first request, no manual step needed. To clear a stuck turn share (give descriptions the next turn) or reset today's counter:
 
 ```bash
 psql jds -c "UPDATE pace_budgets SET description_run = 0, requests_today = 0, day = NULL \
@@ -439,12 +455,13 @@ psql jds -c "UPDATE pace_budgets SET description_run = 0, requests_today = 0, da
 That takes effect on the next request; no restart is needed. The old `weekday_spacing_seconds`,
 `weekend_spacing_seconds`, `calm_days`, `nudge` and `nudged_at` columns may be left as they are.
 
-### The fixed-pace tripwire (2026-10-18 refusal study)
+### The pace tripwire (2026-10-18 refusal study)
 
-The study found the refusal rate did not depend on the pace between 3 s and 390 s, so the pace is
-fixed at 75 s / 110 s and accepts the ~16 % refusal rate. The one thing the study could not see is
+The study found the refusal rate did not depend on the pace between 3 s and 390 s, so the ladder
+can change the level adaptively while the off switch keeps the fixed 75 s. The off switch accepts
+the refusal rate the fixed pace produces; the ladder exists to learn from it. The one thing the study could not see is
 a long run above the 29 requests/hour it observed, so watch the first days. Revert to the cautious
-91 s / 133 s if any of these happens:
+91 s if any of these happens:
 
 - the daily refusal rate goes above about 35 %;
 - LinkedIn returns a status code the pace does not already know;
@@ -461,9 +478,9 @@ FROM pace_events GROUP BY 1 ORDER BY 1 DESC;
 
 The exact pace revert, on the VPS:
 
-1. Edit `config/schedule.json`: `pace.start_spacing_seconds` to `{"weekday": 91, "weekend": 133}`.
+1. Edit `config/schedule.json`: `pace.start_spacing_seconds` to `91` and `adaptive.enabled` to `false`. Enabling the ladder later requires `adaptive.levels_seconds[0]` to match the base.
 2. `sudo systemctl restart jds-collect-linkedin jds-process jds-deliver` back to back.
-3. `python -m src.services.status` must show `LinkedIn pace: fixed 91s weekday / 133s weekend`.
+3. `python -m src.services.status` must show `LinkedIn pace: adaptive off, fixed 91s`.
 
 If the extra night requests are the problem, also restore the closed window in the same edit:
 
@@ -482,37 +499,46 @@ filtered too.
 
 ### Deploying this change
 
-The general "restart one unit at a time" rule above does not apply here. Stop all three LinkedIn
-users before the code moves: the old code spaces requests 2-4 s and writes `next_slot_at` after
-each one, so a rolling restart could leave an old processor or deliver setting a 2-4 s slot the
-new collector would honour, a short burst in the first minutes. With all three stopped, only new
-code writes the row again. `SERVICE_DOWN_AFTER` is 1 h, so the short stop raises no service alert.
-The collector's stop normally waits the full `TimeoutStopSec=300` and is then killed; at 75 s per
-page a walk outlasts it, which is safe because `resume_start` is committed per page, and it is not
-a hang.
+This release adds `pace_budgets.adaptive_state` and `pace_events.level`. The watchdog is a
+ten-minute timer that runs whatever is checked out, and the new `linkedin_paused` health check
+reads `adaptive_state`, so the column must exist before the watchdog ticks. The order below does
+that first.
 
-1. `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
-2. `git pull --ff-only` and `.venv/bin/pip install -r requirements.txt`.
-3. `.venv/bin/python -m src.linkedin.collector --sync-slices`: runs `init_store` (adding the new
-   columns), applies the new cadences and the 12-48 h clamp through `sync_and_clamp`, prints
-   `slices: {... 'clamped': N}` and exits. It makes no LinkedIn request.
-4. No pace-state reset is needed: the fixed code reads the base spacing from
-   `config/schedule.json` and ignores the stored `weekday_spacing_seconds`,
-   `weekend_spacing_seconds` and `nudge`, so the live row's old base and nudge cannot slow it.
-   `init_store` adds `description_run`.
-5. Copy the four `jds-resume-*` units to `/etc/systemd/system/`;
-   `sudo systemd-analyze calendar --iterations=40 '*-*-* 00..01,05..06,11..23:00/30:00'` must list
-   only :00 and :30 starts, none from 02:00 to 04:59 (the daily runs at 03:00 and 04:00 plus or
-   minus an hour) and none from 07:00 to 10:59; `sudo systemctl daemon-reload`;
-   `sudo systemctl enable --now jds-resume-freehire.timer jds-resume-himalayas.timer`.
-6. `sudo systemctl start jds-collect-linkedin jds-process jds-deliver`. Each runs `init_store`
-   again (idempotent). Check `python -m src.services.status`: the gate open, `LinkedIn pace: fixed
-   75s weekday / 110s weekend`. Expect one "OK again: collection is healthy"
-   Telegram note on the first watchdog run (the old `health:collection` ledger row clears once).
-   LinkedIn jobs penalised by old 429s keep their `next_attempt_at` (up to 12 h) once after
-   deploy, so the first day's description lag is not misread as a new bug. `init_store` also
-   builds `jobs_description_queue_idx`, the partial index the new description pick reads; on a
-   300k-row store it builds in well under a second.
+1. `git pull --ff-only` and `.venv/bin/pip install -r requirements.txt`.
+2. `.venv/bin/python -m src.linkedin.collector --sync-slices`: calls `init_store`, adds the two
+   columns (and, because the DDL list changed, re-runs the whole list once, including the
+   `jobs_remote_verdict_chk` drop and re-add that scans `jobs` for a few seconds), applies the
+   cadences and the 12-48 h clamp, and exits. It makes no LinkedIn request. Run it immediately
+   after the pull, before the watchdog can tick.
+3. `sudo systemctl restart jds-process`; check `python -m src.services.status` shows the gate and
+   the pace line. Then restart `jds-collect-linkedin` and `jds-deliver` back to back. The schema
+   is already current, so their `init_store` runs no DDL.
+4. Leave `adaptive.enabled` false. The pace line must read `LinkedIn pace: adaptive off, fixed
+   75s`. The old live row may still carry `weekday_spacing_seconds`, `weekend_spacing_seconds`
+   and `nudge`; they are ignored.
+5. To enable the ladder, set `adaptive.enabled` to true in `config/schedule.json` (the tracked
+   file: commit the flip, or reset it before the next `git pull --ff-only`) and restart the three
+   LinkedIn units back to back. Enabling requires `adaptive.levels_seconds[0]` to match
+   `pace.start_spacing_seconds` (75 as shipped).
+6. To turn it off, set `adaptive.enabled` back to false and restart the three units; the next
+   request runs at exactly 75 s. The pause state is ignored while the ladder is off, so the off
+   switch also reopens a paused gate.
+7. Rollback: `git checkout -- config/schedule.json` first, then `git checkout <previous>` and
+   restart `jds-process` first (the old DDL fingerprint differs, so its first start re-runs the
+   verdict-constraint rescan), then the other units. The new columns stay and are never dropped;
+   old code ignores them.
+8. Reset the controller state without a restart:
+   `psql jds -c "UPDATE pace_budgets SET adaptive_state = '{}'::jsonb WHERE host = 'linkedin.com';"`
+   The next request starts at level 1. The legacy columns may be left as they are.
+
+The pre-change weekend pace of 110 s becomes 75 s with the controller off. That is the brief's
+"no weekday/weekend split" change, but an operator will notice it. Note also that the ladder-off
+request path makes no extra `jobs` or `llm_budget` read. A 65 s network blip can produce four
+dropped-connection events because a description request retries (5/15/45 s); three within ten
+minutes brake the pace. The climb gate admits at most 14 refusals in 200 (7.0 percent), just
+under the 2026-10-19 rate (7.7 percent), so the ladder rarely climbs on a typical 6 to 8 percent
+day. The 3x level is a ceiling, not a promise: descriptions run last in a processor tick and are
+bounded by `description_seconds_per_tick`.
 
 ### Week one review (design 4.6 C and section 8)
 

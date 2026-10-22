@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from src.linkedin.schedule import (
-    ScheduleConfig, in_closed_window, is_weekend, load_schedule_config, local_day,
-    open_seconds_between, requests_today_for, start_spacing_seconds, window_name,
+    ScheduleConfig, in_closed_window, load_schedule_config, local_day,
+    open_seconds_between, requests_today_for, start_spacing_seconds,
 )
 
 # 2026-10-14 is a Wednesday; the 17th and 18th are Saturday and Sunday.
@@ -41,7 +41,7 @@ def test_a_leftover_daily_caps_block_is_ignored(tmp_path):
 def test_a_leftover_daily_caps_block_is_ignored_even_when_it_is_junk(tmp_path):
     for leftover in ({}, "off", {"weekday": 0}, {"weekday": 1400}):
         cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "daily_caps": leftover}))
-        assert cfg.pace.start_weekday_seconds == 75
+        assert cfg.pace.start_spacing_seconds == 75
 
 
 def test_the_shipped_schedule_has_no_closed_window():
@@ -63,7 +63,7 @@ def test_a_leftover_taper_key_is_rejected(tmp_path):
 def test_the_shipped_schedule_carries_the_pace_and_refusal_numbers():
     cfg = load_schedule_config()
     p, r = cfg.pace, cfg.refusals
-    assert (p.start_weekday_seconds, p.start_weekend_seconds, p.jitter) == (75, 110, 0.2)
+    assert (p.start_spacing_seconds, p.jitter) == (75, 0.2)
     assert p.description_turn_share == pytest.approx(2 / 3, abs=1e-3)
     assert (r.first_wait_seconds, r.max_wait_seconds) == (60, 1800)
 
@@ -112,16 +112,26 @@ def test_open_time_without_a_window_is_dst_correct():
     assert open_seconds_between(cfg, start, end) == 49 * 3600
 
 
-def test_start_spacing_seconds_returns_the_window_start():
+def test_start_spacing_seconds_returns_the_one_base_spacing():
     cfg = ScheduleConfig()
-    assert start_spacing_seconds(cfg, "weekday") == 75 and start_spacing_seconds(cfg, "weekend") == 110
+    assert start_spacing_seconds(cfg) == 75
+    assert not hasattr(cfg.pace, "start_weekday_seconds")
+    assert not hasattr(cfg.pace, "start_weekend_seconds")
 
 
-def test_the_weekday_and_the_weekend_get_their_own_window():
-    cfg = ScheduleConfig()
-    assert not is_weekend(cfg, WED) and window_name(cfg, WED) == "weekday"
-    assert is_weekend(cfg, SAT) and is_weekend(cfg, SUN)
-    assert window_name(cfg, SAT) == "weekend" and window_name(cfg, SUN) == "weekend"
+def test_the_shipped_schedule_has_one_base_spacing_for_every_day():
+    cfg = load_schedule_config()
+    shipped = json.loads(Path("config/schedule.json").read_text())
+    assert start_spacing_seconds(cfg) == 75
+    assert shipped["pace"]["start_spacing_seconds"] == 75
+    assert "weekday" not in shipped["pace"] and "weekend" not in shipped["pace"]
+
+
+def test_a_legacy_spacing_object_still_loads_and_uses_weekday(tmp_path, capsys):
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "pace": {
+        **PACE, "start_spacing_seconds": {"weekday": 91, "weekend": 133}}}))
+    assert start_spacing_seconds(cfg) == 91
+    assert "weekday" in capsys.readouterr().out
 
 
 def test_the_quiet_window_is_rome_0000_to_0600():
@@ -179,7 +189,7 @@ DEFAULTS = {
     "timezone": "Europe/Rome",
     "closed_hours": None,
     "pace": {
-        "start_spacing_seconds": {"weekday": 75, "weekend": 110},
+        "start_spacing_seconds": 75,
         "jitter": 0.2,
         "description_turn_share": 2 / 3,
     },
@@ -205,6 +215,7 @@ TIGHTEN = {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.1
     {"pace": {**PACE, "jitter": 0.6}},
     {"pace": {**PACE, "description_turn_share": 1.0}},
     {"pace": {**PACE, "description_turn_share": 0.4}},
+    {"pace": {**PACE, "start_spacing_seconds": 0}},
     {"pace": {**PACE, "start_spacing_seconds": {"weekday": 0, "weekend": 110}}},
     {"refusals": {**REFUSALS, "max_wait_seconds": 30}},
     {"refusals": {**REFUSALS, "hour_min_requests": 0}},
@@ -228,3 +239,83 @@ def test_a_missing_closed_hours_key_is_rejected(tmp_path):
     data = {key: value for key, value in DEFAULTS.items() if key != "closed_hours"}
     with pytest.raises(ValueError, match="closed_hours"):
         load_schedule_config(_write(tmp_path, data))
+
+ADAPTIVE = {
+    "enabled": False,
+    "levels_seconds": [75, 50, 37.5, 30, 25],
+    "protect_window_requests": 20,
+    "protect_min_requests": 10,
+    "protect_drop_rate": 0.30,
+    "protect_drop_two_rate": 0.50,
+    "protect_drop_streak": 4,
+    "climb_min_requests": 200,
+    "climb_max_upper_refusal_rate": 0.12,
+    "climb_max_gap_seconds": 3600,
+    "memory_first_hours": 2,
+    "memory_max_hours": 24,
+    "clean_day_min_requests": 100,
+    "demand_min_waiting": 1000,
+    "demand_ease_waiting": 250,
+    "demand_ease_interval_seconds": 3600,
+    "signal_refresh_seconds": 300,
+    "llm_climb_stop_share": 0.8,
+    "emergency_spacing_seconds": 150,
+    "emergency_clear_requests": 20,
+    "emergency_connection_errors": 3,
+    "emergency_connection_window_seconds": 600,
+    "pause_after_block_seconds": 3600,
+}
+
+
+def test_the_adaptive_block_ships_off_with_the_approved_defaults():
+    shipped = json.loads(Path("config/schedule.json").read_text())["adaptive"]
+    cfg = load_schedule_config()
+    a = cfg.adaptive
+    assert shipped["enabled"] is False and a.enabled is False
+    assert a.levels_seconds == (75, 50, 37.5, 30, 25)
+    assert (a.protect_window_requests, a.protect_min_requests) == (20, 10)
+    assert (a.protect_drop_rate, a.protect_drop_two_rate, a.protect_drop_streak) == (0.30, 0.50, 4)
+    assert (a.climb_min_requests, a.climb_max_upper_refusal_rate) == (200, 0.12)
+    assert (a.memory_first_hours, a.memory_max_hours) == (2, 24)
+    assert (a.demand_min_waiting, a.demand_ease_waiting) == (1000, 250)
+    assert a.llm_climb_stop_share == 0.8
+    assert (a.emergency_spacing_seconds, a.emergency_clear_requests) == (150, 20)
+    assert (a.emergency_connection_errors, a.emergency_connection_window_seconds) == (3, 600)
+    assert a.pause_after_block_seconds == 3600
+    for key, value in shipped.items():
+        expected = tuple(value) if key == "levels_seconds" else value
+        assert expected == getattr(a, key), key
+
+
+def test_the_emergency_base_change_loads_while_the_ladder_is_off(tmp_path):
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "pace": {
+        **PACE, "start_spacing_seconds": 91}, "adaptive": {**ADAPTIVE, "enabled": False}}))
+    assert start_spacing_seconds(cfg) == 91
+
+
+def test_enabling_the_ladder_requires_the_first_level_to_match_the_base(tmp_path):
+    with pytest.raises(ValueError, match="levels_seconds"):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS, "pace": {
+            **PACE, "start_spacing_seconds": 91}, "adaptive": {**ADAPTIVE, "enabled": True}}))
+
+
+@pytest.mark.parametrize("override", [
+    {"levels_seconds": [75, 50, 37.5, 30]},
+    {"levels_seconds": [75, 80, 37.5, 30, 25]},
+    {"protect_min_requests": 0},
+    {"protect_min_requests": 21},
+    {"protect_drop_rate": 0.0},
+    {"protect_drop_two_rate": 0.20},
+    {"protect_drop_streak": 21},
+    {"climb_max_upper_refusal_rate": 1.1},
+    {"llm_climb_stop_share": 1.1},
+    {"memory_max_hours": 1},
+    {"demand_ease_waiting": 1001},
+    {"emergency_spacing_seconds": 25},
+    {"emergency_connection_errors": 0},
+    {"pause_after_block_seconds": 30},
+    {"protect_drop_rte": 0.4},
+])
+def test_a_malformed_adaptive_block_raises(tmp_path, override):
+    with pytest.raises(ValueError):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS, "adaptive": {**ADAPTIVE, **override}}))

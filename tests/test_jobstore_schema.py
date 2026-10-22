@@ -99,6 +99,11 @@ def test_the_always_on_pace_columns_exist(store_conn):
     assert {"spacing_seconds", "wait_seconds"} <= _columns(store_conn, "pace_events")
 
 
+def test_the_adaptive_pace_columns_exist(store_conn):
+    assert "adaptive_state" in _columns(store_conn, "pace_budgets")
+    assert "level" in _columns(store_conn, "pace_events")
+
+
 def test_sightings_and_slices_have_the_spec_columns(store_conn):
     assert {"job_id", "source", "source_job_id", "source_url", "seen_at", "slice_id"} \
         <= _columns(store_conn, "sightings")

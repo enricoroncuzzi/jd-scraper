@@ -13,8 +13,14 @@ from dotenv import load_dotenv
 from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
 from src.llm_fallback import format_usage_lines, load_guard_config, stage_usages
+from src.linkedin.adaptive import (
+    climb_blockers, current_level, effective_spacing, normalize_state, parse_iso,
+    paused_day, signals_from_state,
+)
 from src.linkedin.pace import Gate, PaceState, evaluate_gate
-from src.linkedin.schedule import ScheduleConfig, load_schedule_config, requests_today_for, start_spacing_seconds
+from src.linkedin.schedule import (
+    ScheduleConfig, load_schedule_config, requests_today_for, start_spacing_seconds,
+)
 from src.processor.config import load_processor_config
 from src.processor.describe import waiting_by_class
 
@@ -26,11 +32,65 @@ def rome(value: datetime | None, schedule: ScheduleConfig, fmt: str = "%Y-%m-%d 
     return f"{value.astimezone(schedule.zone):{fmt}} Rome"
 
 
-def _gate_line(gate: Gate, schedule: ScheduleConfig) -> str:
-    state = f"{gate.requests_today} requests today ({gate.window})"
+def _gate_line(gate: Gate, schedule: ScheduleConfig, state: dict | None = None) -> str:
+    count = f"{gate.requests_today} requests today"
+    if gate.reason == "blocked":
+        reason = ((state or {}).get("paused") or {}).get("reason", "block")
+        return (f"LinkedIn gate: {count}, LinkedIn paused for the rest of the day "
+                f"(block persisted 1h: {reason})")
     if gate.reason == "closed_hours" and schedule.closed_hours is not None:
-        return f"LinkedIn gate: {state}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
-    return f"LinkedIn gate: {state}, window open"
+        return f"LinkedIn gate: {count}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
+    return f"LinkedIn gate: {count}, window open"
+
+
+def _pace_mode(controller: dict, schedule: ScheduleConfig) -> str:
+    policy = schedule.adaptive
+    spacing = effective_spacing(policy, controller, base=start_spacing_seconds(schedule))
+    if not policy.enabled:
+        return f"adaptive off, fixed {spacing:g}s"
+    level = current_level(controller)
+    if isinstance(controller, dict) and controller.get("brake"):
+        return f"adaptive emergency {spacing:g}s (level {level}/5)"
+    ratio = policy.levels_seconds[0] / spacing if spacing else 1.0
+    return f"adaptive level {level}/5 ({spacing:g}s, {round(ratio, 1):g}x)"
+
+
+def _last_move_text(controller: dict, schedule: ScheduleConfig) -> str:
+    if not schedule.adaptive.enabled:
+        return "disabled"
+    move = controller.get("last_move") if isinstance(controller, dict) else None
+    if not isinstance(move, dict):
+        return "none"
+    at = parse_iso(move.get("at"))
+    stamp = at.astimezone(schedule.zone).strftime("%H:%M") if at else "?"
+    kind = move.get("kind", "move")
+    reason = move.get("reason", "")
+    if kind == "brake":
+        return f"emergency brake at {stamp} Rome" + (f" ({reason})" if reason else "")
+    if kind == "pause":
+        return f"pause at {stamp} Rome ({reason})"
+    if kind == "brake cleared":
+        return f"brake cleared at {stamp} Rome"
+    if kind in ("drop", "climb", "demand"):
+        return (f"{kind} {move.get('from')} -> {move.get('to')} at {stamp} Rome "
+                f"({reason})")
+    return f"{kind} at {stamp} Rome"
+
+
+def _next_climb_text(controller: dict, schedule: ScheduleConfig, now: datetime) -> str:
+    policy = schedule.adaptive
+    if not policy.enabled:
+        return ""
+    if paused_day(controller) is not None:
+        return "paused"
+    level = current_level(controller)
+    if level >= 5:
+        return "top level"
+    blockers = climb_blockers(policy, controller, now, signals_from_state(controller),
+                              zone=schedule.zone)
+    if blockers:
+        return blockers[0]
+    return f"ready: next request may climb to level {level + 1}"
 
 
 def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
@@ -63,27 +123,38 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         for source, parts in cadence.items():
             lines.append(f"  {source:<10} cadence: " + ", ".join(parts))
         cur.execute("SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, "
-                    "refusals_today, day, refusal_streak, last_clean_at, description_run "
-                    "FROM pace_budgets WHERE host = 'linkedin.com'")
+                    "refusals_today, day, refusal_streak, last_clean_at, description_run, "
+                    "adaptive_state FROM pace_budgets WHERE host = 'linkedin.com'")
         pace = cur.fetchone()
         if pace:
             (next_slot, wait_until, kind, wanting, today, refusals, day, streak,
-             last_clean_at, description_run) = pace
+             last_clean_at, description_run, adaptive_state) = pace
+            controller = normalize_state(adaptive_state, schedule.adaptive)
             state = PaceState(next_slot, kind, dict(wanting or {}), today, refusals, day, wait_until,
-                              streak, last_clean_at, description_run or 0)
+                              streak, last_clean_at, description_run or 0, controller)
             today = requests_today_for(day, today, schedule, now)
             refusals = requests_today_for(day, refusals, schedule, now)
-            wd = start_spacing_seconds(schedule, "weekday")
-            we = start_spacing_seconds(schedule, "weekend")
+            window = schedule.adaptive.protect_window_requests
+            trailing = len(controller["trailing"])
+            trailing_refused = controller["trailing"].count("refused")
             success = (f", last success {rome(last_clean_at, schedule)}" if last_clean_at else "")
             waiting = (f", waiting until {rome(wait_until, schedule, '%H:%M:%S')}"
                        if wait_until and wait_until > now else "")
-            lines.append(f"LinkedIn pace: fixed {wd:.0f}s weekday / {we:.0f}s weekend, "
-                         f"{refusals}/{today} refused today, {state.refusal_streak} refusals in a row, "
-                         f"last request: {state.last_kind}{success}{waiting}")
-            gate = evaluate_gate(schedule, now,
-                                 requests_today=today)
-            lines.append(_gate_line(gate, schedule))
+            parts = [f"LinkedIn pace: {_pace_mode(controller, schedule)}, "
+                     f"{trailing_refused}/{window} refused in trailing {window}, "
+                     f"{refusals}/{today} refused today, {state.refusal_streak} refusals in a row"]
+            if state.last_kind:
+                parts.append(f"last request: {state.last_kind}{success}{waiting}")
+            elif waiting:
+                parts.append(f"waiting until {rome(wait_until, schedule, '%H:%M:%S')}")
+            parts.append(f"last move: {_last_move_text(controller, schedule)}")
+            if schedule.adaptive.enabled:
+                parts.append(f"next climb: {_next_climb_text(controller, schedule, now)}")
+            lines.append(", ".join(parts))
+            gate = evaluate_gate(schedule, now, requests_today=today,
+                                 paused_day=(paused_day(controller)
+                                             if schedule.adaptive.enabled else None))
+            lines.append(_gate_line(gate, schedule, controller))
     for provider in ("openrouter", "groq"):
         usage = budget.used_today(conn, provider, now)
         lines.append(f"{provider} today (UTC): {usage.requests} requests, "

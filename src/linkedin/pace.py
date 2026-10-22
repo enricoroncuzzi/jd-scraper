@@ -12,13 +12,14 @@ the gate is closed `slot` raises PaceGateClosed instead of blocking a tick for
 hours; the services catch that and go idle. Every request is recorded in
 `pace_events`.
 
-The pace is fixed (2026-10-18 refusal study): a constant base spacing per window
-(75 s weekday / 110 s weekend) jittered +/-20 %.
-Nothing slows it down: the study found the refusal rate did not depend on the gap
-anywhere between 3 s and 390 s, while the old hour nudge and day verdict cut
-throughput to about a quarter. A refusal is waited out (60 s doubling to a 30 min
-cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
-description are waiting, descriptions take two of every three turns
+The pace is fixed (2026-10-18 refusal study): one constant base spacing on every
+day (75 s), jittered +/-20 %. The adaptive ladder can change the effective base
+when it is switched on; the shipped config has it off.
+Nothing slows it down while the ladder is off: the study found the refusal rate did
+not depend on the gap anywhere between 3 s and 390 s, while the old hour nudge and
+day verdict cut throughput to about a quarter. A refusal is waited out (60 s
+doubling to a 30 min cap, or `Retry-After`) and the pace carries on unchanged while the
+ladder is off. When both a search and a description are waiting, descriptions take two of every three turns
 (`pace.description_turn_share`); a lone waiting kind always takes the turn. A
 `packaging` request - the one LinkedIn request a CV package needs - is granted the
 next turn instead of competing for it: it is rare, each turn buys a whole package,
@@ -26,10 +27,11 @@ and a pass that loses the turn gets no package at all, while a description or a
 search just takes the following turn. The advisory lock is held only for the request
 itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_after`
 and cannot get a turn raises PaceBusy; a `packaging` request waits at least the longest
-jittered spacing of the window in effect (plus a second), read from the schedule at wait
+jittered spacing of the base in effect (plus a second), read from the schedule at wait
 time, so the previous request's spacing can never make it give up. A caller that gives
 up writes only its own `wanting` markers.
 """
+import copy
 import json
 import random
 import time
@@ -39,13 +41,22 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 from src.jobstore.db import connect, store_url
+from src.linkedin.adaptive import (
+    current_level,
+    effective_spacing,
+    maybe_refresh_signals,
+    normalize_state,
+    paused_day,
+    read_signals,
+    review,
+    signals_from_state,
+)
 from src.linkedin.schedule import (
     RefusalPolicy,
     ScheduleConfig,
     in_closed_window,
     local_day,
     start_spacing_seconds,
-    window_name,
 )
 from src.services.pulse import pulse
 
@@ -71,9 +82,8 @@ class Gate:
     """Why LinkedIn is open or closed to both services right now."""
 
     open: bool
-    reason: str  # open | closed_hours
+    reason: str  # open | closed_hours | blocked
     requests_today: int
-    window: str  # weekday | weekend
 
 
 class PaceGateClosed(RuntimeError):
@@ -88,13 +98,15 @@ class PaceBusy(RuntimeError):
     """No LinkedIn turn was granted within `give_up_after`; nothing was sent."""
 
 
-def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int) -> Gate:
-    """Closed only by a configured closed window. `requests_today` is reported, never a cap."""
-    window = window_name(schedule, now)
-    common = {"requests_today": requests_today, "window": window}
+def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int,
+                  paused_day: date | None = None) -> Gate:
+    """Closed by a configured closed window or a paused day. `requests_today` is
+    reported, never a cap."""
+    if paused_day is not None and paused_day == local_day(schedule, now):
+        return Gate(False, "blocked", requests_today)
     if in_closed_window(schedule, now):
-        return Gate(False, "closed_hours", **common)
-    return Gate(True, "open", **common)
+        return Gate(False, "closed_hours", requests_today)
+    return Gate(True, "open", requests_today)
 
 
 @dataclass
@@ -109,6 +121,7 @@ class PaceState:
     refusal_streak: int = 0
     last_clean_at: datetime | None = None
     description_run: int = 0
+    controller: dict = field(default_factory=dict)
 
 
 def description_run_cap(share: float) -> int:
@@ -119,11 +132,10 @@ def description_run_cap(share: float) -> int:
 
 
 def next_spacing(schedule: ScheduleConfig, now: datetime,
-                 uniform=random.uniform) -> float:
-    """The next sleep: the fixed base spacing for `now`'s window, jittered by
+                 uniform=random.uniform, *, base: float | None = None) -> float:
+    """The next sleep: the given base spacing (or the config base), jittered by
     +/-`pace.jitter`. Nothing clamps it from below."""
-    window = window_name(schedule, now)
-    base = start_spacing_seconds(schedule, window)
+    base = start_spacing_seconds(schedule) if base is None else base
     factor = uniform(1 - schedule.pace.jitter, 1 + schedule.pace.jitter)
     return base * factor
 
@@ -189,6 +201,12 @@ class Slot:
         self.status: int | None = None
         self.retry_after: float | None = None
         self.wait_seconds: float | None = None
+        self.block_reason: str | None = None
+
+    def block(self, reason: str) -> None:
+        """Record a real block signal (403, 999, CAPTCHA, dropped connection) for the
+        adaptive controller. The outcome is unchanged."""
+        self.block_reason = reason
 
     def clean(self, status: int | None = None) -> None:
         self.outcome = "clean"
@@ -218,7 +236,8 @@ class PaceBudget:
     def __init__(self, conn, host: str = HOST, *, clock=None, sleep=time.sleep,
                  uniform=random.uniform, service: str | None = None,
                  schedule: ScheduleConfig | None = None,
-                 give_up_after: float | None = None):
+                 give_up_after: float | None = None,
+                 signal_reader=read_signals):
         self.conn = conn
         self.host = host
         self.key = _lock_key(host)
@@ -228,6 +247,7 @@ class PaceBudget:
         self.service = service
         self.schedule = schedule or ScheduleConfig()
         self.give_up_after = give_up_after
+        self.signal_reader = signal_reader
         self.run_cap = description_run_cap(self.schedule.pace.description_turn_share)
 
     # -- storage ---------------------------------------------------------
@@ -238,12 +258,13 @@ class PaceBudget:
                 "ON CONFLICT (host) DO NOTHING", (self.host, self.clock()))
             cur.execute(
                 "SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, "
-                "refusals_today, day, refusal_streak, last_clean_at, description_run "
-                "FROM pace_budgets WHERE host = %s", (self.host,))
+                "refusals_today, day, refusal_streak, last_clean_at, description_run, "
+                "adaptive_state FROM pace_budgets WHERE host = %s", (self.host,))
             (next_slot, wait_until, last_kind, wanting, requests_today, refusals_today, day,
-             refusal_streak, last_clean_at, description_run) = cur.fetchone()
+             refusal_streak, last_clean_at, description_run, controller) = cur.fetchone()
         state = PaceState(next_slot, last_kind, dict(wanting or {}), requests_today, refusals_today,
-                          day, wait_until, refusal_streak, last_clean_at, description_run or 0)
+                          day, wait_until, refusal_streak, last_clean_at, description_run or 0,
+                          controller if isinstance(controller, dict) else {})
         return roll_day(state, self.schedule, self.clock())
 
     def _save(self, state: PaceState, kinds: list[str]) -> None:
@@ -251,10 +272,12 @@ class PaceBudget:
             cur.execute(
                 "UPDATE pace_budgets SET next_slot_at = %s, cooldown_until = %s, last_kind = %s, "
                 "wanting = wanting - %s::text[], requests_today = %s, refusals_today = %s, day = %s, "
-                "refusal_streak = %s, last_clean_at = %s, description_run = %s WHERE host = %s",
+                "refusal_streak = %s, last_clean_at = %s, description_run = %s, "
+                "adaptive_state = %s::jsonb WHERE host = %s",
                 (state.next_slot_at, state.wait_until, state.last_kind, kinds,
                  state.requests_today, state.refusals_today, state.day, state.refusal_streak,
-                 state.last_clean_at, state.description_run, self.host))
+                 state.last_clean_at, state.description_run, json.dumps(state.controller),
+                 self.host))
 
     def _declare_wanting(self, kind: str) -> None:
         markers = {kind: self.clock().timestamp()}
@@ -287,7 +310,7 @@ class PaceBudget:
     def gate(self) -> Gate:
         """Why LinkedIn is open or closed right now. Takes no lock and no request."""
         state = self._load()
-        return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today)
+        return self._gate(state)
 
     def seconds_until_slot(self) -> float:
         """How long a request made now would wait for its turn, ignoring the other
@@ -297,10 +320,10 @@ class PaceBudget:
         return max(0.0, (ready - self.clock()).total_seconds())
 
     # -- the turn --------------------------------------------------------
-    def _record(self, state: PaceState, kind: str, slot: Slot, now: datetime) -> float:
-        """Count the request against the Rome day and advance the fixed pace. The caller
-        saves the row first; the pace_events row is written afterwards, so a logging
-        failure can never lose the count or the refusal state."""
+    def _record(self, state: PaceState, kind: str, slot: Slot, now: datetime):
+        """Count the request against the Rome day, run the adaptive ladder and advance the
+        pace. The controller step is isolated: a fault keeps the previous state and the
+        plain base spacing, and never skips the refusal wait or the caller's save."""
         roll_day(state, self.schedule, now)
         state.requests_today += 1
         if slot.outcome == "clean":
@@ -323,21 +346,50 @@ class PaceBudget:
             # A packaging turn is neither kind: it leaves the two-of-three run alone.
             state.description_run = 0
         state.last_kind = kind
-        spacing = next_spacing(self.schedule, now, self.uniform)
+        policy = self.schedule.adaptive
+        base = start_spacing_seconds(self.schedule)
+        level = None
+        previous = copy.deepcopy(state.controller)
+        try:
+            state.controller = normalize_state(state.controller, policy)
+            level = current_level(state.controller)
+            block = slot.block_reason
+            if (slot.outcome == "throttled" and slot.wait_seconds is not None
+                    and slot.wait_seconds >= self.schedule.refusals.max_wait_seconds):
+                block = block or "max_refusal_wait"
+            if policy.enabled:
+                state.controller = maybe_refresh_signals(
+                    self.conn, state.controller, policy, now, reader=self.signal_reader)
+            outcome = {"clean": "clean", "throttled": "refused"}.get(
+                slot.outcome, "neutral")
+            state.controller = review(
+                state.controller, policy, now, day=local_day(self.schedule, now),
+                outcome=outcome, level=level, block=block,
+                signals=signals_from_state(state.controller))
+            payload = json.dumps(state.controller)
+            state.controller = json.loads(payload)
+            base = effective_spacing(policy, state.controller, base=base)
+        except Exception as exc:  # noqa: BLE001 - never unpace LinkedIn on a controller fault
+            print(f"[pace] adaptive controller failed: {type(exc).__name__}: {exc}")
+            state.controller = previous
+            level = None
+            base = start_spacing_seconds(self.schedule)
+        spacing = next_spacing(self.schedule, now, self.uniform, base=base)
         state.next_slot_at = now + timedelta(seconds=spacing)
-        return spacing
+        return spacing, level
 
     def _log_event(self, state: PaceState, kind: str, slot: Slot, now: datetime,
-                   spacing: float) -> None:
+                   spacing: float, level: int | None) -> None:
         """Append one request to pace_events. Telemetry must never break a run, so a
         failed insert is logged and swallowed; the state is already saved."""
         try:
             with self.conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO pace_events (at, service, kind, outcome, status, "
-                    "requests_today, spacing_seconds, wait_seconds) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "requests_today, spacing_seconds, wait_seconds, level) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (now, self.service, kind, EVENT_OUTCOMES.get(slot.outcome, slot.outcome),
-                     slot.status, state.requests_today, spacing, slot.wait_seconds))
+                     slot.status, state.requests_today, spacing, slot.wait_seconds, level))
         except Exception as exc:  # noqa: BLE001 - telemetry must not raise into the pipeline
             print(f"[pace] could not record the {kind} request in pace_events: "
                   f"{type(exc).__name__}: {exc}")
@@ -345,12 +397,14 @@ class PaceBudget:
     def _give_up_bound(self, kind: str) -> float | None:
         if self.give_up_after is None or kind != PACKAGING_KIND:
             return self.give_up_after
-        window = window_name(self.schedule, self.clock())
-        longest = start_spacing_seconds(self.schedule, window) * (1 + self.schedule.pace.jitter)
+        longest = start_spacing_seconds(self.schedule) * (1 + self.schedule.pace.jitter)
         return max(self.give_up_after, longest + YIELD_SECONDS * 2)
 
     def _gate(self, state: PaceState) -> Gate:
-        return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today)
+        paused = (paused_day(state.controller)
+                  if self.schedule.adaptive.enabled else None)
+        return evaluate_gate(self.schedule, self.clock(),
+                             requests_today=state.requests_today, paused_day=paused)
 
     @contextmanager
     def slot(self, kind: str, *, overdue: bool = False):
@@ -392,9 +446,9 @@ class PaceBudget:
         finally:
             try:
                 now = self.clock()
-                spacing = self._record(state, kind, slot, now)
+                spacing, level = self._record(state, kind, slot, now)
                 self._save(state, kinds)
-                self._log_event(state, kind, slot, now, spacing)
+                self._log_event(state, kind, slot, now, spacing, level)
             finally:
                 self._unlock()
 

@@ -78,16 +78,16 @@ def test_the_counter_never_closes_the_gate(make_budget):
     budget = make_budget(fake)
     budget.snapshot()  # create the row
     with budget.conn.cursor() as cur:
-        cur.execute("UPDATE pace_budgets SET requests_today = 999999, day = %s "
+        cur.execute("UPDATE pace_budgets SET requests_today = 10000, day = %s "
                     "WHERE host = 'linkedin.com'", (local_day(ScheduleConfig(), WED),))
     gate = budget.gate()
     assert gate.open and gate.reason == "open"
-    assert gate.requests_today == 999999 and gate.window == "weekday"
-    assert not hasattr(gate, "cap")
+    assert gate.requests_today == 10000
+    assert not hasattr(gate, "window") and not hasattr(gate, "cap")
     for kind in ("search", "description"):
         with budget.slot(kind) as slot:
             slot.clean(200)
-    assert _row(budget)[0] == 1000001 and _event_count(budget) == 2
+    assert _row(budget)[0] == 10002 and _event_count(budget) == 2
 
 
 def test_the_counter_resets_on_the_next_rome_day(make_budget):
@@ -129,7 +129,7 @@ def test_every_request_is_logged_with_service_kind_outcome_and_status(make_budge
 def test_evaluate_gate_reports_open_when_everything_is_fine():
     gate = evaluate_gate(ScheduleConfig(), WED, requests_today=5)
     assert gate.open and gate.reason == "open" and gate.requests_today == 5
-    assert gate.window == "weekday" and not hasattr(gate, "cap")
+    assert not hasattr(gate, "window") and not hasattr(gate, "cap")
 
 
 # -- end to end through slot: restart, probes, the wait, logging failures ------------------
