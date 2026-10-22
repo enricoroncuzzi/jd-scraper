@@ -2,7 +2,7 @@
   "timezone": "Europe/Rome",
   "closed_hours": null,
   "pace": {
-    "start_spacing_seconds": {"weekday": 75, "weekend": 110},
+    "start_spacing_seconds": 75,
     "jitter": 0.2,
     "description_turn_share": 0.6667
   },

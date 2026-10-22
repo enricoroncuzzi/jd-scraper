@@ -12,12 +12,13 @@ the gate is closed `slot` raises PaceGateClosed instead of blocking a tick for
 hours; the services catch that and go idle. Every request is recorded in
 `pace_events`.
 
-The pace is fixed (2026-10-18 refusal study): a constant base spacing per window
-(75 s weekday / 110 s weekend) jittered +/-20 %.
-Nothing slows it down: the study found the refusal rate did not depend on the gap
-anywhere between 3 s and 390 s, while the old hour nudge and day verdict cut
-throughput to about a quarter. A refusal is waited out (60 s doubling to a 30 min
-cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
+The pace is fixed (2026-10-18 refusal study): one constant base spacing on every
+day (75 s), jittered +/-20 %. The adaptive ladder can change the effective base
+when it is switched on; the shipped config has it off.
+Nothing slows it down while the ladder is off: the study found the refusal rate did
+not depend on the gap anywhere between 3 s and 390 s, while the old hour nudge and
+day verdict cut throughput to about a quarter. A refusal is waited out (60 s
+doubling to a 30 min cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
 description are waiting, descriptions take two of every three turns
 (`pace.description_turn_share`); a lone waiting kind always takes the turn. A
 `packaging` request - the one LinkedIn request a CV package needs - is granted the
@@ -45,7 +46,6 @@ from src.linkedin.schedule import (
     in_closed_window,
     local_day,
     start_spacing_seconds,
-    window_name,
 )
 from src.services.pulse import pulse
 
@@ -71,9 +71,8 @@ class Gate:
     """Why LinkedIn is open or closed to both services right now."""
 
     open: bool
-    reason: str  # open | closed_hours
+    reason: str  # open | closed_hours | blocked
     requests_today: int
-    window: str  # weekday | weekend
 
 
 class PaceGateClosed(RuntimeError):
@@ -88,13 +87,15 @@ class PaceBusy(RuntimeError):
     """No LinkedIn turn was granted within `give_up_after`; nothing was sent."""
 
 
-def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int) -> Gate:
-    """Closed only by a configured closed window. `requests_today` is reported, never a cap."""
-    window = window_name(schedule, now)
-    common = {"requests_today": requests_today, "window": window}
+def evaluate_gate(schedule: ScheduleConfig, now: datetime, *, requests_today: int,
+                  paused_day: date | None = None) -> Gate:
+    """Closed by a configured closed window or a paused day. `requests_today` is
+    reported, never a cap."""
+    if paused_day is not None and paused_day == local_day(schedule, now):
+        return Gate(False, "blocked", requests_today)
     if in_closed_window(schedule, now):
-        return Gate(False, "closed_hours", **common)
-    return Gate(True, "open", **common)
+        return Gate(False, "closed_hours", requests_today)
+    return Gate(True, "open", requests_today)
 
 
 @dataclass
@@ -119,11 +120,10 @@ def description_run_cap(share: float) -> int:
 
 
 def next_spacing(schedule: ScheduleConfig, now: datetime,
-                 uniform=random.uniform) -> float:
-    """The next sleep: the fixed base spacing for `now`'s window, jittered by
+                 uniform=random.uniform, *, base: float | None = None) -> float:
+    """The next sleep: the given base spacing (or the config base), jittered by
     +/-`pace.jitter`. Nothing clamps it from below."""
-    window = window_name(schedule, now)
-    base = start_spacing_seconds(schedule, window)
+    base = start_spacing_seconds(schedule) if base is None else base
     factor = uniform(1 - schedule.pace.jitter, 1 + schedule.pace.jitter)
     return base * factor
 
@@ -287,7 +287,7 @@ class PaceBudget:
     def gate(self) -> Gate:
         """Why LinkedIn is open or closed right now. Takes no lock and no request."""
         state = self._load()
-        return evaluate_gate(self.schedule, self.clock(), requests_today=state.requests_today)
+        return self._gate(state)
 
     def seconds_until_slot(self) -> float:
         """How long a request made now would wait for its turn, ignoring the other
@@ -345,8 +345,7 @@ class PaceBudget:
     def _give_up_bound(self, kind: str) -> float | None:
         if self.give_up_after is None or kind != PACKAGING_KIND:
             return self.give_up_after
-        window = window_name(self.schedule, self.clock())
-        longest = start_spacing_seconds(self.schedule, window) * (1 + self.schedule.pace.jitter)
+        longest = start_spacing_seconds(self.schedule) * (1 + self.schedule.pace.jitter)
         return max(self.give_up_after, longest + YIELD_SECONDS * 2)
 
     def _gate(self, state: PaceState) -> Gate:

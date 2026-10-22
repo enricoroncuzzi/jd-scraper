@@ -27,7 +27,7 @@ def rome(value: datetime | None, schedule: ScheduleConfig, fmt: str = "%Y-%m-%d 
 
 
 def _gate_line(gate: Gate, schedule: ScheduleConfig) -> str:
-    state = f"{gate.requests_today} requests today ({gate.window})"
+    state = f"{gate.requests_today} requests today"
     if gate.reason == "closed_hours" and schedule.closed_hours is not None:
         return f"LinkedIn gate: {state}, window closed until {schedule.closed_hours[1]:02d}:00 Rome"
     return f"LinkedIn gate: {state}, window open"
@@ -73,12 +73,11 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
                               streak, last_clean_at, description_run or 0)
             today = requests_today_for(day, today, schedule, now)
             refusals = requests_today_for(day, refusals, schedule, now)
-            wd = start_spacing_seconds(schedule, "weekday")
-            we = start_spacing_seconds(schedule, "weekend")
+            base = start_spacing_seconds(schedule)
             success = (f", last success {rome(last_clean_at, schedule)}" if last_clean_at else "")
             waiting = (f", waiting until {rome(wait_until, schedule, '%H:%M:%S')}"
                        if wait_until and wait_until > now else "")
-            lines.append(f"LinkedIn pace: fixed {wd:.0f}s weekday / {we:.0f}s weekend, "
+            lines.append(f"LinkedIn pace: fixed {base:.0f}s, "
                          f"{refusals}/{today} refused today, {state.refusal_streak} refusals in a row, "
                          f"last request: {state.last_kind}{success}{waiting}")
             gate = evaluate_gate(schedule, now,

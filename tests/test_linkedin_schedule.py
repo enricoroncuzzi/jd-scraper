@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from src.linkedin.schedule import (
-    ScheduleConfig, in_closed_window, is_weekend, load_schedule_config, local_day,
-    open_seconds_between, requests_today_for, start_spacing_seconds, window_name,
+    ScheduleConfig, in_closed_window, load_schedule_config, local_day,
+    open_seconds_between, requests_today_for, start_spacing_seconds,
 )
 
 # 2026-10-14 is a Wednesday; the 17th and 18th are Saturday and Sunday.
@@ -41,7 +41,7 @@ def test_a_leftover_daily_caps_block_is_ignored(tmp_path):
 def test_a_leftover_daily_caps_block_is_ignored_even_when_it_is_junk(tmp_path):
     for leftover in ({}, "off", {"weekday": 0}, {"weekday": 1400}):
         cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "daily_caps": leftover}))
-        assert cfg.pace.start_weekday_seconds == 75
+        assert cfg.pace.start_spacing_seconds == 75
 
 
 def test_the_shipped_schedule_has_no_closed_window():
@@ -63,7 +63,7 @@ def test_a_leftover_taper_key_is_rejected(tmp_path):
 def test_the_shipped_schedule_carries_the_pace_and_refusal_numbers():
     cfg = load_schedule_config()
     p, r = cfg.pace, cfg.refusals
-    assert (p.start_weekday_seconds, p.start_weekend_seconds, p.jitter) == (75, 110, 0.2)
+    assert (p.start_spacing_seconds, p.jitter) == (75, 0.2)
     assert p.description_turn_share == pytest.approx(2 / 3, abs=1e-3)
     assert (r.first_wait_seconds, r.max_wait_seconds) == (60, 1800)
 
@@ -112,16 +112,26 @@ def test_open_time_without_a_window_is_dst_correct():
     assert open_seconds_between(cfg, start, end) == 49 * 3600
 
 
-def test_start_spacing_seconds_returns_the_window_start():
+def test_start_spacing_seconds_returns_the_one_base_spacing():
     cfg = ScheduleConfig()
-    assert start_spacing_seconds(cfg, "weekday") == 75 and start_spacing_seconds(cfg, "weekend") == 110
+    assert start_spacing_seconds(cfg) == 75
+    assert not hasattr(cfg.pace, "start_weekday_seconds")
+    assert not hasattr(cfg.pace, "start_weekend_seconds")
 
 
-def test_the_weekday_and_the_weekend_get_their_own_window():
-    cfg = ScheduleConfig()
-    assert not is_weekend(cfg, WED) and window_name(cfg, WED) == "weekday"
-    assert is_weekend(cfg, SAT) and is_weekend(cfg, SUN)
-    assert window_name(cfg, SAT) == "weekend" and window_name(cfg, SUN) == "weekend"
+def test_the_shipped_schedule_has_one_base_spacing_for_every_day():
+    cfg = load_schedule_config()
+    shipped = json.loads(Path("config/schedule.json").read_text())
+    assert start_spacing_seconds(cfg) == 75
+    assert shipped["pace"]["start_spacing_seconds"] == 75
+    assert "weekday" not in shipped["pace"] and "weekend" not in shipped["pace"]
+
+
+def test_a_legacy_spacing_object_still_loads_and_uses_weekday(tmp_path, capsys):
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "pace": {
+        **PACE, "start_spacing_seconds": {"weekday": 91, "weekend": 133}}}))
+    assert start_spacing_seconds(cfg) == 91
+    assert "weekday" in capsys.readouterr().out
 
 
 def test_the_quiet_window_is_rome_0000_to_0600():
@@ -179,7 +189,7 @@ DEFAULTS = {
     "timezone": "Europe/Rome",
     "closed_hours": None,
     "pace": {
-        "start_spacing_seconds": {"weekday": 75, "weekend": 110},
+        "start_spacing_seconds": 75,
         "jitter": 0.2,
         "description_turn_share": 2 / 3,
     },
@@ -205,6 +215,7 @@ TIGHTEN = {"calm_days": 3, "calm_refusal_rate": 0.02, "loosen_refusal_rate": 0.1
     {"pace": {**PACE, "jitter": 0.6}},
     {"pace": {**PACE, "description_turn_share": 1.0}},
     {"pace": {**PACE, "description_turn_share": 0.4}},
+    {"pace": {**PACE, "start_spacing_seconds": 0}},
     {"pace": {**PACE, "start_spacing_seconds": {"weekday": 0, "weekend": 110}}},
     {"refusals": {**REFUSALS, "max_wait_seconds": 30}},
     {"refusals": {**REFUSALS, "hour_min_requests": 0}},

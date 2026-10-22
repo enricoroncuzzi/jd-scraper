@@ -77,8 +77,7 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
             (since, now))
         area_cap, full_cap, walks = cur.fetchone()
 
-    wd = start_spacing_seconds(schedule, "weekday")
-    we = start_spacing_seconds(schedule, "weekend")
+    base = start_spacing_seconds(schedule)
     pct = 100.0 * refused / requests if requests else 0.0
     refusal_wait = (f"Longest refusal wait: {age_text(timedelta(seconds=longest))}"
                     if longest is not None else "Longest refusal wait: none")
@@ -90,7 +89,7 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         f"Requests: {requests} (search {search}, description {description}, "
         f"packaging {packaging}); refused {refused} ({pct:.1f}%)",
         refusal_wait,
-        f"Fixed spacing: {wd:.0f}s weekday, {we:.0f}s weekend",
+        f"Fixed spacing: {base:.0f}s",
         f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h"
         f"+{collector.cadence_tolerance_hours}h: {_names(past)}",
         oldest_line,

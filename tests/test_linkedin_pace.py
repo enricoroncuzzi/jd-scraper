@@ -550,28 +550,28 @@ def test_an_overdue_next_in_line_description_gives_up_on_a_long_wait(make_budget
 SAT_NOON = datetime(2026, 10, 17, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Saturday
 
 
-def _weekend_request_right_after_a_request(make_budget):
+def _request_right_after_a_request(make_budget):
     fake = FakeTime(SAT_NOON)
     first = make_budget(fake)
     with first.slot("search") as slot:
         slot.clean(200)
-    budget = make_budget(fake, give_up_after=120)
-    # the previous request drew the longest jittered spacing of the weekend window
-    _set(budget, next_slot_at=fake.now + timedelta(seconds=132))
+    budget = make_budget(fake, give_up_after=60)
+    # the previous request drew the longest jittered spacing of the window
+    _set(budget, next_slot_at=fake.now + timedelta(seconds=90))
     return fake, budget
 
 
-def test_a_packaging_request_outwaits_the_longest_weekend_spacing(make_budget):
-    fake, budget = _weekend_request_right_after_a_request(make_budget)
+def test_a_packaging_request_outwaits_the_longest_spacing(make_budget):
+    fake, budget = _request_right_after_a_request(make_budget)
     started = fake.now
     with budget.slot("packaging") as slot:
         slot.clean(200)
-    assert (fake.now - started).total_seconds() == pytest.approx(132)
+    assert (fake.now - started).total_seconds() == pytest.approx(90)
     assert [kind for (kind,) in _events(budget, "kind")] == ["search", "packaging"]
 
 
-def test_a_description_request_still_gives_up_at_the_tick_budget_on_a_weekend(make_budget):
-    fake, budget = _weekend_request_right_after_a_request(make_budget)
+def test_a_description_request_gives_up_at_the_tick_budget(make_budget):
+    fake, budget = _request_right_after_a_request(make_budget)
     with pytest.raises(PaceBusy):
         with budget.slot("description"):
             raise AssertionError("no request may be made")

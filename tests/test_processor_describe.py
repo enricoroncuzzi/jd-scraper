@@ -285,7 +285,7 @@ class _ClosedPace:
     """A pace whose schedule gate is closed: every slot raises, no request happens."""
 
     def gate(self):
-        return Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
+        return Gate(open=False, reason="closed_hours", requests_today=0)
 
     @contextmanager
     def slot(self, kind, *, overdue=False):

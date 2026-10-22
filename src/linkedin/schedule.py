@@ -3,9 +3,10 @@ from config/schedule.json (spec section 4).
 
 The collector and the processor share one PaceBudget on host `linkedin.com`, so
 this module holds only the policy: what the Rome clock and the per-day counters
-mean, and the numbers the pace is built from. There is no daily request cap; the
-counters are operator information only. Enforcement lives in
-src/linkedin/pace.py, the single choke point every LinkedIn request passes through.
+mean, and the numbers the pace is built from. There is one base spacing for every
+day; there is no daily request cap, and the counters are operator information only.
+Enforcement lives in src/linkedin/pace.py, the single choke point every LinkedIn
+request passes through.
 """
 import json
 from dataclasses import dataclass
@@ -20,12 +21,11 @@ HOURS_PER_DAY = 24
 
 @dataclass(frozen=True)
 class PacePolicy:
-    """The fixed pace (2026-10-18 refusal study): a constant base spacing per
-    window, jittered every turn, with a share of the turns reserved for
-    descriptions when a search is also waiting."""
+    """The fixed pace (2026-10-18 refusal study): one constant base spacing on every
+    day, jittered every turn, with a share of the turns reserved for descriptions
+    when a search is also waiting."""
 
-    start_weekday_seconds: float = 75.0
-    start_weekend_seconds: float = 110.0
+    start_spacing_seconds: float = 75.0
     jitter: float = 0.2
     description_turn_share: float = 2.0 / 3.0
 
@@ -84,16 +84,20 @@ def _load_pace(data: dict) -> PacePolicy:
     _require_absent(pace, ("max_spacing_factor", "tighten"), "schedule.pace",
                     "the pace is fixed, never widened or tightened")
     starts = pace.get("start_spacing_seconds")
-    if not isinstance(starts, dict):
-        raise ValueError("schedule.pace.start_spacing_seconds must be an object")
-    weekday = _require_number(starts, "weekday", "schedule.pace.start_spacing_seconds", exclusive=True)
-    weekend = _require_number(starts, "weekend", "schedule.pace.start_spacing_seconds", exclusive=True)
+    if isinstance(starts, dict):
+        # A stale or rolled-back config may still carry the old object form. Use the
+        # weekday value and warn once; never fail the service over it.
+        base = _require_number(starts, "weekday", "schedule.pace.start_spacing_seconds",
+                               exclusive=True)
+        print("[schedule] pace.start_spacing_seconds.weekday/.weekend are gone; "
+              f"using weekday ({base:g} s) until the config is updated")
+    else:
+        base = _require_number(pace, "start_spacing_seconds", "schedule.pace", exclusive=True)
     jitter = _require_ratio(pace, "jitter", "schedule.pace", maximum=0.5, exclusive_max=True)
     share = _require_ratio(pace, "description_turn_share", "schedule.pace", minimum=0.5,
                            maximum=1.0, exclusive_max=True)
     return PacePolicy(
-        start_weekday_seconds=weekday,
-        start_weekend_seconds=weekend,
+        start_spacing_seconds=base,
         jitter=jitter,
         description_turn_share=share,
     )
@@ -167,14 +171,6 @@ def local_day(schedule: ScheduleConfig, now: datetime | None = None) -> date:
     return local_now(schedule, now).date()
 
 
-def is_weekend(schedule: ScheduleConfig, now: datetime | None = None) -> bool:
-    return local_now(schedule, now).weekday() >= 5
-
-
-def window_name(schedule: ScheduleConfig, now: datetime | None = None) -> str:
-    return "weekend" if is_weekend(schedule, now) else "weekday"
-
-
 def in_closed_window(schedule: ScheduleConfig, now: datetime | None = None) -> bool:
     """Rome hours [start, end) when config sets a closed window, else False.
     The shipped config sets none, so LinkedIn runs around the clock."""
@@ -190,9 +186,8 @@ def requests_today_for(day: date | None, count: int, schedule: ScheduleConfig,
     return count if day == local_day(schedule, now) else 0
 
 
-def start_spacing_seconds(schedule: ScheduleConfig, window: str) -> float:
-    return (schedule.pace.start_weekend_seconds if window == "weekend"
-            else schedule.pace.start_weekday_seconds)
+def start_spacing_seconds(schedule: ScheduleConfig) -> float:
+    return schedule.pace.start_spacing_seconds
 
 
 def open_seconds_between(schedule: ScheduleConfig, start: datetime, end: datetime) -> float:

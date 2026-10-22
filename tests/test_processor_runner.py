@@ -98,7 +98,7 @@ def test_a_closed_gate_skips_descriptions_but_keeps_the_other_stages(store_conn,
     waiting = record_sighting(store_conn, _linkedin_card("3900000001"), NOW).job_id
     record_sighting(store_conn, _linkedin_card("3900000009", location="Austin, Texas, United States"), NOW)
     store_conn.commit()
-    gate = Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
+    gate = Gate(open=False, reason="closed_hours", requests_today=0)
     get = ScriptedGet(response(200, FRAGMENT))
     tick = process_once(store_conn, FakePace(gate=gate), cfg, KEYS, now=NOW, get=get, sleep=lambda _s: None,
                         verify=FakeVerify(), score=FakeScore())
@@ -142,7 +142,7 @@ def test_a_tick_classifies_a_waiting_backlog_even_with_the_gate_closed(store_con
     with store_conn.cursor() as cur:              # then the class is lost, as after a config change
         cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
     store_conn.commit()
-    gate = Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
+    gate = Gate(open=False, reason="closed_hours", requests_today=0)
     get = ScriptedGet()
     tick = process_once(store_conn, FakePace(gate=gate), cfg, KEYS, now=NOW, get=get,
                         sleep=lambda _s: None, verify=FakeVerify(), score=FakeScore())
@@ -157,7 +157,7 @@ def test_a_tick_classifies_a_waiting_backlog_even_with_the_gate_closed(store_con
 # description (description_status 'ok') but leaves the survivor `seen`, so the
 # cheap-check selector must pick it up again. Regression for the stranded
 # seen+ok rows in the scout report (option C).
-CLOSED = Gate(open=False, reason="closed_hours", requests_today=0, window="weekday")
+CLOSED = Gate(open=False, reason="closed_hours", requests_today=0)
 TWIN_TITLE = "Azure DevOps Engineer GenAI Platform"
 TWIN_COMPANY = "Pro Informatik AG"
 
