@@ -7,11 +7,12 @@ import pytest
 
 import label as label_cli
 from src import labels
+from src.delivery.archive import backfill_label_job_ids
 from src.jobstore.merge import merge_jobs
 from src.jobstore.sightings import CardInput, record_sighting
 from src.storage import init_db
 from tests.delivery_helpers import NOW
-from tests.legacy_schema import create_legacy_tables
+from tests.legacy_schema import add_offer, add_run, create_legacy_tables
 
 LINK = "https://it.linkedin.com/jobs/view/ai-engineer-at-acme-3912345678"
 ELEVEN_LABS_LINK = (
@@ -256,6 +257,41 @@ def test_a_job_id_already_set_is_never_overwritten(store_conn, store_url_fixture
     with store_conn.cursor() as cur:
         cur.execute("SELECT job_id FROM offer_labels WHERE label = 'golden'")
         assert str(cur.fetchone()[0]) == str(other)
+
+
+def test_a_note_number_collision_does_not_link_an_unrelated_job(store_conn, store_url_fixture):
+    """A legacy note also ends in a small offer id (src/writer.py::_note_filename), so a
+    note number alone is not identity: the filename must name the job's company."""
+    _job_id, note_no = _eleven_labs_job(store_conn, with_linkedin_sighting=False)
+    legacy_link = "https://it.linkedin.com/jobs/view/ai-engineer-at-acme-3912345678"
+    legacy_note = f"acme_ai_engineer_{note_no}.md"
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO offer_labels (posting_key, link, label, note) "
+                    "VALUES (%s, %s, 'golden', %s)",
+                    (labels.posting_key(legacy_link), legacy_link, legacy_note))
+    store_conn.commit()
+    url = _label_db_url(store_conn, store_url_fixture)
+    assert backfill_label_job_ids(store_conn) == 0
+    labels.list_labels(url, "golden")
+    labels.set_label(url, legacy_link, "golden", legacy_note)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT job_id FROM offer_labels WHERE link = %s", (legacy_link,))
+        assert cur.fetchone()[0] is None
+
+
+def test_a_label_matched_to_a_legacy_offer_skips_the_note_fallback(store_conn, store_url_fixture):
+    """When the legacy offers table already identified the posting, the note number is
+    not needed and must not second-guess it."""
+    _job_id, note_no = _eleven_labs_job(store_conn, with_linkedin_sighting=False)
+    add_offer(store_conn, add_run(store_conn, 4, NOW), ELEVEN_LABS_LINK, when=NOW,
+              title="Applied AI Engineer", company="ElevenLabs")
+    store_conn.commit()
+    labels.set_label(_label_db_url(store_conn, store_url_fixture), ELEVEN_LABS_LINK, "golden",
+                     f"elevenlabs_applied_ai_engineer_{note_no}.md")
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT offer_id, job_id FROM offer_labels WHERE label = 'golden'")
+        offer_id, job_id = cur.fetchone()
+    assert offer_id is not None and job_id is None
 
 
 def test_cli_uri_names_the_label_it_replaced(tmp_path, monkeypatch):

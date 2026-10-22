@@ -8,7 +8,8 @@ again at the next interval, and nothing else stops.
 
 The legacy Neon tables (offers, runs, run_queries, applications) are never touched.
 `offer_labels` is Neon-native (the Mac writes it); it only gains a nullable job_id,
-filled in here by posting key.
+filled in here by the same matcher the Mac's label.py uses (posting key against the
+job's sightings and canonical_url, then the note number when the filename names it).
 """
 from datetime import datetime
 

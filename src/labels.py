@@ -13,6 +13,7 @@ import urllib.parse
 
 from src.storage import OFFER_LABELS_DDL, psycopg2
 from src.tailor.jd_source import _frontmatter, parse_note
+from src.writer import _slugify
 
 LABELS = ("golden", "not_for_me")
 DISPLAY = {"golden": "golden", "not_for_me": "not-for-me"}
@@ -115,7 +116,7 @@ def _matching_job_id(cur, key: str) -> str | None:
                 return row[0]
         cur.execute("SELECT job_id, source, source_job_id, source_url FROM sightings "
                     "WHERE source_url LIKE %s", (f"%{_needed_key(key)}%",))
-        for job_id, source, source_job_id, source_url in cur.fetchall():
+        for job_id, _, _, source_url in cur.fetchall():
             if posting_key(source_url) == key:
                 return job_id
     cur.execute("SELECT id, canonical_url FROM jobs WHERE canonical_url LIKE %s",
@@ -126,7 +127,7 @@ def _matching_job_id(cur, key: str) -> str | None:
     return None
 
 
-def _job_id_for(cur, link: str, note: str | None) -> str | None:
+def _job_id_for(cur, link: str, note: str | None, *, legacy_offer: bool = False) -> str | None:
     """The archived job a label is about, or None.
 
     The label link and the job's canonical_url can differ: the sighting that won the
@@ -135,6 +136,11 @@ def _job_id_for(cur, link: str, note: str | None) -> str | None:
     posting key in the job's sightings and canonical_url, then the note number in the
     note filename (the only link left when the matching sighting was recorded after
     the job was archived to Neon and so never arrived there).
+
+    The note number is a last resort, not identity: a legacy note also ends in a small
+    offer id (src/writer.py::_note_filename), so the filename itself must name the
+    candidate job's company and title before the link is made, and a label the legacy
+    offers table already identified is never second-guessed by it.
     """
     if not _has_table(cur, "jobs"):
         return None
@@ -142,11 +148,12 @@ def _job_id_for(cur, link: str, note: str | None) -> str | None:
     if job_id is not None:
         return job_id
     number = note_number(note)
-    if number is not None:
-        cur.execute("SELECT id FROM jobs WHERE note_no = %s", (number,))
-        row = cur.fetchone()
-        if row:
-            return row[0]
+    if number is None or legacy_offer:
+        return None
+    cur.execute("SELECT id, company, title FROM jobs WHERE note_no = %s", (number,))
+    row = cur.fetchone()
+    if row and note.startswith(f"{_slugify(row[1])}_{_slugify(row[2])}_"):
+        return row[0]
     return None
 
 
@@ -158,10 +165,10 @@ def fill_missing_label_job_ids(cur) -> int:
     """
     if not _has_table(cur, "jobs"):
         return 0
-    cur.execute("SELECT id, link, note FROM offer_labels WHERE job_id IS NULL")
+    cur.execute("SELECT id, link, note, offer_id FROM offer_labels WHERE job_id IS NULL")
     filled = 0
-    for label_id, link, note in cur.fetchall():
-        job_id = _job_id_for(cur, link, note)
+    for label_id, link, note, offer_id in cur.fetchall():
+        job_id = _job_id_for(cur, link, note, legacy_offer=offer_id is not None)
         if job_id is None:
             continue
         cur.execute("UPDATE offer_labels SET job_id = %s WHERE id = %s AND job_id IS NULL",
@@ -186,7 +193,10 @@ def set_label(db_url: str | None, link: str, label: str, note: str | None = None
         with conn.cursor() as cur:
             cur.execute(OFFER_LABELS_DDL)
             cur.execute("ALTER TABLE offer_labels ADD COLUMN IF NOT EXISTS job_id UUID")
-            job_id = _job_id_for(cur, link, note)
+            cur.execute("SELECT id FROM offers WHERE link = %s ORDER BY id DESC LIMIT 1", (link,))
+            row = cur.fetchone()
+            offer_id = row[0] if row else None
+            job_id = _job_id_for(cur, link, note, legacy_offer=offer_id is not None)
             cur.execute(
                 "DELETE FROM offer_labels WHERE posting_key = %s AND label <> %s",
                 (key, label),
@@ -195,14 +205,13 @@ def set_label(db_url: str | None, link: str, label: str, note: str | None = None
             cur.execute(
                 """
                 INSERT INTO offer_labels (posting_key, link, label, offer_id, job_id, note)
-                VALUES (%s, %s, %s,
-                        (SELECT id FROM offers WHERE link = %s ORDER BY id DESC LIMIT 1), %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON CONFLICT (posting_key, label) DO UPDATE SET
                     offer_id = COALESCE(EXCLUDED.offer_id, offer_labels.offer_id),
                     job_id = COALESCE(offer_labels.job_id, EXCLUDED.job_id)
                 RETURNING (xmax = 0)
                 """,
-                (key, link, label, link, job_id, note),
+                (key, link, label, offer_id, job_id, note),
             )
             created = bool(cur.fetchone()[0])
         conn.commit()
