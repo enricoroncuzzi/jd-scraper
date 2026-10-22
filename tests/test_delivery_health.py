@@ -10,7 +10,8 @@ from src.delivery.health import (
 from src.delivery.settings import DeliverySettings, load_settings
 from src.jobstore import heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
-from src.linkedin.schedule import ScheduleConfig
+from src.linkedin.adaptive import blank_state
+from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig
 
 NOW = datetime(2026, 10, 14, 12, 0, tzinfo=timezone.utc)
 
@@ -171,3 +172,81 @@ def test_health_lines_show_every_service(store_conn, settings):
     assert len(lines) == 3 and any(l.startswith("process: idle, last beat 2m ago") for l in lines)
     heartbeat.beat(store_conn, "deliver", "idle", now=NOW - timedelta(hours=3))
     assert any(l.startswith("deliver: DOWN") for l in health_lines(store_conn, settings, NOW))
+
+ACTIVE = ScheduleConfig(adaptive=AdaptivePolicy(enabled=True))
+
+
+def _paused_today(conn):
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, adaptive_state) VALUES "
+                    "('linkedin.com', %s, %s::jsonb)", (NOW, json.dumps({
+                        **blank_state(), "active": True, "level": 1,
+                        "paused": {"day": "2026-10-14", "reason": "http_999"}})))
+    conn.commit()
+
+
+def test_a_pause_today_is_a_health_issue(store_conn, settings):
+    _paused_today(store_conn)
+    _all_alive(store_conn)
+    issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW, schedule=ACTIVE)}
+    assert "linkedin_paused" in issues
+    assert "paused for the rest of the day" in issues["linkedin_paused"].message
+    assert "http_999" in issues["linkedin_paused"].message
+
+
+def test_the_pause_issue_clears_the_next_rome_day(store_conn, settings):
+    _paused_today(store_conn)
+    _all_alive(store_conn)
+    tomorrow = NOW + timedelta(days=1)
+    assert "linkedin_paused" not in {
+        i.key for i in evaluate_health(store_conn, settings, tomorrow, schedule=ACTIVE)}
+
+
+def test_a_pause_with_the_ladder_off_is_not_a_health_issue(store_conn, settings):
+    _paused_today(store_conn)
+    _all_alive(store_conn)
+    assert "linkedin_paused" not in {
+        i.key for i in evaluate_health(store_conn, settings, NOW, schedule=ScheduleConfig())}
+
+
+def test_a_missing_pace_row_is_not_a_pause_issue(store_conn, settings):
+    _all_alive(store_conn)
+    assert "linkedin_paused" not in {
+        i.key for i in evaluate_health(store_conn, settings, NOW, schedule=ACTIVE)}
+
+
+def test_corrupt_pause_state_is_not_a_health_issue(store_conn, settings):
+    for bad in ('{"paused": 3}', '{"paused": {"day": 5}}', '{"level": "x"}', '"nope"'):
+        with store_conn.cursor() as cur:
+            cur.execute("INSERT INTO pace_budgets (host, next_slot_at, adaptive_state) VALUES "
+                        "('linkedin.com', %s, %s::jsonb) ON CONFLICT (host) DO UPDATE "
+                        "SET adaptive_state = EXCLUDED.adaptive_state", (NOW, bad))
+        store_conn.commit()
+        _all_alive(store_conn, NOW)
+        assert "linkedin_paused" not in {
+            i.key for i in evaluate_health(store_conn, settings, NOW, schedule=ACTIVE)}
+
+
+def test_the_pause_alert_repeats_at_most_once_a_day(store_conn, settings):
+    _paused_today(store_conn)
+    _all_alive(store_conn)
+    outbox = Outbox()
+    sent = run_health_check(store_conn, settings, outbox, NOW, schedule=ACTIVE)
+    assert len([m for m in sent if "LinkedIn paused" in m]) == 1
+    _all_alive(store_conn, NOW + timedelta(hours=6))
+    assert run_health_check(store_conn, settings, outbox, NOW + timedelta(hours=6),
+                            schedule=ACTIVE) == []
+    _all_alive(store_conn, NOW + timedelta(days=1))
+    cleared = run_health_check(store_conn, settings, outbox, NOW + timedelta(days=1),
+                               schedule=ACTIVE)
+    assert cleared == ["OK again: linkedin_paused is healthy"]
+
+
+def test_the_pause_alert_is_retried_after_a_failed_send(store_conn, settings):
+    _paused_today(store_conn)
+    _all_alive(store_conn)
+    assert run_health_check(store_conn, settings, Outbox(ok=False), NOW,
+                            schedule=ACTIVE) == []
+    sent = run_health_check(store_conn, settings, Outbox(), NOW + timedelta(minutes=5),
+                            schedule=ACTIVE)
+    assert len([m for m in sent if "LinkedIn paused" in m]) == 1
