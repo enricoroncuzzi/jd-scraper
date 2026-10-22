@@ -294,7 +294,7 @@ configured in `config/schedule.json`:
 | `adaptive.llm_climb_stop_share` | `0.8` | stop climbing at 80 % of the OpenRouter daily limit from `config/llm_limits.json` |
 | `adaptive.emergency_spacing_seconds` / `emergency_clear_requests` | `150` / `20` | the brake spacing and the clean requests needed to clear it |
 | `adaptive.emergency_connection_errors` / `emergency_connection_window_seconds` | `3` / `600` | a connection brake needs 3 dropped connections within 10 min |
-| `adaptive.pause_after_block_seconds` | `3600` | a block that keeps recurring for this long pauses LinkedIn for the Rome day (a clean stretch between two block signals is not persistence) |
+| `adaptive.pause_after_block_seconds` | `3600` | a block that keeps recurring for this long pauses LinkedIn for the Rome day; a clean stretch of half `emergency_clear_requests` between two block signals starts a new clock, and a block retried inside one episode is still one episode |
 
 There is no daily request cap: an old or rolled-back `config/schedule.json` that still carries
 the removed `daily_caps` block loads anyway, the block is ignored and a `[schedule]` line names

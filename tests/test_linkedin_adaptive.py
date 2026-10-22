@@ -314,6 +314,38 @@ def test_a_block_after_a_clean_stretch_does_not_pause_the_day():
     assert state["brake"] is not None
 
 
+def test_a_block_retried_after_a_clean_stretch_does_not_pause_the_day():
+    state = {**blank_state(POLICY), "active": True, "level": 3}
+    state = review(state, POLICY, NOW, day=NOW.date(), outcome="neutral", level=3,
+                   block="http_403", signals=HIGH)
+    for offset in range(19):
+        state = review(state, POLICY, NOW + timedelta(seconds=150 * (offset + 1)),
+                       day=NOW.date(), outcome="clean", level=1, signals=HIGH)
+    later = NOW + timedelta(minutes=61)
+    state = review(state, POLICY, later, day=NOW.date(), outcome="neutral", level=1,
+                   block="http_403", signals=HIGH)
+    assert parse_iso(state["brake"]["since"]) == later
+    for seconds in (5, 20, 65):
+        state = review(state, POLICY, later + timedelta(seconds=seconds),
+                       day=NOW.date(), outcome="neutral", level=1,
+                       block="http_403", signals=HIGH)
+        assert paused_day(state) is None
+    assert parse_iso(state["brake"]["since"]) == later
+
+
+def test_a_retried_block_extends_the_brake_without_a_second_move():
+    state = {**blank_state(POLICY), "active": True, "level": 3,
+             "day": NOW.date().isoformat()}
+    state = review(state, POLICY, NOW, day=NOW.date(), outcome="neutral", level=3,
+                   block="http_403", signals=HIGH)
+    assert state["day_brakes"] == 1 and state["last_move"]["kind"] == "brake"
+    state = review(state, POLICY, NOW + timedelta(seconds=5), day=NOW.date(),
+                   outcome="neutral", level=1, block="http_403", signals=HIGH)
+    assert state["day_brakes"] == 1
+    assert parse_iso(state["last_move"]["at"]) == NOW
+    assert state["brake"]["reason"] == "http_403"
+
+
 def test_the_next_rome_day_clears_the_pause_and_restarts_at_level_1():
     state = {**blank_state(POLICY), "active": True, "level": 3,
              "paused": {"day": "2026-10-20", "reason": "http_999"}}

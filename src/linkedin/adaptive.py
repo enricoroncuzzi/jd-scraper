@@ -327,23 +327,37 @@ def _move(state: dict, now: datetime, kind: str, source: int, target: int, reaso
     }
 
 
-def _enter_brake(state: dict, now: datetime, reason: str) -> None:
+def _clean_stretch(policy: AdaptivePolicy) -> int:
+    """The clean answers that make a brake episode over, or a persistent block real:
+    half of the stretch that clears the brake."""
+    return max(1, policy.emergency_clear_requests // 2)
+
+
+def _enter_brake(state: dict, now: datetime, reason: str,
+                 policy: AdaptivePolicy) -> None:
+    """Enter the brake, or extend the current episode. A clean stretch of at least
+    half the clearing length ends the episode, so a stray block signal after it starts
+    a new clock instead of pausing LinkedIn for the day. A block retried inside one
+    episode only extends it: one job-specific 403 must not look like four brakes."""
     brake = state.get("brake")
     previous = brake if isinstance(brake, dict) else {}
-    since = parse_iso(previous.get("since"))
+    clean_before_block = _int(previous.get("clean"))
+    episode_over = clean_before_block >= _clean_stretch(policy)
+    since = None if episode_over else parse_iso(previous.get("since"))
     old_level = current_level(state)
     state["brake"] = {
         "since": (since or now).isoformat(),
         "reason": reason,
         "clean": 0,
         "last_block_at": now.isoformat(),
-        "clean_before_block": _int(previous.get("clean")),
+        "clean_before_block": clean_before_block,
     }
     state["level"] = 1
     _reset_stint(state, 1)
     state["trailing"] = []
-    state["day_brakes"] += 1
-    _move(state, now, "brake", old_level, 1, reason)
+    if since is None:
+        state["day_brakes"] += 1
+        _move(state, now, "brake", old_level, 1, reason)
 
 
 def _brake_persisted(state: dict, now: datetime, policy: AdaptivePolicy) -> bool:
@@ -357,8 +371,7 @@ def _brake_persisted(state: dict, now: datetime, policy: AdaptivePolicy) -> bool
     since = parse_iso(brake.get("since"))
     if since is None or now - since < timedelta(seconds=policy.pause_after_block_seconds):
         return False
-    cleared = max(1, policy.emergency_clear_requests // 2)
-    return _int(brake.get("clean_before_block")) < cleared
+    return _int(brake.get("clean_before_block")) < _clean_stretch(policy)
 
 
 def _pause(state: dict, now: datetime, day: date) -> None:
@@ -442,12 +455,12 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
                 stamp for stamp in state["connection_errors"]
                 if parse_iso(stamp) is not None and now - parse_iso(stamp) <= window]
             if len(state["connection_errors"]) >= policy.emergency_connection_errors:
-                _enter_brake(state, now, block)
+                _enter_brake(state, now, block, policy)
                 if _brake_persisted(state, now, policy):
                     _pause(state, now, day)
                 return state
         else:
-            _enter_brake(state, now, block)
+            _enter_brake(state, now, block, policy)
             if _brake_persisted(state, now, policy):
                 _pause(state, now, day)
             return state
