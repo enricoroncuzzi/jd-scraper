@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
+import json
+
 from src.delivery.linkedin_report import linkedin_lines
+from src.linkedin.adaptive import blank_state
 from src.linkedin.catalog import SliceSpec, load_collector_config, sync_slices
-from src.linkedin.schedule import ScheduleConfig
+from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig
 
 NOW = datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc)  # 08:00 Rome, delivery time
 H = 3600
@@ -42,7 +45,7 @@ def test_the_block_shows_the_fixed_spacing(store_conn):
                     "VALUES ('linkedin.com', %s, 67.5, 1.5)", (NOW,))
     store_conn.commit()
     lines = _lines(store_conn)
-    assert lines[3] == "Fixed spacing: 75s"
+    assert lines[3] == "Adaptive off; fixed spacing: 75s"
 
 
 def test_the_block_names_slices_past_48_hours(store_conn):
@@ -100,7 +103,37 @@ def test_an_empty_store_gives_a_calm_block(store_conn):
     lines = _lines(store_conn)
     assert lines[1] == "Requests: 0 (search 0, description 0, packaging 0); refused 0 (0.0%)"
     assert lines[2] == "Longest refusal wait: none"
-    assert lines[3] == "Fixed spacing: 75s"
+    assert lines[3] == "Adaptive off; fixed spacing: 75s"
     assert lines[4] == "Slices behind cadence: 0 of 0; past 48h+6h: none"
     assert lines[5] == "Oldest job waiting for a description: none"
     assert lines[6] == "Page caps hit: area cap 0, full cap 0 (of 0 walks)"
+
+
+ACTIVE = ScheduleConfig(adaptive=AdaptivePolicy(enabled=True))
+
+
+def _adaptive_lines(conn, state, schedule=ACTIVE):
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, adaptive_state) VALUES "
+                    "('linkedin.com', %s, %s::jsonb) ON CONFLICT (host) DO UPDATE "
+                    "SET adaptive_state = EXCLUDED.adaptive_state", (NOW, json.dumps(state)))
+    conn.commit()
+    return linkedin_lines(conn, NOW, schedule=schedule,
+                          collector=load_collector_config())
+
+
+def test_the_block_shows_the_adaptive_spacing(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 2}
+    assert _adaptive_lines(store_conn, state)[3] == "Fixed spacing: 50s (adaptive level 2 of 5)"
+
+
+def test_the_block_shows_the_emergency_spacing(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 1,
+             "brake": {"since": NOW.isoformat(), "reason": "http_999", "clean": 0}}
+    assert _adaptive_lines(store_conn, state)[3] == (
+        "Fixed spacing: 150s (emergency brake, level 1 of 5)")
+
+
+def test_report_renders_corrupt_state(store_conn):
+    for bad in ({"paused": 3}, {"level": "x"}, "nope", {}):
+        assert _adaptive_lines(store_conn, bad)

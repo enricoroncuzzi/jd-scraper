@@ -8,6 +8,7 @@ description, and the page caps this design adds.
 from datetime import datetime, timedelta
 
 from src.delivery.health import age_text
+from src.linkedin.adaptive import current_level, effective_spacing, normalize_state
 from src.linkedin.catalog import CollectorConfig, load_collector_config
 from src.linkedin.pace import PaceState
 from src.linkedin.schedule import (
@@ -21,15 +22,16 @@ MAX_NAMES = 5
 def _pace_state(cur, now: datetime) -> PaceState:
     cur.execute(
         "SELECT next_slot_at, cooldown_until, last_kind, wanting, requests_today, refusals_today, "
-        "day, refusal_streak, last_clean_at, description_run "
+        "day, refusal_streak, last_clean_at, description_run, adaptive_state "
         "FROM pace_budgets WHERE host = 'linkedin.com'")
     row = cur.fetchone()
     if row is None:
         return PaceState(now)
     (next_slot, wait_until, last_kind, wanting, requests_today, refusals_today, day,
-     refusal_streak, last_clean_at, description_run) = row
+     refusal_streak, last_clean_at, description_run, adaptive_state) = row
     return PaceState(next_slot, last_kind, dict(wanting or {}), requests_today, refusals_today,
-                     day, wait_until, refusal_streak, last_clean_at, description_run or 0)
+                     day, wait_until, refusal_streak, last_clean_at, description_run or 0,
+                     adaptive_state if isinstance(adaptive_state, dict) else {})
 
 
 def _names(rows: list[tuple[str, str]]) -> str:
@@ -77,7 +79,17 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
             (since, now))
         area_cap, full_cap, walks = cur.fetchone()
 
-    base = start_spacing_seconds(schedule)
+    controller = normalize_state(state.controller, schedule.adaptive)
+    spacing = effective_spacing(schedule.adaptive, controller,
+                                base=start_spacing_seconds(schedule))
+    if not schedule.adaptive.enabled:
+        spacing_line = f"Adaptive off; fixed spacing: {spacing:g}s"
+    elif controller.get("brake"):
+        spacing_line = (f"Fixed spacing: {spacing:g}s (emergency brake, "
+                        f"level {current_level(controller)} of 5)")
+    else:
+        spacing_line = (f"Fixed spacing: {spacing:g}s (adaptive level "
+                        f"{current_level(controller)} of 5)")
     pct = 100.0 * refused / requests if requests else 0.0
     refusal_wait = (f"Longest refusal wait: {age_text(timedelta(seconds=longest))}"
                     if longest is not None else "Longest refusal wait: none")
@@ -89,7 +101,7 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         f"Requests: {requests} (search {search}, description {description}, "
         f"packaging {packaging}); refused {refused} ({pct:.1f}%)",
         refusal_wait,
-        f"Fixed spacing: {base:.0f}s",
+        spacing_line,
         f"Slices behind cadence: {behind} of {active}; past {collector.max_interval_hours}h"
         f"+{collector.cadence_tolerance_hours}h: {_names(past)}",
         oldest_line,
