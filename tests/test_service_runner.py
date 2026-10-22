@@ -126,12 +126,13 @@ def test_a_shared_stop_event_ends_a_tick_that_is_in_a_long_sleep_promptly(
         observed["waited"] = time.monotonic() - began
         return Tick(True)
 
-    previous = signal.getsignal(signal.SIGTERM)
+    previous = {number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGINT)}
     try:
         code = run_service("svc", tick, connect_fn=lambda: store_conn_factory(store_conn),
                            idle_seconds=7, stop=stop, wait=stop.wait, install_signals=True)
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        for number, handler in previous.items():
+            signal.signal(number, handler)
     assert code == 0
     assert observed["cut"] is True and observed["waited"] < 2  # the 60 s wait was cut short
 

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from src.linkedin.catalog import CollectorConfig, SliceSpec, sync_slices
 from src.linkedin.collector import collect_once
-from src.linkedin.pace import PaceBudget
+from src.linkedin.pace import ManagedPace, PaceBudget
 from src.linkedin.schedule import ScheduleConfig
 from tests.linkedin_fakes import ScriptedGet, ids, page_html, response
 
@@ -25,10 +25,13 @@ CFG = CollectorConfig(due_hours={1: 12}, max_pages_per_slice=90, known_pages_to_
 
 
 class FakeTime:
-    """Simulated clock: sleep advances it, and `on_sleep` can react inside a wait."""
+    """Simulated clock: sleep advances it, and `on_sleep` can react inside a wait.
+    `before_sleep` is the time the sleep started, so a hook can measure a wait that
+    was cut short (`now` has already advanced by the time the hook runs)."""
 
     def __init__(self, now=NOW):
         self.now = now
+        self.before_sleep = now
         self.sleeps = []
         self.on_sleep = None
 
@@ -36,6 +39,7 @@ class FakeTime:
         return self.now
 
     def sleep(self, seconds):
+        self.before_sleep = self.now
         self.sleeps.append(seconds)
         self.now += timedelta(seconds=seconds)
         if self.on_sleep:
@@ -84,7 +88,7 @@ def test_a_stop_during_the_pace_wait_makes_no_further_request_and_resumes_there(
     def stop_as_soon_as_the_walk_waits(seconds):
         if get.calls and not stop.is_set():
             stop.set()
-            stopped_at.append(fake.now)
+            stopped_at.append(fake.before_sleep)  # the moment the wait began
 
     fake.on_sleep = stop_as_soon_as_the_walk_waits
     _seed(store_conn)
@@ -94,7 +98,7 @@ def test_a_stop_during_the_pace_wait_makes_no_further_request_and_resumes_there(
     assert len(get.calls) == 1  # the page in flight finished, no second request
     assert tick.detail["stop_reason"] == "stopped"
     assert stopped_at, "the walk never reached a pace wait, so nothing was interrupted"
-    assert fake.now - stopped_at[0] < timedelta(seconds=2)  # seconds, not spacing
+    assert fake.now - stopped_at[0] < timedelta(seconds=2)  # the 75 s wait was cut, not slept
 
     # The page that did go out is committed, and the slice resumes exactly after it.
     walks = _rows(store_conn, "SELECT pages, cards_seen, new_jobs, stop_reason FROM slice_walks")
@@ -178,6 +182,29 @@ def test_a_stop_before_the_walk_claims_a_slice_does_not_claim_one(
     assert not tick.did_work and get.calls == []
     assert _rows(store_conn, "SELECT count(*) FROM slice_walks") == [(0,)]
     assert _rows(store_conn, "SELECT due_at FROM slices") == [(NOW,)]
+
+
+def test_the_managed_pace_carries_the_stop_event_into_the_budget(store_conn,
+                                                                store_conn_factory):
+    """The wrapper the collector really builds in `main`: the stop event has to ride
+    through `ManagedPace`'s extra budget options. Without it the pace would sleep out the
+    whole 30 minute refusal wait and the stop would only land minutes later."""
+    fake, stop, get = FakeTime(), threading.Event(), EndlessPages()
+    pace = ManagedPace(lambda: store_conn_factory(store_conn), service="collect-linkedin",
+                       schedule=ScheduleConfig(), clock=fake.clock, sleep=fake.sleep,
+                       uniform=lambda a, b: (a + b) / 2, stop=stop)
+    with store_conn.cursor() as cur:  # a refusal just happened: the host waits 30 minutes
+        cur.execute("INSERT INTO pace_budgets (host, next_slot_at, cooldown_until, refusal_streak) "
+                    "VALUES ('linkedin.com', %s, %s, 2)", (NOW, NOW + timedelta(minutes=30)))
+    store_conn.commit()
+    fake.on_sleep = lambda _seconds: stop.set()
+    _seed(store_conn)
+
+    tick = collect_once(store_conn, pace, CFG, now=NOW, get=get, sleep=fake.sleep, stop=stop)
+
+    assert get.calls == [] and tick.detail["stop_reason"] == "stopped"
+    assert fake.now - NOW < timedelta(seconds=5)  # the refusal wait was cut, not slept through
+    assert _rows(store_conn, "SELECT count(*) FROM pace_events") == [(0,)]
 
 
 def test_main_hands_one_stop_event_to_the_pace_the_tick_and_the_runner(monkeypatch):
