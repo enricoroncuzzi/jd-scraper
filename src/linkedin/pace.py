@@ -18,8 +18,8 @@ when it is switched on; the shipped config has it off.
 Nothing slows it down while the ladder is off: the study found the refusal rate did
 not depend on the gap anywhere between 3 s and 390 s, while the old hour nudge and
 day verdict cut throughput to about a quarter. A refusal is waited out (60 s
-doubling to a 30 min cap, or `Retry-After`) and the pace carries on unchanged. When both a search and a
-description are waiting, descriptions take two of every three turns
+doubling to a 30 min cap, or `Retry-After`) and the pace carries on unchanged while the
+ladder is off. When both a search and a description are waiting, descriptions take two of every three turns
 (`pace.description_turn_share`); a lone waiting kind always takes the turn. A
 `packaging` request - the one LinkedIn request a CV package needs - is granted the
 next turn instead of competing for it: it is rare, each turn buys a whole package,
@@ -27,7 +27,7 @@ and a pass that loses the turn gets no package at all, while a description or a
 search just takes the following turn. The advisory lock is held only for the request
 itself; waiters sleep unlocked in short chunks. A caller that passes `give_up_after`
 and cannot get a turn raises PaceBusy; a `packaging` request waits at least the longest
-jittered spacing of the window in effect (plus a second), read from the schedule at wait
+jittered spacing of the base in effect (plus a second), read from the schedule at wait
 time, so the previous request's spacing can never make it give up. A caller that gives
 up writes only its own `wanting` markers.
 """
