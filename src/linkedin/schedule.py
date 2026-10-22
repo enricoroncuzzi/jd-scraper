@@ -31,6 +31,36 @@ class PacePolicy:
 
 
 @dataclass(frozen=True)
+class AdaptivePolicy:
+    """The self-learning pace ladder (config/schedule.json `adaptive`). Every threshold
+    is a config value; the shipped block has it disabled."""
+
+    enabled: bool = False
+    levels_seconds: tuple[float, ...] = (75.0, 50.0, 37.5, 30.0, 25.0)
+    protect_window_requests: int = 20
+    protect_min_requests: int = 10
+    protect_drop_rate: float = 0.30
+    protect_drop_two_rate: float = 0.50
+    protect_drop_streak: int = 4
+    climb_min_requests: int = 200
+    climb_max_upper_refusal_rate: float = 0.12
+    climb_max_gap_seconds: int = 3600
+    memory_first_hours: int = 2
+    memory_max_hours: int = 24
+    clean_day_min_requests: int = 100
+    demand_min_waiting: int = 1000
+    demand_ease_waiting: int = 250
+    demand_ease_interval_seconds: int = 3600
+    signal_refresh_seconds: int = 300
+    llm_climb_stop_share: float = 0.8
+    emergency_spacing_seconds: float = 150.0
+    emergency_clear_requests: int = 20
+    emergency_connection_errors: int = 3
+    emergency_connection_window_seconds: int = 600
+    pause_after_block_seconds: int = 3600
+
+
+@dataclass(frozen=True)
 class RefusalPolicy:
     """What a refusal costs (design section 4.2): a capped, doubling wait. There is
     no automatic slowing: the pace is the same before and after a refusal spell."""
@@ -45,6 +75,7 @@ class ScheduleConfig:
     closed_hours: tuple[int, int] | None = None
     pace: PacePolicy = PacePolicy()
     refusals: RefusalPolicy = RefusalPolicy()
+    adaptive: AdaptivePolicy = AdaptivePolicy()
 
     @property
     def zone(self) -> ZoneInfo:
@@ -117,6 +148,118 @@ def _load_refusals(data: dict) -> RefusalPolicy:
     return RefusalPolicy(first, maximum)
 
 
+ADAPTIVE_KEYS = {
+    "enabled", "levels_seconds", "protect_window_requests", "protect_min_requests",
+    "protect_drop_rate", "protect_drop_two_rate", "protect_drop_streak",
+    "climb_min_requests", "climb_max_upper_refusal_rate", "climb_max_gap_seconds",
+    "memory_first_hours", "memory_max_hours", "clean_day_min_requests",
+    "demand_min_waiting", "demand_ease_waiting", "demand_ease_interval_seconds",
+    "signal_refresh_seconds", "llm_climb_stop_share", "emergency_spacing_seconds",
+    "emergency_clear_requests", "emergency_connection_errors",
+    "emergency_connection_window_seconds", "pause_after_block_seconds",
+}
+
+
+def _adaptive_int(data: dict, key: str, default: int, *, minimum: int = 1) -> int:
+    value = data.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+        raise ValueError(f"schedule.adaptive.{key} must be an integer >= {minimum}, got {value!r}")
+    return value
+
+
+def _adaptive_ratio(data: dict, key: str, default: float) -> float:
+    value = data.get(key, default)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 1:
+        raise ValueError(f"schedule.adaptive.{key} must be a number in (0, 1], got {value!r}")
+    return float(value)
+
+
+def _load_adaptive(data: dict, base_spacing: float) -> AdaptivePolicy:
+    """Read and validate config/schedule.json `adaptive`. A missing block is the
+    shipped disabled default; an unknown key is a typo that must not silently keep a
+    safety default."""
+    adaptive = data.get("adaptive")
+    if adaptive is None:
+        return AdaptivePolicy()
+    if not isinstance(adaptive, dict):
+        raise ValueError("schedule.adaptive must be an object")
+    unknown = set(adaptive) - ADAPTIVE_KEYS
+    if unknown:
+        raise ValueError(f"schedule.adaptive has unknown keys: {sorted(unknown)}")
+    enabled = adaptive.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"schedule.adaptive.enabled must be a boolean, got {enabled!r}")
+    levels = adaptive.get("levels_seconds", [75, 50, 37.5, 30, 25])
+    if (not isinstance(levels, list) or len(levels) != 5
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                       for v in levels)
+            or any(a <= b for a, b in zip(levels, levels[1:]))):
+        raise ValueError("schedule.adaptive.levels_seconds must be 5 strictly decreasing "
+                         f"positive numbers, got {levels!r}")
+    levels = tuple(float(v) for v in levels)
+    if enabled and levels[0] != base_spacing:
+        raise ValueError("schedule.adaptive.levels_seconds[0] must equal "
+                         "pace.start_spacing_seconds when the ladder is enabled")
+    window = _adaptive_int(adaptive, "protect_window_requests", 20)
+    min_requests = _adaptive_int(adaptive, "protect_min_requests", 10)
+    if min_requests > window:
+        raise ValueError("schedule.adaptive.protect_min_requests must be <= "
+                         "protect_window_requests")
+    drop_rate = _adaptive_ratio(adaptive, "protect_drop_rate", 0.30)
+    drop_two = _adaptive_ratio(adaptive, "protect_drop_two_rate", 0.50)
+    if drop_two < drop_rate:
+        raise ValueError("schedule.adaptive.protect_drop_two_rate must be >= protect_drop_rate")
+    streak = _adaptive_int(adaptive, "protect_drop_streak", 4)
+    if streak > window:
+        raise ValueError("schedule.adaptive.protect_drop_streak must be <= "
+                         "protect_window_requests")
+    first_hours = _adaptive_int(adaptive, "memory_first_hours", 2)
+    max_hours = _adaptive_int(adaptive, "memory_max_hours", 24)
+    if max_hours < first_hours:
+        raise ValueError("schedule.adaptive.memory_max_hours must be >= memory_first_hours")
+    demand_min = _adaptive_int(adaptive, "demand_min_waiting", 1000, minimum=0)
+    demand_ease = _adaptive_int(adaptive, "demand_ease_waiting", 250, minimum=0)
+    if demand_ease > demand_min:
+        raise ValueError("schedule.adaptive.demand_ease_waiting must be <= demand_min_waiting")
+    emergency_spacing = adaptive.get("emergency_spacing_seconds", 150.0)
+    if (not isinstance(emergency_spacing, (int, float)) or isinstance(emergency_spacing, bool)
+            or emergency_spacing <= levels[-1]):
+        raise ValueError("schedule.adaptive.emergency_spacing_seconds must be a number "
+                         f"> levels_seconds[-1] ({levels[-1]}), got {emergency_spacing!r}")
+    return AdaptivePolicy(
+        enabled=enabled,
+        levels_seconds=levels,
+        protect_window_requests=window,
+        protect_min_requests=min_requests,
+        protect_drop_rate=drop_rate,
+        protect_drop_two_rate=drop_two,
+        protect_drop_streak=streak,
+        climb_min_requests=_adaptive_int(adaptive, "climb_min_requests", 200),
+        climb_max_upper_refusal_rate=_adaptive_ratio(
+            adaptive, "climb_max_upper_refusal_rate", 0.12),
+        climb_max_gap_seconds=_adaptive_int(adaptive, "climb_max_gap_seconds", 3600,
+                                            minimum=60),
+        memory_first_hours=first_hours,
+        memory_max_hours=max_hours,
+        clean_day_min_requests=_adaptive_int(adaptive, "clean_day_min_requests", 100,
+                                             minimum=0),
+        demand_min_waiting=demand_min,
+        demand_ease_waiting=demand_ease,
+        demand_ease_interval_seconds=_adaptive_int(
+            adaptive, "demand_ease_interval_seconds", 3600),
+        signal_refresh_seconds=_adaptive_int(adaptive, "signal_refresh_seconds", 300),
+        llm_climb_stop_share=_adaptive_ratio(adaptive, "llm_climb_stop_share", 0.8),
+        emergency_spacing_seconds=float(emergency_spacing),
+        emergency_clear_requests=_adaptive_int(adaptive, "emergency_clear_requests", 20),
+        emergency_connection_errors=_adaptive_int(
+            adaptive, "emergency_connection_errors", 3),
+        emergency_connection_window_seconds=_adaptive_int(
+            adaptive, "emergency_connection_window_seconds", 600),
+        pause_after_block_seconds=_adaptive_int(adaptive, "pause_after_block_seconds", 3600,
+                                                minimum=60),
+    )
+
+
 def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
     """Read and validate config/schedule.json. A malformed value raises here, at
     service start, rather than turning into an unbounded or always-closed gate."""
@@ -154,11 +297,13 @@ def load_schedule_config(path: str = SCHEDULE_CONFIG_PATH) -> ScheduleConfig:
     if taper is not None:
         raise ValueError("schedule.weekend_taper_min_interval_hours was removed "
                          "(design 2026-10-16); delete it")
+    pace = _load_pace(data)
     return ScheduleConfig(
         timezone=timezone_name,
         closed_hours=closed_hours,
-        pace=_load_pace(data),
+        pace=pace,
         refusals=_load_refusals(data),
+        adaptive=_load_adaptive(data, pace.start_spacing_seconds),
     )
 
 

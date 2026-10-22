@@ -239,3 +239,83 @@ def test_a_missing_closed_hours_key_is_rejected(tmp_path):
     data = {key: value for key, value in DEFAULTS.items() if key != "closed_hours"}
     with pytest.raises(ValueError, match="closed_hours"):
         load_schedule_config(_write(tmp_path, data))
+
+ADAPTIVE = {
+    "enabled": False,
+    "levels_seconds": [75, 50, 37.5, 30, 25],
+    "protect_window_requests": 20,
+    "protect_min_requests": 10,
+    "protect_drop_rate": 0.30,
+    "protect_drop_two_rate": 0.50,
+    "protect_drop_streak": 4,
+    "climb_min_requests": 200,
+    "climb_max_upper_refusal_rate": 0.12,
+    "climb_max_gap_seconds": 3600,
+    "memory_first_hours": 2,
+    "memory_max_hours": 24,
+    "clean_day_min_requests": 100,
+    "demand_min_waiting": 1000,
+    "demand_ease_waiting": 250,
+    "demand_ease_interval_seconds": 3600,
+    "signal_refresh_seconds": 300,
+    "llm_climb_stop_share": 0.8,
+    "emergency_spacing_seconds": 150,
+    "emergency_clear_requests": 20,
+    "emergency_connection_errors": 3,
+    "emergency_connection_window_seconds": 600,
+    "pause_after_block_seconds": 3600,
+}
+
+
+def test_the_adaptive_block_ships_off_with_the_approved_defaults():
+    shipped = json.loads(Path("config/schedule.json").read_text())["adaptive"]
+    cfg = load_schedule_config()
+    a = cfg.adaptive
+    assert shipped["enabled"] is False and a.enabled is False
+    assert a.levels_seconds == (75, 50, 37.5, 30, 25)
+    assert (a.protect_window_requests, a.protect_min_requests) == (20, 10)
+    assert (a.protect_drop_rate, a.protect_drop_two_rate, a.protect_drop_streak) == (0.30, 0.50, 4)
+    assert (a.climb_min_requests, a.climb_max_upper_refusal_rate) == (200, 0.12)
+    assert (a.memory_first_hours, a.memory_max_hours) == (2, 24)
+    assert (a.demand_min_waiting, a.demand_ease_waiting) == (1000, 250)
+    assert a.llm_climb_stop_share == 0.8
+    assert (a.emergency_spacing_seconds, a.emergency_clear_requests) == (150, 20)
+    assert (a.emergency_connection_errors, a.emergency_connection_window_seconds) == (3, 600)
+    assert a.pause_after_block_seconds == 3600
+    for key, value in shipped.items():
+        expected = tuple(value) if key == "levels_seconds" else value
+        assert expected == getattr(a, key), key
+
+
+def test_the_emergency_base_change_loads_while_the_ladder_is_off(tmp_path):
+    cfg = load_schedule_config(_write(tmp_path, {**DEFAULTS, "pace": {
+        **PACE, "start_spacing_seconds": 91}, "adaptive": {**ADAPTIVE, "enabled": False}}))
+    assert start_spacing_seconds(cfg) == 91
+
+
+def test_enabling_the_ladder_requires_the_first_level_to_match_the_base(tmp_path):
+    with pytest.raises(ValueError, match="levels_seconds"):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS, "pace": {
+            **PACE, "start_spacing_seconds": 91}, "adaptive": {**ADAPTIVE, "enabled": True}}))
+
+
+@pytest.mark.parametrize("override", [
+    {"levels_seconds": [75, 50, 37.5, 30]},
+    {"levels_seconds": [75, 80, 37.5, 30, 25]},
+    {"protect_min_requests": 0},
+    {"protect_min_requests": 21},
+    {"protect_drop_rate": 0.0},
+    {"protect_drop_two_rate": 0.20},
+    {"protect_drop_streak": 21},
+    {"climb_max_upper_refusal_rate": 1.1},
+    {"llm_climb_stop_share": 1.1},
+    {"memory_max_hours": 1},
+    {"demand_ease_waiting": 1001},
+    {"emergency_spacing_seconds": 25},
+    {"emergency_connection_errors": 0},
+    {"pause_after_block_seconds": 30},
+    {"protect_drop_rte": 0.4},
+])
+def test_a_malformed_adaptive_block_raises(tmp_path, override):
+    with pytest.raises(ValueError):
+        load_schedule_config(_write(tmp_path, {**DEFAULTS, "adaptive": {**ADAPTIVE, **override}}))
