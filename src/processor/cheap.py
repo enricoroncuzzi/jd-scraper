@@ -88,7 +88,7 @@ def run_cheap_checks(conn, cfg: ProcessorConfig, now: datetime) -> int:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM jobs WHERE stage = 'seen' "
-            "AND (tier IS NULL OR (description_status = 'ok' AND description <> '')) "
+            "AND (tier IS NULL OR (description_status = 'ok' AND btrim(description) <> '')) "
             "ORDER BY first_seen_at LIMIT %s", (cfg.cheap_checks_per_tick,))
         job_ids = [row[0] for row in cur.fetchall()]
     handled = 0
