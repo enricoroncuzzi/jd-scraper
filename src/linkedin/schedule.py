@@ -33,7 +33,7 @@ class PacePolicy:
 @dataclass(frozen=True)
 class AdaptivePolicy:
     """The self-learning pace ladder (config/schedule.json `adaptive`). Every threshold
-    is a config value; the shipped block has it disabled."""
+    is a config value; the shipped block enables it, and `enabled: false` is the off switch."""
 
     enabled: bool = False
     levels_seconds: tuple[float, ...] = (75.0, 50.0, 37.5, 30.0, 25.0)
@@ -175,8 +175,8 @@ def _adaptive_ratio(data: dict, key: str, default: float) -> float:
 
 
 def _load_adaptive(data: dict, base_spacing: float) -> AdaptivePolicy:
-    """Read and validate config/schedule.json `adaptive`. A missing block is the
-    shipped disabled default; an unknown key is a typo that must not silently keep a
+    """Read and validate config/schedule.json `adaptive`. A missing block falls back to the
+    code default, disabled; an unknown key is a typo that must not silently keep a
     safety default."""
     adaptive = data.get("adaptive")
     if adaptive is None:

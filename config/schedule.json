@@ -11,7 +11,7 @@
     "max_wait_seconds": 1800
   },
   "adaptive": {
-    "enabled": false,
+    "enabled": true,
     "levels_seconds": [
       75,
       50,

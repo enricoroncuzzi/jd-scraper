@@ -147,7 +147,7 @@ def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     store_conn.commit()
     text = status.render(store_conn, NOW)
     assert "tier -  seen" in text and "linkedin" in text
-    assert "LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, 0/0 refused today, 0 refusals in a row" in text
+    assert "LinkedIn pace: adaptive level 1/5 (75s, 1x), 0/20 refused in trailing 20, 0/0 refused today, 0 refusals in a row" in text
     assert "linkedin   cadence: 4h x1" in text
     assert "openrouter today (UTC): 7 requests" in text and "process" in text
 
