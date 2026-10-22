@@ -3,7 +3,10 @@
 For a `seen` job with no tier yet: skip what the old system already handled,
 merge a clear cross-source twin, put the job in a tier or drop it as out of
 scope, optionally apply the title pre-filter, and send a job that already has a
-description straight to the language check.
+description straight to the language check. A `seen` job that already has a
+tier and a description is checked again too: a merge can adopt the description
+from a twin after the job was tiered, leaving it `seen` with nothing else
+to advance it.
 """
 import hashlib
 from datetime import datetime
@@ -78,11 +81,14 @@ def check_one(conn, job_id, cfg: ProcessorConfig, now: datetime) -> str:
 
 
 def run_cheap_checks(conn, cfg: ProcessorConfig, now: datetime) -> int:
-    """Check up to cfg.cheap_checks_per_tick untiered jobs, oldest first. Each job
+    """Check up to cfg.cheap_checks_per_tick seen jobs that still need it, oldest
+    first: untiered jobs and tiered jobs whose description arrived later (a merged
+    twin adopted it), so a present description always advances the job. Each job
     commits on its own. Returns how many were handled."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id FROM jobs WHERE stage = 'seen' AND tier IS NULL "
+            "SELECT id FROM jobs WHERE stage = 'seen' "
+            "AND (tier IS NULL OR (description_status = 'ok' AND description ~ '\\S')) "
             "ORDER BY first_seen_at LIMIT %s", (cfg.cheap_checks_per_tick,))
         job_ids = [row[0] for row in cur.fetchall()]
     handled = 0

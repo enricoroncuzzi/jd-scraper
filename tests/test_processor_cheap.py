@@ -149,6 +149,19 @@ def test_run_cheap_checks_handles_oldest_first_and_skips_jobs_merged_away(store_
     assert run_cheap_checks(store_conn, cfg, NOW) == 0
 
 
+def test_a_whitespace_only_description_is_not_reselected_forever(store_conn, cfg):
+    job_id = record_sighting(store_conn, _card(), NOW).job_id
+    assert check_one(store_conn, job_id, cfg, NOW) == "tiered"  # tier set, description still pending
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_status = 'ok', description = '   ' WHERE id = %s",
+                    (job_id,))
+    store_conn.commit()
+    # check_one would not advance it (it needs a non-blank description), so the
+    # selector must not pick it up and spend a slot on it every tick.
+    assert run_cheap_checks(store_conn, cfg, NOW + timedelta(minutes=1)) == 0
+    assert _job(store_conn, job_id)[0] == "seen"
+
+
 def test_an_expired_described_twin_keeps_its_model_rows_and_verdict(store_conn, cfg):
     from src.processor.describe import expire_stale
     old = record_sighting(store_conn, _card(posted_at=NOW - timedelta(days=40)), NOW).job_id
