@@ -1,3 +1,5 @@
+import urllib.parse
+import uuid
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -5,9 +7,16 @@ import pytest
 
 import label as label_cli
 from src import labels
+from src.jobstore.merge import merge_jobs
+from src.jobstore.sightings import CardInput, record_sighting
 from src.storage import init_db
+from tests.delivery_helpers import NOW
+from tests.legacy_schema import create_legacy_tables
 
 LINK = "https://it.linkedin.com/jobs/view/ai-engineer-at-acme-3912345678"
+ELEVEN_LABS_LINK = (
+    "https://uk.linkedin.com/jobs/view/applied-ai-engineer-at-elevenlabs-4482146365"
+)
 
 
 def _conn(fetch=(True,), rowcount=0):
@@ -130,7 +139,7 @@ def test_cli_list_prints_rows(monkeypatch, capsys):
 
 def test_list_labels_joins_offers():
     conn, cur = _conn()
-    cur.fetchall.return_value = [("T", "C", 8, datetime(2026, 1, 1), LINK)]
+    cur.fetchall.side_effect = [[], [("T", "C", 8, datetime(2026, 1, 1), LINK)]]
     with patch("src.labels.psycopg2.connect", return_value=conn):
         rows = labels.list_labels("postgresql://t", "golden")
     assert rows[0]["title"] == "T"
@@ -151,6 +160,102 @@ def test_list_labels_falls_back_when_the_archive_jobs_table_is_absent():
 
 def test_main_usage_returns_1(capsys):
     assert label_cli.main([]) == 1
+
+
+def _label_db_url(store_conn, base_url):
+    """A DATABASE_URL that names the fixture's throwaway schema, so the public
+    set_label/list_labels entry points can be exercised against a real database."""
+    with store_conn.cursor() as cur:
+        cur.execute("SHOW search_path")
+        schema = cur.fetchone()[0].split(",")[0]
+    sep = "&" if "?" in base_url else "?"
+    return base_url + sep + "options=" + urllib.parse.quote(f"-c search_path={schema}", safe="")
+
+
+def _eleven_labs_job(conn, *, with_linkedin_sighting=True):
+    """The ElevenLabs shape: a freehire sighting makes the Ashby URL canonical, and
+    the later LinkedIn sighting is merged into it. Returns (job_id, note_no).
+
+    with_linkedin_sighting=False models the label database (Neon) that never received
+    the LinkedIn sighting because the job was archived before it arrived."""
+    create_legacy_tables(conn)
+    with conn.cursor() as cur:
+        # The migration in set_label adds this on a live database.
+        cur.execute("ALTER TABLE offer_labels ADD COLUMN IF NOT EXISTS job_id UUID")
+    job_id = record_sighting(conn, CardInput(
+        source="freehire", source_job_id="elevenlabs-applied-ai-engineer",
+        source_url="https://freehire.me/jobs/elevenlabs-applied-ai-engineer",
+        canonical_url="https://jobs.ashbyhq.com/elevenlabs/"
+                      "b8a111fa-9fd5-44d0-97ed-8fd1280be4ef?utm_source=freehire.me",
+        title="Applied AI Engineer", company="ElevenLabs", location="London, United Kingdom",
+        description="We build voice AI.", description_source="freehire"), NOW).job_id
+    with conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET tier = 4, score = 10, stage = 'scored', "
+                    "remote_verdict = 'confirmed' WHERE id = %s", (job_id,))
+    if with_linkedin_sighting:
+        linkedin = record_sighting(conn, CardInput(
+            source="linkedin", source_job_id="4482146365", source_url=ELEVEN_LABS_LINK,
+            title="Applied AI Engineer", company="ElevenLabs",
+            location="London, United Kingdom"), NOW).job_id
+        job_id = merge_jobs(conn, job_id, linkedin)
+    with conn.cursor() as cur:
+        cur.execute("SELECT note_no, canonical_url FROM jobs WHERE id = %s", (job_id,))
+        note_no, canonical_url = cur.fetchone()
+    conn.commit()
+    assert canonical_url.startswith("https://jobs.ashbyhq.com/")
+    return job_id, note_no
+
+
+def test_set_label_links_the_job_behind_a_different_canonical_url(store_conn, store_url_fixture):
+    job_id, note_no = _eleven_labs_job(store_conn)
+    labels.set_label(_label_db_url(store_conn, store_url_fixture), ELEVEN_LABS_LINK, "golden",
+                     f"elevenlabs_applied_ai_engineer_{note_no}.md")
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT job_id FROM offer_labels WHERE label = 'golden'")
+        assert str(cur.fetchone()[0]) == str(job_id)
+
+
+def test_set_label_falls_back_on_the_note_number_when_the_sighting_is_missing(
+        store_conn, store_url_fixture):
+    job_id, note_no = _eleven_labs_job(store_conn, with_linkedin_sighting=False)
+    labels.set_label(_label_db_url(store_conn, store_url_fixture), ELEVEN_LABS_LINK, "golden",
+                     f"elevenlabs_applied_ai_engineer_{note_no}.md")
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT job_id FROM offer_labels WHERE label = 'golden'")
+        assert str(cur.fetchone()[0]) == str(job_id)
+
+
+def test_listing_repairs_a_label_that_lacks_a_job_id(store_conn, store_url_fixture):
+    job_id, note_no = _eleven_labs_job(store_conn, with_linkedin_sighting=False)
+    with store_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO offer_labels (posting_key, link, label, note) VALUES (%s, %s, 'golden', %s)",
+            (labels.posting_key(ELEVEN_LABS_LINK), ELEVEN_LABS_LINK,
+             f"elevenlabs_applied_ai_engineer_{note_no}.md"))
+    store_conn.commit()
+    rows = labels.list_labels(_label_db_url(store_conn, store_url_fixture), "golden")
+    assert rows[0]["title"] == "Applied AI Engineer" and rows[0]["score"] == 10
+    assert rows[0]["company"] == "ElevenLabs"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT job_id FROM offer_labels WHERE label = 'golden'")
+        assert str(cur.fetchone()[0]) == str(job_id)
+
+
+def test_a_job_id_already_set_is_never_overwritten(store_conn, store_url_fixture):
+    job_id, note_no = _eleven_labs_job(store_conn, with_linkedin_sighting=False)
+    other = uuid.uuid4()
+    note = f"elevenlabs_applied_ai_engineer_{note_no}.md"
+    with store_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO offer_labels (posting_key, link, label, job_id, note) "
+            "VALUES (%s, %s, 'golden', %s::uuid, %s)",
+            (labels.posting_key(ELEVEN_LABS_LINK), ELEVEN_LABS_LINK, str(other), note))
+    store_conn.commit()
+    labels.list_labels(_label_db_url(store_conn, store_url_fixture), "golden")
+    labels.set_label(_label_db_url(store_conn, store_url_fixture), ELEVEN_LABS_LINK, "golden", note)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT job_id FROM offer_labels WHERE label = 'golden'")
+        assert str(cur.fetchone()[0]) == str(other)
 
 
 def test_cli_uri_names_the_label_it_replaced(tmp_path, monkeypatch):

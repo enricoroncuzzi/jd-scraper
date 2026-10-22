@@ -14,7 +14,7 @@ from datetime import datetime
 
 from psycopg2.extras import execute_values
 
-from src.labels import posting_key
+from src.labels import fill_missing_label_job_ids
 
 ARCHIVE_STAGES = ("scored", "delivered", "expired")
 
@@ -149,21 +149,13 @@ def copy_jobs(store_conn, neon_conn, now: datetime, batch_size: int = 200) -> in
 
 
 def backfill_label_job_ids(neon_conn) -> int:
-    """Give each label without a job_id the archived job it is about, matched by
-    posting key (the LinkedIn job id, or host+path for other links)."""
+    """Give each label without a job_id the archived job it is about.
+
+    Matching lives in src/labels.py, so a label placed on the Mac (which writes Neon
+    directly) and one repaired by the daily listing resolve the same way.
+    """
     with neon_conn.cursor() as cur:
-        cur.execute("SELECT id, link FROM offer_labels WHERE job_id IS NULL")
-        pending = cur.fetchall()
-        if not pending:
-            return 0
-        cur.execute("SELECT job_id, source_url FROM sightings UNION SELECT id, canonical_url FROM jobs")
-        by_key = {posting_key(url): job_id for job_id, url in cur.fetchall()}
-        updated = 0
-        for label_id, link in pending:
-            job_id = by_key.get(posting_key(link))
-            if job_id is not None:
-                cur.execute("UPDATE offer_labels SET job_id = %s WHERE id = %s", (job_id, label_id))
-                updated += 1
+        updated = fill_missing_label_job_ids(cur)
     neon_conn.commit()
     return updated
 
