@@ -9,6 +9,7 @@ import pytest
 from src.delivery.settings import DeliverySettings
 from src.jobstore import budget, heartbeat
 from src.jobstore.sightings import CardInput, record_sighting
+from src.jobstore.source_requests import record_request
 from src.linkedin.adaptive import blank_state
 from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig, local_day
 from src.processor.cheap import check_one
@@ -424,3 +425,27 @@ def test_the_status_line_shows_the_off_switch(store_conn):
     assert ("LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, "
             "0/0 refused today, 0 refusals in a row") in text
     assert "last move: disabled" in text
+
+
+def test_the_status_page_shows_the_last_seven_days_of_requests_per_source(store_conn):
+    for code in (200, 200, 429):
+        with store_conn.cursor() as cur:
+            cur.execute("INSERT INTO pace_events (at, service, kind, outcome, status) "
+                        "VALUES (%s, 'collect-linkedin', 'search', %s, %s)",
+                        (NOW - timedelta(hours=2), "ok" if code == 200 else "refused", code))
+    record_sighting(store_conn, CardInput(source="linkedin", source_job_id="l1",
+                                          source_url="https://l/1", title="t", company="c"),
+                    NOW - timedelta(hours=2))
+    record_request(store_conn, "himalayas", NOW - timedelta(hours=2), 200)
+    store_conn.commit()
+    text = status.render(store_conn, NOW, ScheduleConfig())
+    assert "Requests per source, last 7 days (Rome):" in text
+    created = [line.split() for line in text.splitlines() if line.startswith("  linkedin  ")]
+    # Today is included and the window is exactly seven Rome days.
+    assert [row[1] for row in created] == [f"2026-10-{day:02d}" for day in range(8, 15)]
+    assert created[-1] == ["linkedin", "2026-10-14", "3", "2", "1", "0", "1",
+                           "200:2", "429:1"]
+    himalayas = [line.split() for line in text.splitlines() if line.startswith("  himalayas ")]
+    assert himalayas[-1] == ["himalayas", "2026-10-14", "1", "1", "0", "0", "0", "200:1"]
+    freehire = [line.split() for line in text.splitlines() if line.startswith("  freehire  ")]
+    assert freehire[0] == ["freehire", "2026-10-08", "0", "0", "0", "0", "0", "-"]

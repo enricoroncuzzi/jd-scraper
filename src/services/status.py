@@ -6,12 +6,13 @@ Every timestamp is printed in Europe/Rome and labelled, whatever zone the server
 or the database session happens to be in (design section 4.7).
 """
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
 from src.jobstore import budget, heartbeat
 from src.jobstore.db import connect, store_url, utcnow
+from src.jobstore.source_requests import daily_requests
 from src.llm_fallback import format_usage_lines, load_guard_config, stage_usages
 from src.linkedin.adaptive import (
     climb_blockers, current_level, effective_spacing, normalize_state, parse_iso,
@@ -19,7 +20,7 @@ from src.linkedin.adaptive import (
 )
 from src.linkedin.pace import Gate, PaceState, evaluate_gate
 from src.linkedin.schedule import (
-    ScheduleConfig, load_schedule_config, requests_today_for, start_spacing_seconds,
+    ScheduleConfig, load_schedule_config, local_day, requests_today_for, start_spacing_seconds,
 )
 from src.processor.config import load_processor_config
 from src.processor.describe import waiting_by_class
@@ -155,6 +156,7 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
                                  paused_day=(paused_day(controller)
                                              if schedule.adaptive.enabled else None))
             lines.append(_gate_line(gate, schedule, controller))
+    lines.extend(_request_lines(conn, now, schedule))
     for provider in ("openrouter", "groq"):
         usage = budget.used_today(conn, provider, now)
         lines.append(f"{provider} today (UTC): {usage.requests} requests, "
@@ -167,6 +169,22 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         lines.append(f"  {beat.service:<18} {beat.state:<9} "
                      f"last beat {rome(beat.beat_at, schedule, '%Y-%m-%d %H:%M:%S')}  {beat.detail}")
     return "\n".join(lines)
+
+
+def _request_lines(conn, now: datetime, schedule: ScheduleConfig) -> list[str]:
+    """Requests and new jobs per source, one row per Rome day for the last seven days,
+    today included. A source that sent nothing still gets a zero row: its silence is the
+    signal. LinkedIn's rows are the pace_events rows, freehire's and Himalayas' come from
+    source_requests (src/jobstore/source_requests.py)."""
+    today = local_day(schedule, now)
+    rows = daily_requests(conn, today - timedelta(days=6), today, zone=schedule.timezone)
+    lines = ["Requests per source, last 7 days (Rome):",
+             f"  {'source':<9} {'day':<10} {'sent':>6} {'ok':>6} {'refused':>7} "
+             f"{'errors':>6} {'new':>5}  codes"]
+    for row in rows:
+        lines.append(f"  {row.source:<9} {row.day.isoformat()} {row.sent:>6} {row.ok:>6} "
+                     f"{row.refused:>7} {row.errors:>6} {row.new_jobs:>5}  {row.codes_text}")
+    return lines
 
 
 def _description_queue_lines(cur, now: datetime, schedule: ScheduleConfig, cfg) -> list[str]:
