@@ -15,6 +15,7 @@ from src.delivery.daily import TierDelivery
 from src.delivery.health import enabled_sources, expected_services, health_lines, source_silence_allowances
 from src.delivery.jobs import to_scored_offer
 from src.delivery.linkedin_report import linkedin_lines
+from src.delivery.request_report import request_lines
 from src.delivery.settings import DeliverySettings
 from src.llm_limits import limit_for
 from src.processor.config import ProcessorConfig, TierPolicy
@@ -136,6 +137,7 @@ def render_day_summary(conn, cfg: ProcessorConfig, settings: DeliverySettings,
                   + [f"{name}: {count} new jobs" for name, count in _source_totals(conn, since).items()]
                   + [f"Jobs still waiting for processing: {waiting}"]),
         "\n".join(linkedin_lines(conn, now)),
+        "\n".join(request_lines(conn, now)),
         "\n".join(_budget_lines(conn, now)),
         "\n".join(["Services"] + health_lines(conn, service_settings, now, source_silence_allowances())),
     ]

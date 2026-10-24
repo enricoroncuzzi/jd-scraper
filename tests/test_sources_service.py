@@ -117,6 +117,8 @@ def test_a_oneshot_run_of_only_errors_exits_nonzero(store_conn, store_conn_facto
     monkeypatch.setattr(service, "load_source_config", lambda name: cfg)
     monkeypatch.setattr(service, "store_url", lambda: "unused")
     monkeypatch.setattr(service, "connect", lambda url: store_conn_factory(store_conn))
+    monkeypatch.setattr(service, "JsonClient", lambda cfg, get=None, record=None: JsonClient(
+        cfg, get=get, record=record, sleep=lambda _s: None, clock=lambda: 0.0))
     body = {**_body(_hits(0, 5)), "meta": {"ignored_params": [{"param": "category"}]}}
     assert service.main(["freehire", "--once"], get=Pages(*[body] * 8)) == 1
 
@@ -149,6 +151,22 @@ def test_a_crash_during_a_drain_leaves_an_error_beat(store_conn, monkeypatch):
     beats = {beat.service: beat for beat in heartbeat.read_all(store_conn)}
     assert beats["collect-freehire"].state == "error"
     assert beats["collect-freehire"].detail == {"crashed": "RuntimeError"}
+
+
+def test_a_oneshot_run_records_every_request_it_makes(store_conn, store_conn_factory, monkeypatch):
+    cfg = _cfg(page_size=5)
+    monkeypatch.setattr(service, "load_source_config", lambda name: cfg)
+    monkeypatch.setattr(service, "store_url", lambda: "unused")
+    monkeypatch.setattr(service, "connect", lambda url: store_conn_factory(store_conn))
+    # The real JsonClient sleeps 1-2 s between requests from config/sources.json; swap in
+    # the no-sleep client the rest of this file uses so the test stays fast.
+    monkeypatch.setattr(service, "JsonClient", lambda cfg, get=None, record=None: JsonClient(
+        cfg, get=get, record=record, sleep=lambda _s: None, clock=lambda: 0.0))
+    pages = Pages(*[_body(_hits(0, 3))] * 8)
+    assert service.main(["freehire", "--once"], get=pages) == 0
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT source, outcome, count(*) FROM source_requests GROUP BY 1, 2")
+        assert cur.fetchall() == [("freehire", "ok", 8)]
 
 
 def test_a_disabled_source_refuses_to_run(tmp_path, monkeypatch, capsys):

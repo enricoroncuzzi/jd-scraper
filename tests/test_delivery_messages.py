@@ -115,3 +115,11 @@ def test_the_day_summary_carries_the_linkedin_block(store_conn, cfg, settings):
     deliveries = {t: deliver_tier(store_conn, cfg, settings, t, DAY, NOW) for t in (1, 2, 3, 4)}
     messages = render_day_summary(store_conn, cfg, settings, deliveries, NOW, DAY)
     assert any("LinkedIn (last 24 hours)" in message for message in messages)
+
+
+def test_the_day_summary_carries_the_per_source_request_lines(store_conn, cfg, settings):
+    deliveries = {t: deliver_tier(store_conn, cfg, settings, t, DAY, NOW) for t in (1, 2, 3, 4)}
+    text = "\n\n".join(render_day_summary(store_conn, cfg, settings, deliveries, NOW, DAY))
+    assert "Requests per source yesterday (Rome)" in text
+    assert "linkedin 2026-10-13: 0 sent (0 ok, 0 refused, 0 errors), 0 new jobs, codes -" in text
+    assert "himalayas 2026-10-13: 0 sent" in text

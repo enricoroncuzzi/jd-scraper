@@ -252,6 +252,20 @@ DDL: list[str] = [
     "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS spacing_seconds DOUBLE PRECISION",
     "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS wait_seconds DOUBLE PRECISION",
     "ALTER TABLE pace_events ADD COLUMN IF NOT EXISTS level INTEGER",
+    # Per-request record of the stage-2 sources (2026-10-24 request tracking). LinkedIn
+    # needs no table here: every LinkedIn request is already one row in pace_events.
+    # Additive and never pruned (see deploy/RUNBOOK.md), so old code ignores it.
+    """
+    CREATE TABLE IF NOT EXISTS source_requests (
+        id      BIGSERIAL PRIMARY KEY,
+        at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        source  TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        status  INTEGER,
+        CONSTRAINT source_requests_outcome_chk CHECK (outcome IN ('ok','refused','error'))
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS source_requests_source_at_idx ON source_requests (source, at)",
     """
     CREATE TABLE IF NOT EXISTS slice_walks (
         id             BIGSERIAL PRIMARY KEY,
@@ -301,8 +315,8 @@ DDL: list[str] = [
 
 TABLES = (
     "slices", "jobs", "sightings", "job_applications", "llm_calls", "llm_call_jobs",
-    "llm_budget", "pace_budgets", "pace_events", "slice_walks", "service_heartbeats", "delivery_runs",
-    "legacy_seen_hashes", "kv_state",
+    "llm_budget", "pace_budgets", "pace_events", "source_requests", "slice_walks",
+    "service_heartbeats", "delivery_runs", "legacy_seen_hashes", "kv_state",
 )
 
 

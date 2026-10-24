@@ -36,7 +36,8 @@ class Scripted:
         return item
 
 
-def _client(get, sleeps=None, spacing=(1.0, 2.0), retries=None, uniform=lambda a, b: a):
+def _client(get, sleeps=None, spacing=(1.0, 2.0), retries=None, uniform=lambda a, b: a,
+            record=None):
     """Returns (client, sleeps, clock): `clock` is the fake monotonic dict {"t": 0.0};
     sleeps advance it."""
     cfg = SourceConfig(True, "https://api.example/v1", "owner/project/1.0 (+https://x)", spacing, 24,
@@ -47,7 +48,8 @@ def _client(get, sleeps=None, spacing=(1.0, 2.0), retries=None, uniform=lambda a
     def sleep(seconds):
         sleeps.append(seconds)
         clock["t"] += seconds
-    return JsonClient(cfg, get=get, sleep=sleep, clock=lambda: clock["t"], uniform=uniform), sleeps, clock
+    return JsonClient(cfg, get=get, sleep=sleep, clock=lambda: clock["t"], uniform=uniform,
+                      record=record), sleeps, clock
 
 
 def test_a_too_short_interval_is_rejected(tmp_path):
@@ -261,3 +263,46 @@ def test_a_non_ascii_reset_header_is_ignored():
     assert client.get_json("/jobs", {}) == {}
     client.get_json("/jobs", {})
     assert sleeps == [5]
+
+
+def test_every_attempt_is_reported_to_the_recorder_with_its_status():
+    entries = []
+    # A connection error (no status), then a retriable 5xx, then success. The fake sleep
+    # keeps the 5 s and 15 s retry waits off the wall clock.
+    client, _sleeps, _clock = _client(
+        Scripted(requests.ConnectionError("boom"), _response(503), _response(200)),
+        record=entries.append)
+    assert client.get_json("/search", {}) == {}
+    assert entries == [None, 503, 200]
+
+
+def test_a_429_is_reported_and_so_is_the_reask():
+    entries = []
+    client, _sleeps, _clock = _client(
+        Scripted(_response(429, headers={"Retry-After": "5"}), _response(200)),
+        record=entries.append)
+    assert client.get_json("/search", {}) == {}
+    assert entries == [429, 200]
+
+
+def test_a_broken_recorder_does_not_break_a_walk(capsys):
+    from src.jobstore.source_requests import SourceRequestLog
+
+    def broken():
+        raise RuntimeError("store down")
+
+    client, _sleeps, _clock = _client(Scripted(_response(200)),
+                                      record=SourceRequestLog("freehire", connect_fn=broken))
+    assert client.get_json("/search", {}) == {}
+    assert "could not record" in capsys.readouterr().out
+
+
+def test_recording_changes_nothing_about_the_requests_or_their_pacing():
+    def run(record):
+        get = Scripted(_response(500), _response(429, headers={"Retry-After": "5"}),
+                       _response(200))
+        client, sleeps, _clock = _client(get, record=record)
+        client.get_json("/search", {})
+        return get.calls, sleeps
+
+    assert run(None) == run(lambda status: None)

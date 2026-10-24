@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from src.jobstore import heartbeat
 from src.jobstore.db import connect, store_url, utcnow
 from src.jobstore.schema import init_store
+from src.jobstore.source_requests import SourceRequestLog
 from src.linkedin.catalog import sync_slices
 from src.linkedin.walk import RESUMABLE_STOPS, claim_due_slice
 from src.services.runner import Tick, acquire_single_instance, run_service
@@ -140,7 +141,9 @@ def main(argv: list[str] | None = None, *, get=None) -> int:
     if not cfg.enabled:
         print(f"[collect-{args.source}] disabled in config/sources.json; not running")
         return 0
-    client = JsonClient(cfg, get=get)
+    client = JsonClient(cfg, get=get,
+                        record=SourceRequestLog(args.source,
+                                                connect_fn=lambda: connect(store_url())))
     specs = MODULES[args.source].build_slices(cfg)
 
     if args.sync_slices or args.once or args.resume:

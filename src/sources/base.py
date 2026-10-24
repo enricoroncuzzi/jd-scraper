@@ -88,9 +88,10 @@ def load_source_config(name: str, path: str = "config/sources.json") -> SourceCo
 
 class JsonClient:
     def __init__(self, cfg: SourceConfig, *, get=None, sleep=time.sleep, clock=time.monotonic,
-                 uniform=random.uniform):
+                 uniform=random.uniform, record=None):
         self.cfg, self._get, self._sleep, self._clock, self._uniform = \
             cfg, get or new_session().get, sleep, clock, uniform
+        self._record = record
         self._last: float | None = None
         self._started = clock()
         self._throttles = 0
@@ -126,6 +127,11 @@ class JsonClient:
                 problem = f"network error: {exc}"
                 response = None
             self._last = self._clock()
+            # Reported after `_last` is set on purpose: `_pace` measures the next gap from
+            # `_last`, so the recording time is absorbed into the spacing instead of being
+            # added to it. Recording can never make the pace faster.
+            if self._record is not None:
+                self._record(response.status_code if response is not None else None)
             if response is not None:
                 status = response.status_code
                 if status == 200:
