@@ -452,6 +452,28 @@ LinkedIn pace: adaptive level 2/5 (50s, 1.5x), 3/20 refused in trailing 20, 7/34
 
 `last request` names the kind of the last request: `search`, `description` or `packaging`.
 
+The same output ends with requests and new jobs per source, one row per Rome day for the last
+seven days (today included):
+
+```
+Requests per source, last 7 days (Rome):
+  source    day          sent     ok refused errors   new  codes
+  linkedin  2026-10-24   2820   1900     652    268    58  200:1900 429:640 403:12 none:268
+```
+
+`sent` is every request, `ok` the successful ones, `refused` the refusal answers, `errors`
+everything else, and `codes` breaks the day down by HTTP status. A refusal is `403` or `429` for
+freehire and Himalayas, and `403`, `429` or `999` for LinkedIn, which stores a 403 as `neutral`
+in `pace_events`. A LinkedIn CAPTCHA page is a `200` and counts under `errors` with code `200`,
+and a `200` whose body was not JSON counts as `ok` even though the collector retried it. `none`
+is a failed request with no status at all (a connection error or timeout); `nocode` is a
+successful LinkedIn request that carried no status, which is the packaging link check. The day
+summary carries the same numbers as `Requests per source yesterday (Rome)`, one line per source
+with the change in requests against the day before. LinkedIn's rows are read from `pace_events`,
+which already records every LinkedIn request; freehire's and Himalayas' rows come from
+`source_requests`, written at the point their requests go out. Nothing here changes how any
+request is sent.
+
 The stored `weekday_spacing_seconds`, `weekend_spacing_seconds` and `nudge` columns from the
 old adaptive pace are ignored by the fixed code, so the live row's 99 s / 133 s base and x3
 nudge cannot slow the deploy: it runs at 75 s from the first request, no manual step needed. To clear a stuck turn share (give descriptions the next turn) or reset today's counter:
@@ -547,6 +569,40 @@ within ten minutes brake the pace. The climb gate admits at most 14 refusals in 
 percent), just under the 2026-10-19 rate (7.7 percent), so the ladder rarely climbs on a typical
 6 to 8 percent day. The 3x level is a ceiling, not a promise: descriptions run last in a
 processor tick and are bounded by `description_seconds_per_tick`.
+
+### Deploying per-source request tracking
+
+This release adds one table, `source_requests`, and its index. Nothing else changes in the
+schema. It does not alter, delete or prune any `pace_events` row; the DDL re-run does briefly
+lock `pace_events` for its idempotent `ADD COLUMN IF NOT EXISTS` statements, which is why the
+sync-slices step runs before any service restart.
+
+1. `git pull --ff-only` and `.venv/bin/pip install -r requirements.txt`.
+2. `.venv/bin/python -m src.linkedin.collector --sync-slices` immediately after the pull, before
+   the watchdog can tick: the watchdog is a ten-minute timer that runs whatever is checked out,
+   and this release's `init_store` fingerprint differs, so the first call re-runs the whole DDL
+   list once (including the `jobs_remote_verdict_chk` drop and re-add that scans `jobs` for a few
+   seconds) and later calls take only the plain read. It makes no LinkedIn request. A window
+   outside 03:00 to 04:30 Rome avoids the freehire and Himalayas daily timers and the 03:30
+   backup.
+3. `sudo systemctl restart jds-process`, then `jds-collect-linkedin` and `jds-deliver` back to
+   back. The two stage-2 timers are left alone: they pick the new code up on their next run and
+   record from then on.
+4. `python -m src.services.status` must show the new block; a freehire or Himalayas row appears
+   once their next daily run has made a request.
+5. Rollback: `git checkout <previous>` and restart the units. Old code's DDL list never
+   references `source_requests`, so it leaves the table and its rows in place and simply stops
+   writing to them; nothing is dropped and the collectors keep running. Dropping it is optional
+   and loses the recorded history: `psql jds -c "DROP TABLE IF EXISTS source_requests"`.
+6. Retention: rows are kept forever, so no new job exists. The justification is the volume:
+   `source_requests` holds only the stage-2 traffic (freehire's 8 slices of one to a few pages
+   each, Himalayas' 4 roles of up to 15 pages), at most a few hundred rows a day. LinkedIn's
+   roughly 2,820 requests a day stay in `pace_events`, which this release does not touch. If the
+   table ever needs bounding, this is the statement to run by hand:
+
+```sql
+DELETE FROM source_requests WHERE at < now() - interval '90 days';
+```
 
 ### Week one review (design 4.6 C and section 8)
 
