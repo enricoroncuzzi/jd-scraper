@@ -73,6 +73,31 @@ def test_init_store_reapplies_the_ddl_when_the_fingerprint_is_not_current(store_
         assert cur.fetchone()[0] == schema_fingerprint()
 
 
+def test_the_upgrade_to_source_requests_keeps_every_pace_events_row(store_conn):
+    with store_conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_events (at, kind, outcome, status) VALUES "
+                    "(now(), 'search', 'ok', 200), (now(), 'search', 'refused', 429)")
+        cur.execute("DROP TABLE source_requests")
+        cur.execute("DELETE FROM kv_state WHERE key = 'schema_version'")
+    store_conn.commit()
+
+    init_store(store_conn)
+
+    assert "source_requests" in _tables(store_conn)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'source_requests_source_at_idx'")
+        assert cur.fetchone() is not None
+        cur.execute("SELECT count(*) FROM pace_events")
+        assert cur.fetchone()[0] == 2
+        cur.execute("SELECT value FROM kv_state WHERE key = 'schema_version'")
+        assert cur.fetchone()[0] == schema_fingerprint()
+    # A later start takes the plain-read path and changes nothing.
+    init_store(store_conn)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pace_events")
+        assert cur.fetchone()[0] == 2
+
+
 def test_jobs_has_the_spec_columns(store_conn):
     expected = {
         "id", "canonical_url", "title", "company", "company_norm", "title_norm", "country",
