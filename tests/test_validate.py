@@ -111,7 +111,10 @@ def test_validate_cover_letter_rejects_company_first_opener():
         "I built a coordinator agent using the Model Context Protocol.",
         "Acme",
     )
-    assert any("mail-merge" in x.lower() or "company" in x.lower() for x in v)
+    opener = [x for x in v if "mail-merge" in x.lower()]
+    assert len(opener) == 1
+    assert "open with your own interest or capability first" in opener[0]
+    assert "enrico" not in opener[0].lower()
 
 
 def test_hook_claims_splits_sentences():
@@ -154,6 +157,22 @@ def test_check_voice_flags_he_and_him():
         "The agent he built ships tools over the Model Context Protocol.",
         "Acme needs exactly that, so I am writing to him.",
     ]
+
+
+def test_check_voice_flags_his_about_another_person_the_prompt_forbids():
+    hook = "I want to work on the evals stack your CTO Marco describes in his posts."
+    assert check_voice(hook) == [hook]
+
+
+def test_check_voice_passes_the_same_hook_rewritten_by_role():
+    assert check_voice(
+        "I want to work on the evals stack your CTO Marco describes in the posts."
+    ) == []
+    assert validate_cover_letter(
+        "I want to work on the evals work your CTO describes.",
+        "At Hey Movo I built a coordinator agent using the Model Context Protocol.",
+        "Acme",
+    ) == []
 
 
 def test_check_voice_is_case_insensitive():

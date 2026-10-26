@@ -25,10 +25,11 @@ _CONCRETE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The letter is written by Enrico as "I", so his own name or a third-person
-# pronoun about him breaks the voice. In a letter about him a bare "he" has no
-# other referent; third person about the company or anyone else ("the team ...
-# their") is fine and deliberately not matched here.
+# The letter is written by Enrico as "I", so his own name breaks the voice. The
+# hook and bridge never use he, his or him for anyone (the prompt forbids it and
+# asks for other people by role or name), so any of them is flagged without
+# resolving who it refers to. Other third person ("the team ... their") is fine
+# and deliberately not matched here.
 _OWNER_REF_RE = re.compile(r"\b(?:Enrico|Roncuzzi|he|his|him)\b", re.IGNORECASE)
 
 
@@ -97,11 +98,11 @@ def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
     if hook.strip().lower().startswith(company.strip().lower()):
         violations.append(
             "hook opens with the company describing itself (mail-merge tell); "
-            "open with Enrico first instead"
+            "open with your own interest or capability first instead"
         )
     for sentence in check_voice(combined):
         violations.append(
-            f"third person about Enrico in the hook or bridge: {sentence!r}"
+            f"third person (Enrico, or he/his/him) in the hook or bridge: {sentence!r}"
         )
     return violations
 
@@ -114,7 +115,8 @@ def check_voice(text: str) -> list[str]:
     """Sentences that refer to the letter's author in the third person.
 
     The hook and the bridge are written by the owner in his own voice, so a
-    sentence naming him ("Enrico", "Roncuzzi") or using he/his/him about him is
-    a violation. Third person about the company or another person is allowed.
+    sentence naming him ("Enrico", "Roncuzzi") or using he/his/him at all is a
+    violation. Other third person about the company or other people ("they",
+    "their", a role or a name) is allowed.
     """
     return [s for s in _sentences(text) if _OWNER_REF_RE.search(s)]

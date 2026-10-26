@@ -91,6 +91,10 @@ def test_prompt_asks_for_a_first_person_hook_and_bridge(tmp_path):
         assert "first person" in rule
     assert "your own interest" in hook_rule
     assert "never name enrico" in hook_rule
+    for rule in (hook_rule, bridge_rule):
+        assert "he, his, or him for anyone" in rule
+    assert "your existing work" in bridge_rule
+    assert "his existing work" not in bridge_rule
 
 
 _WORK_ARRANGEMENT_WORDS = ("remote", "hybrid", "on-site", "onsite", "in-office")
