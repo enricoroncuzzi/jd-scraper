@@ -330,8 +330,9 @@ Other keys this design adds: `config/processor.json` `description_deadline_hours
 point where an overdue description may spend more than one tick) and
 `description_urgent_after_hours` (`60`, the age past which a waiting job is eligible for the
 floor pick: the head tier's floor pick, one pick in `description_order.quota_one_in`, is
-guaranteed to take the oldest job past that age whatever its class, and otherwise takes that
-tier's oldest AI-title job; it is a share of the fetches, not absolute priority),
+guaranteed to take the oldest job past that age in any tier and class except the jobs the 96 h
+age-out covers, and otherwise takes that tier's oldest AI-title job; it is a share of the
+fetches, not absolute priority),
 `config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
 repeats at most once a day), `config/llm_fallback.json` `share` (`0.2`), `min_calls` (`5`) and
@@ -345,7 +346,7 @@ fetching next (see "Which description goes next" below). Every key, with the shi
 | Setting | Shipped value | Meaning |
 |---|---|---|
 | `description_order.enabled` | `true` | the whole order; `false` (edit + restart `jds-process`, no deploy) reproduces the pre-order behaviour exactly, one plain oldest-first pick per fetch |
-| `description_order.quota_one_in` | `8` | one pick in eight is the head tier's floor pick (the 60-hour band, else that tier's oldest AI-title job); `1` makes every pick one |
+| `description_order.quota_one_in` | `8` | one pick in eight is the head tier's floor pick (the 60-hour band less the jobs the age-out covers, else that tier's oldest AI-title job); `1` makes every pick one |
 | `description_order.value_rank` | `ai_country 0, ai 1, ai_city 2, other_country 3, other 4, other_city 5` | the measured `score >= 7` yield of each class, pooled across tiers (19.2 %, 17.6 %, 4.2 %, 3.3 %, 1.2 %, 0.68 %); lower is better. Every class name the `classes` lists use must be ranked, and only those |
 | `description_order.backfill_per_tick` | `500` | waiting jobs given a priority class per processor tick when they have none (a 3,000-row backlog takes six ticks) |
 | `description_order.ai_title_keywords` | `AI, GenAI, generative AI, artificial intelligence, machine learning, ML, MLOps, deep learning, LLM, LLMs, NLP, data scientist(s), data science, computer vision` | whole-word title keywords that make a title "AI/ML/DS"; matched case-insensitively on word boundaries |
@@ -447,7 +448,9 @@ tier is the one whose last fetch attempt is oldest, and its own pick counter dec
 the pick:
 
 - one pick in `description_order.quota_one_in` (eight) is the **floor pick**: a job past
-  `description_urgent_after_hours` (60 h) first, whatever its tier and class, oldest first, else
+  `description_urgent_after_hours` (60 h) first, oldest first, in every tier and class except
+  the jobs the 96 h age-out covers (the same `age_out` tiers and classes, so the two rules cannot
+  drift: tiers 1 and 2 in every class, tiers 3 and 4 only in their AI-title classes), else
   the head tier's oldest __important__ job (its AI-title classes: `ai_country`, `ai_city`, or
   tier 2's `ai`), else the value order. The 60-hour rule is therefore a guaranteed share of the
   fetches, not absolute priority, and no tier's important work can starve. With all four tiers
@@ -469,10 +472,11 @@ tier 4's `other_city` in arrival order.
 
 The accepted consequence, knowingly: the lowest-value postings mostly wait and then age out.
 Tier 4 `other_city` (0.28 % yield) and tier 3 `other_city` (1.45 %) are at the bottom of the
-value order and are covered only by the floor's 60-hour band, so they mostly reach the 96 h
-age-out described below. Tier 1 `other_city` (0.22 %) and tier 2's `other` (1.2 %) rank above
-tier 4's class 3 but below tiers 3 and 4's `other_country`, and since only tiers 3 and 4 have an
-age-out they reach the 30-day expiry instead.
+value order and the age-out keeps them out of the floor's 60-hour band, so they never take a
+floor turn and mostly reach the 96 h age-out described below. Tier 1 `other_city` (0.22 %) and
+tier 2's `other` (1.2 %) rank above tier 4's class 3 but below tiers 3 and 4's `other_country`,
+and since only tiers 3 and 4 have an age-out they keep the 60-hour band and otherwise reach the
+30-day expiry.
 
 `description_order.quota_one_in` is the dial that trades high-value latency against that tail
 (1 = pure FIFO, 8 = shipped); more description capacity is a pace decision outside this change.

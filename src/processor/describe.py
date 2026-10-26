@@ -12,11 +12,12 @@ off). The title+company fallback is never used as a description.
 
 The queue order is `_next_job`'s: a **floor pick** (one pick in
 `quota_one_in`, decided by the head tier's own counter) takes a job past
-`description_urgent_after_hours` first, whatever its tier and class, else the head
-tier's oldest important job; every other pick is a **value pick** that orders the whole
-queue by the measured class yield (`src/processor/fetch_order.py`) and then by age. The
-pick affects only the order: nothing is dropped, skipped or expired early, and the pace
-and the number of requests are unaffected.
+`description_urgent_after_hours` first, in any tier and class except the jobs the age-out
+covers (tiers 3 and 4 non-AI, which the value order serves or the age-out expires),
+else the head tier's oldest important job; every other pick is a **value pick** that
+orders the whole queue by the measured class yield (`src/processor/fetch_order.py`) and
+then by age. The pick affects only the order: nothing is dropped, skipped or expired
+early, and the pace and the number of requests are unaffected.
 """
 import time
 from dataclasses import dataclass
@@ -54,8 +55,9 @@ _HEAD_TIER_SQL = ("WITH waiting AS (SELECT tier, first_seen_at FROM jobs WHERE "
                   "SELECT w.tier FROM waiting w LEFT JOIN kv_state k ON k.key = %s || w.tier "
                   "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier LIMIT 1")
 _PICKS_SQL = "SELECT coalesce((value->>'n')::int, 0) FROM kv_state WHERE key = %s"
-# The floor pick: exactly the two queries this stage ran before the priority order.
-_URGENT_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " AND first_seen_at < %s "
+# The floor pick's urgent pass: the oldest job past the 60-hour band. `{exclude}` drops the
+# jobs the age-out rule covers (`_urgent_query`): those are served by the value order or age out.
+_URGENT_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " AND first_seen_at < %s{exclude} "
                "ORDER BY first_seen_at, tier, note_no LIMIT 1")
 # The floor pick of the head tier: its oldest important job (an AI-title class), or -
 # with the order disabled - its oldest job whatever its class. A NULL array keeps the
@@ -197,6 +199,20 @@ def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
     return total
 
 
+def _urgent_query(cfg: ProcessorConfig, now: datetime) -> tuple[str, tuple]:
+    """The floor pick's urgent pass and its parameters.
+
+    A job the age-out rule covers (`age_out_where`, so the two rules cannot drift) is left
+    out: it must not take a floor turn from the head tier's important work. `IS NOT TRUE`
+    keeps an unclassified job, for which the predicate is NULL, in the band.
+    """
+    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
+    if not cfg.age_out_enabled:
+        return _URGENT_SQL.format(exclude=""), (now, cutoff)
+    where, params = age_out_where(cfg)
+    return _URGENT_SQL.format(exclude=f" AND ({where}) IS NOT TRUE"), (now, cutoff, *params)
+
+
 def _head_tier(cur, now: datetime) -> int | None:
     """The tier whose turn it is, or None when nothing is waiting for a description."""
     cur.execute(_HEAD_TIER_SQL, (now, TURN_KEY))
@@ -218,10 +234,11 @@ def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> Pick | None:
     decides the kind from its own counter:
 
     * a **floor pick** (one in `cfg.fetch_order.quota_one_in`) is the fairness pick: a job
-      past `description_urgent_after_hours` goes first whatever its tier and class, oldest
-      first, else the head tier's oldest important job (an AI-title class), else the value
-      order. This is the 60-hour rule as a guaranteed share of the fetches, not as absolute
-      priority.
+      past `description_urgent_after_hours` goes first, oldest first, in every tier and class
+      except the jobs the age-out rule covers (`age_out_where`: they are served by the value
+      order or age out, and must not take the head tier's floor), else the head tier's oldest
+      important job (an AI-title class), else the value order. This is the 60-hour rule as
+      a guaranteed share of the fetches, not as absolute priority.
     * a **value pick** orders the whole queue by the measured class yield across tiers
       (`fetch_order.value_rank`), then by age, so the best class never waits behind another
       tier's worst.
@@ -236,8 +253,7 @@ def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> Pick | None:
     kind = "quota" if cfg.fetch_order.quota_turn(_picks_done(cur, head)) else "value"
     row = None
     if kind == "quota":
-        cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
-        cur.execute(_URGENT_SQL, (now, cutoff))
+        cur.execute(*_urgent_query(cfg, now))
         row = cur.fetchone()
         if row is None:
             ranks = (list(cfg.fetch_order.important_ranks(head))
@@ -285,11 +301,10 @@ def pick_queries(cfg: ProcessorConfig, now: datetime) -> list[tuple[str, str, tu
     For the EXPLAIN test in `tests/test_processor_describe.py`, so the queries that
     are measured are the ones the pick really runs.
     """
-    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
     ranks = list(cfg.fetch_order.important_ranks(1))
     rank_sql, rank_params = value_rank_case(cfg.fetch_order)
     return [("head", _HEAD_TIER_SQL, (now, TURN_KEY)),
-            ("urgent", _URGENT_SQL, (now, cutoff)),
+            ("urgent", *_urgent_query(cfg, now)),
             ("floor", _FLOOR_SQL, (now, 1, ranks, ranks)),
             ("value", _VALUE_SQL.format(rank=rank_sql), (now, *rank_params))]
 

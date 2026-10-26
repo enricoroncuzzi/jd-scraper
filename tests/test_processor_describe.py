@@ -726,6 +726,24 @@ def test_a_quota_pick_takes_the_oldest_urgent_job_whatever_its_class(store_conn,
     assert _describe_in_order(store_conn, cfg, 1) == [aged]
 
 
+@pytest.mark.parametrize("location, tier, urgent", [
+    ("Berlin, Germany", 3, False),                 # the age-out covers it: no floor turn
+    ("Milan, Italy", 1, True),                     # tier 1 never ages out: the 60-hour band keeps it
+])
+def test_the_urgent_pass_leaves_out_only_the_jobs_the_age_out_covers(store_conn, cfg, location,
+                                                                       tier, urgent):
+    aged = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                       location=location, tier_hint=tier)
+    important = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer",
+                            location=location, tier_hint=tier)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT tier, description_class FROM jobs WHERE id = %s", (aged,))
+        assert cur.fetchone() == (tier, 3)
+    _age(store_conn, {aged: 70, important: 10})
+    _set_picks(store_conn, 0)                      # the floor pick
+    assert _describe_in_order(store_conn, cfg, 1) == [aged if urgent else important]
+
+
 @pytest.mark.parametrize("arrivals_per_hour", [1, 2])
 def test_a_sustained_backlog_meets_the_four_and_eight_day_targets(store_conn, cfg, arrivals_per_hour):
     """The captain's acceptance (2026-10-20), over the real `describe_next`.
