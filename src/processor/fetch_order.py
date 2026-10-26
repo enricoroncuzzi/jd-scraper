@@ -10,10 +10,11 @@ data/jdscraper-workplace-filter-scout. Neither is safe as a skip, so they only
 order the queue.
 
 This module holds the ranking as plain data: a per-tier ordered list of classes
-(`TierOrder`), the keywords that decide the title kind, and the quota that keeps
-a share of the picks on the plain oldest-first order. `src/processor/describe.py`
-turns a job's rank into a sort key; `src/processor/cheap.py` writes the rank when
-it assigns the tier.
+(`TierOrder`), the measured value rank of each class name across tiers
+(`DEFAULT_VALUE_RANK`), the keywords that decide the title kind, and the share of the
+picks the floor keeps on the plain oldest-first order. `src/processor/describe.py`
+turns a job's (tier, class) into a value rank and sorts the whole queue by it;
+`src/processor/cheap.py` writes the stored per-tier rank when it assigns the tier.
 """
 from dataclasses import dataclass, field
 
@@ -22,6 +23,8 @@ from src.tier_scope import is_country_only
 
 TITLE_KINDS = ("ai", "other")
 LOCATION_KINDS = ("country_only", "other")
+# A rank no config gives: an unclassified job, or one whose stored rank no class covers.
+UNRANKED = 99
 
 
 @dataclass(frozen=True)
@@ -68,10 +71,26 @@ class FetchOrder:
     senior_title_keywords: tuple[str, ...]
     default: TierOrder
     by_tier: dict[int, TierOrder] = field(default_factory=dict)
+    value_rank: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_VALUE_RANK))
 
     def order_for(self, tier: int) -> TierOrder:
         """The class order for `tier` (the default for any tier without its own)."""
         return self.by_tier.get(tier, self.default)
+
+    def rank(self, tier: int, stored: int | None) -> int:
+        """The global value rank of a stored per-tier rank; unclassified sorts last.
+
+        The rank is looked up by class *name*, so `ai_country` in tier 1 and in tier 4
+        share one rank and the order is the same across tiers.
+        """
+        if stored is None:
+            return UNRANKED
+        return self.value_rank.get(self.order_for(tier).name(stored), UNRANKED)
+
+    def important_ranks(self, tier: int) -> tuple[int, ...]:
+        """The stored ranks of the tier's AI-title classes: what the floor pick protects."""
+        return tuple(index for index, cls in enumerate(self.order_for(tier).classes)
+                     if cls.title == "ai")
 
     def classify(self, tier: int, title: str, location_raw: str) -> int:
         order = self.order_for(tier)
@@ -123,6 +142,19 @@ DEFAULT_CLASSES = (
     FetchOrderClass("other_country", "other", "country_only"),
     FetchOrderClass("other_city", "other", "other"),
 )
+
+# The measured `score >= 7` yield of one description, pooled across tiers (report
+# section 2.3): ai_country 81/421 = 19.2 %, tier 2's ai 15/85 = 17.6 %, ai_city
+# 69/1,640 = 4.2 %, other_country 14/423 = 3.3 %, tier 2's other 9/772 = 1.2 %,
+# other_city 17/2,506 = 0.68 %. Lower is better.
+DEFAULT_VALUE_RANK = {
+    "ai_country": 0,
+    "ai": 1,
+    "ai_city": 2,
+    "other_country": 3,
+    "other": 4,
+    "other_city": 5,
+}
 
 DEFAULT_FETCH_ORDER = FetchOrder(
     enabled=False,
@@ -186,6 +218,40 @@ def _tier_order(spec, where: str) -> TierOrder:
     return TierOrder(classes=tuple(classes))
 
 
+def _value_rank(data: dict, classes: list[TierOrder], default: TierOrder) -> dict[str, int]:
+    """Validate the `value_rank` table, or fall back to the measured default.
+
+    Every class name the class lists use must be ranked, and nothing else may be, so a
+    typo in a class name or in the table stops the service rather than silently pushing
+    a class to the back of the queue.
+    """
+    names = {cls.name for order in [default, *classes] for cls in order.classes}
+    raw = data.get("value_rank")
+    if raw is None:
+        table = dict(DEFAULT_VALUE_RANK)
+        missing = sorted(names - set(table))
+        if missing:
+            raise ValueError(f"description_order.value_rank must rank class {missing[0]!r}")
+    else:
+        if not isinstance(raw, dict):
+            raise ValueError(f"description_order.value_rank must be an object, got {raw!r}")
+        for name, rank in raw.items():
+            if name not in names:
+                raise ValueError(f"description_order.value_rank rates unknown class {name!r}")
+            if not isinstance(rank, int) or isinstance(rank, bool) or rank < 0:
+                raise ValueError("description_order.value_rank has a non-integer rank "
+                                 f"for {name!r}: {rank!r}")
+        missing = sorted(names - set(raw))
+        if missing:
+            raise ValueError(f"description_order.value_rank must rank class {missing[0]!r}")
+        ranks = list(raw.values())
+        if len(set(ranks)) != len(ranks):
+            raise ValueError("description_order.value_rank has a duplicate rank: "
+                             f"{sorted(ranks)!r}")
+        table = {name: int(rank) for name, rank in raw.items()}
+    return table
+
+
 def load_fetch_order(data: dict | None) -> FetchOrder:
     """Read and validate the `description_order` block.
 
@@ -217,8 +283,10 @@ def load_fetch_order(data: dict | None) -> FetchOrder:
         if key not in ("1", "2", "3", "4"):
             raise ValueError(f"description_order.classes key {key!r} must be a tier from 1 to 4")
         by_tier[int(key)] = _tier_order(spec, f'description_order.classes["{key}"]')
+    default = _tier_order(classes["default"], 'description_order.classes["default"]')
+    ordered_tiers = list(by_tier.values())
     return FetchOrder(enabled=enabled, quota_one_in=quota_one_in,
                       backfill_per_tick=backfill_per_tick,
                       ai_title_keywords=ai_keywords, senior_title_keywords=senior_keywords,
-                      default=_tier_order(classes["default"], 'description_order.classes["default"]'),
-                      by_tier=by_tier)
+                      default=default, by_tier=by_tier,
+                      value_rank=_value_rank(data, ordered_tiers, default))
