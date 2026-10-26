@@ -362,6 +362,22 @@ or either keyword list changes the ranks, so run
 `psql jds -c "UPDATE jobs SET description_class = NULL WHERE stage = 'seen' AND tier IS NOT NULL AND description_status IN ('pending', 'rate_limited');"`
 and let the next ticks reclassify the backlog at `description_order.backfill_per_tick`.
 
+### The 96 h age-out
+
+A job still waiting for its description, in tier 3 or 4, in a class at or past
+`age_out.min_class`, is marked `stage = 'expired', stage_reason = 'aged_out'` once it is
+`age_out.hours` old. Nothing is deleted: the row keeps its tier, class, sightings, description
+and score, and `python -m src.processor.age_out --undo` restores it. The rule is a fourth
+statement in `expire_stale`, after the three older reasons, so a job that matches two keeps the
+more specific reason. Tiers 1 and 2, and the AI-title classes, are never aged out.
+
+| Setting | Shipped value | Meaning |
+|---|---|---|
+| `age_out.enabled` | `true` | the rule's off switch; `false` skips the statement and the CLI reports `age-out is disabled` |
+| `age_out.hours` | `96` | how long a job may wait for a description before it is aged out |
+| `age_out.tiers` | `[3, 4]` | the tiers the rule applies to; tiers 1 and 2 are served on arrival and are never aged out |
+| `age_out.min_class` | `2` | the lowest `description_class` the rule applies to, so `other_country` and `other_city`; classes 0 and 1 are never aged out |
+
 The base is a constant 75 s on every day, jittered +/-20 %, and nothing clamps it: there is no
 request cap, so open hours do not set a floor and a finished day changes nothing (the
 2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut

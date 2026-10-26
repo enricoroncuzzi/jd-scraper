@@ -5,8 +5,10 @@ guest fragment is fetched through the shared pace. A host throttle (429/999)
 returns the job to the queue unchanged except for its `rate_limited` mark, with no
 per-job penalty; job-specific refusals (401/403/503/504) and the unreadable-markup
 path keep the 30 minutes doubling to 12 hours backoff. The job expires after 7
-days of host refusals, or when the posting is over 30 days old. The title+company
-fallback is never used as a description.
+days of host refusals, when the posting is over 30 days old, or when it has waited
+`age_out.hours` (96) for a description in tiers 3 and 4 as a non-AI posting, which marks it
+`expired` with reason `aged_out` (nothing is deleted, and `age_out.enabled` turns the rule
+off). The title+company fallback is never used as a description.
 
 The queue order is `_next_job`'s: a **floor pick** (one pick in
 `quota_one_in`, decided by the head tier's own counter) takes a job past
@@ -151,25 +153,46 @@ def waiting_by_class(cur, now: datetime) -> list[tuple[int, int | None, int, dat
     return cur.fetchall()
 
 
+def age_out_where(cfg: ProcessorConfig) -> tuple[str, tuple]:
+    """The aged-out predicate, shared by the rule and the CLI so they cannot drift.
+
+    Only a job *still waiting* for its description qualifies: a `seen` job whose text has
+    already landed is advanced by the next cheap check, and the age-out runs before it.
+    """
+    return ("stage = 'seen' AND tier = ANY(%s::smallint[]) AND description_class >= %s "
+            "AND description_status IN ('pending', 'rate_limited')",
+            (list(cfg.age_out_tiers), cfg.age_out_min_class))
+
+
 def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
-    """Expire jobs that waited too long. Returns how many."""
+    """Expire jobs that waited too long. Returns how many.
+
+    The 96 h age-out is a fourth statement, appended last so the more specific reasons
+    (`description_refused`, `posting_too_old`, `waited_too_long`) keep winning on a job
+    that matches two. It writes only `stage`, `stage_reason` and `stage_changed_at`, so
+    nothing is lost and `python -m src.processor.age_out --undo` can restore it.
+    """
     statements = [
         ("description_refused",
          "stage = 'seen' AND description_status = 'rate_limited' AND first_refused_at < %s",
-         now - timedelta(days=cfg.refusal_expiry_days)),
+         (now - timedelta(days=cfg.refusal_expiry_days),)),
         ("posting_too_old",
          "stage IN ('seen', 'described') AND posted_at IS NOT NULL AND posted_at < %s",
-         now - timedelta(days=cfg.posting_max_age_days)),
+         (now - timedelta(days=cfg.posting_max_age_days),)),
         ("waited_too_long",
          "stage IN ('seen', 'described') AND first_seen_at < %s",
-         now - timedelta(days=cfg.posting_max_age_days)),
+         (now - timedelta(days=cfg.posting_max_age_days),)),
     ]
+    if cfg.age_out_enabled:
+        where, params = age_out_where(cfg)
+        statements.append(("aged_out", where + " AND first_seen_at < %s",
+                           (*params, now - timedelta(hours=cfg.age_out_hours))))
     total = 0
     with conn.cursor() as cur:
-        for reason, condition, cutoff in statements:
+        for reason, condition, params in statements:
             cur.execute(
                 f"UPDATE jobs SET stage = 'expired', stage_reason = %s, stage_changed_at = %s "
-                f"WHERE {condition}", (reason, now, cutoff))
+                f"WHERE {condition}", (reason, now, *params))
             total += cur.rowcount
     return total
 

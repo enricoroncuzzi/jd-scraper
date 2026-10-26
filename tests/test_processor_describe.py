@@ -215,6 +215,84 @@ def test_stale_jobs_expire(store_conn, cfg):
     assert _state(store_conn, fresh)[0] == "seen"
 
 
+def test_an_old_low_value_job_in_a_watched_tier_is_aged_out(store_conn, cfg):
+    old = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                      location="Berlin, Germany", tier_hint=3)
+    fresh = _tiered_job(store_conn, cfg, "3900000002", title="Python Developer",
+                        location="London, United Kingdom", tier_hint=4)
+    _age(store_conn, {old: 97, fresh: 95})
+    assert expire_stale(store_conn, cfg, NOW) == 1
+    assert _state(store_conn, old)[:2] == ("expired", "aged_out")
+    assert _state(store_conn, fresh)[0] == "seen"
+
+
+def test_the_important_classes_and_the_first_two_tiers_are_never_aged_out(store_conn, cfg):
+    jobs = [
+        _tiered_job(store_conn, cfg, "3900000001", title="AI Engineer", location="Italy",
+                    tier_hint=3),                                    # ai_country
+        _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Berlin, Germany",
+                    tier_hint=3),                                    # ai_city
+        _tiered_job(store_conn, cfg, "3900000003", title="Python Developer", location="Milan, Italy",
+                    tier_hint=1),                                    # tier 1 other_city
+        _tiered_job(store_conn, cfg, "3900000004", title="Python Developer",
+                    location="Zurich, Switzerland", tier_hint=2),    # tier 2 other
+    ]
+    _age(store_conn, {job: 200 for job in jobs})
+    assert expire_stale(store_conn, cfg, NOW) == 0
+
+
+def test_an_unclassified_job_is_never_aged_out(store_conn, cfg):
+    blank = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                        location="Berlin, Germany", tier_hint=3)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (blank,))
+    store_conn.commit()
+    _age(store_conn, {blank: 200})
+    assert expire_stale(store_conn, cfg, NOW) == 0
+
+
+def test_a_job_that_already_has_its_description_is_never_aged_out(store_conn, cfg):
+    done = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                       location="Berlin, Germany", tier_hint=3)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_status = 'ok', description = 'text' "
+                    "WHERE id = %s", (done,))
+    store_conn.commit()
+    _age(store_conn, {done: 200})
+    assert expire_stale(store_conn, cfg, NOW) == 0
+    assert _state(store_conn, done)[0] == "seen"
+
+
+def test_the_age_out_can_be_switched_off(store_conn, cfg):
+    off = replace(cfg, age_out_enabled=False)
+    old = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                      location="Berlin, Germany", tier_hint=3)
+    _age(store_conn, {old: 200})
+    assert expire_stale(store_conn, off, NOW) == 0
+    assert _state(store_conn, old)[0] == "seen"
+
+
+def test_the_age_out_reads_its_hours_tiers_and_class_from_config(store_conn, cfg):
+    wide = replace(cfg, age_out_hours=48, age_out_tiers=(1, 3), age_out_min_class=1)
+    tier_one = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                           location="Milan, Italy", tier_hint=1)
+    tier_three = _tiered_job(store_conn, cfg, "3900000003", title="Python Developer",
+                             location="Berlin, Germany", tier_hint=3)
+    _age(store_conn, {tier_one: 50, tier_three: 50})
+    assert expire_stale(store_conn, wide, NOW) == 2
+
+
+def test_the_specific_expiry_reasons_still_win_over_the_age_out(store_conn, cfg):
+    gone = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                       location="Berlin, Germany", tier_hint=3)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET description_status = 'rate_limited', first_refused_at = %s "
+                    "WHERE id = %s", (NOW - timedelta(days=8), gone))
+    _age(store_conn, {gone: 200})
+    expire_stale(store_conn, cfg, NOW)
+    assert _state(store_conn, gone)[:2] == ("expired", "description_refused")
+
+
 def test_a_description_round_beats_before_every_fetch(store_conn, cfg, pulses):
     for n in range(3):
         _tiered_job(store_conn, cfg, f"390000000{n + 1}")

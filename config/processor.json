@@ -9,6 +9,15 @@
   "cheap_checks_per_tick": 200,
   "refusal_expiry_days": 7,
   "posting_max_age_days": 30,
+  "age_out": {
+    "enabled": true,
+    "hours": 96,
+    "tiers": [
+      3,
+      4
+    ],
+    "min_class": 2
+  },
   "backoff_first_minutes": 30,
   "backoff_cap_hours": 12,
   "llm_stop_at_requests": 950,
