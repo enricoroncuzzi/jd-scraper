@@ -4,7 +4,7 @@ import urllib.parse
 from dotenv import load_dotenv
 
 # Loaded at import time (not just in __main__) so the CV_MASTER_PATH/CV_CSS_PATH/
-# JD_OUTPUT_ROOT overrides below see .env values regardless of who imports this
+# CL_MASTER_PATH/JD_OUTPUT_ROOT overrides below see .env values regardless of who imports this
 # module first (main.py imports this before ever calling load_config()).
 load_dotenv()
 
