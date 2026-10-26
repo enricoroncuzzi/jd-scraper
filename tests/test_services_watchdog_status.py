@@ -390,8 +390,7 @@ def test_the_status_line_shows_a_blocked_target_level(store_conn):
 def test_the_status_line_shows_which_above_three_x_guard_holds_the_ladder(store_conn):
     state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 5,
              "day": NOW.date().isoformat(),
-             "window": [[NOW.replace(minute=0, second=0, microsecond=0).isoformat(),
-                         ACTIVE.adaptive.rolling_24h_ceiling_requests]],
+             "window": [[NOW.replace(minute=0, second=0, microsecond=0).isoformat(), 5000]],
              "levels": {"5": {"requests": 600, "refusals": 0, "successes": 600,
                                "active_seconds": 15000.0, "first_at": None,
                                "last_at": None, "cooldown_hours": 2.0,

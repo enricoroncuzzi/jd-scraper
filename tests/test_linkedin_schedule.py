@@ -252,7 +252,7 @@ ADAPTIVE = {
     "climb_min_requests": 200,
     "climb_min_requests_above_3x": 600,
     "above_3x_climbs_per_day": 1,
-    "rolling_24h_ceiling_requests": 8640,
+    "rolling_24h_ceiling_requests": 5000,
     "demand_hold_above_3x_waiting": 250,
     "llm_above_4x_stop_share": 0.75,
     "above_3x_hold_hours": 24,
@@ -281,7 +281,7 @@ def test_the_adaptive_block_ships_on_with_the_approved_defaults():
     assert shipped["enabled"] is True and a.enabled is True
     assert a.levels_seconds == (75, 50, 37.5, 30, 25, 18.75, 15, 10.7)
     assert (a.max_level, a.climb_min_requests_above_3x) == (8, 600)
-    assert (a.above_3x_climbs_per_day, a.rolling_24h_ceiling_requests) == (1, 8640)
+    assert (a.above_3x_climbs_per_day, a.rolling_24h_ceiling_requests) == (1, 5000)
     assert (a.demand_hold_above_3x_waiting, a.llm_above_4x_stop_share) == (250, 0.75)
     assert a.above_3x_hold_hours == 24
     assert (a.protect_window_requests, a.protect_min_requests) == (20, 10)

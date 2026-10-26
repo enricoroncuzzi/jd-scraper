@@ -291,7 +291,7 @@ configured in `config/schedule.json`:
 | `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate at and below 3x: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
 | `adaptive.climb_min_requests_above_3x` | `600` | a climb into or within the levels above 3x needs this many requests at the current level (about 4 h at 3x), on top of every other gate |
 | `adaptive.above_3x_climbs_per_day` | `1` | at most one climb above 3x per Rome day, so 7x takes at least three clean days |
-| `adaptive.rolling_24h_ceiling_requests` | `8640` | a rolling 24 h request ceiling (one request per 10 s, just above what 7x can send in a day), counted in hourly buckets inside the adaptive state; when it is reached the ladder may not climb above 3x and a level above 3x drops to 3x until the window falls back under it |
+| `adaptive.rolling_24h_ceiling_requests` | `5000` | a rolling 24 h request ceiling, counted in hourly buckets inside the adaptive state; when it is reached the ladder may not climb above 3x and a level above 3x drops to 3x until the window falls back under it |
 | `adaptive.demand_hold_above_3x_waiting` | `250` | a level above 3x is dropped straight to 3x when fewer jobs than this are waiting for a description |
 | `adaptive.llm_above_4x_stop_share` | `0.75` | no climb above 4x once 75 % of the ladder's OpenRouter stop line is spent (600 of 800 by default), so the day can still finish scoring |
 | `adaptive.above_3x_hold_hours` | `24` | a protect drop or a brake from a level above 3x blocks any above-3x climb for this long |
@@ -484,7 +484,7 @@ and since only tiers 3 and 4 have an age-out they keep the 60-hour band and othe
 A flat 75 s over 24 h is about 1,152 requests; with the +/-20 % jitter the mean stays at 75 s.
 Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's ceiling
 is the configured top level (7x as shipped, about 8,100 requests at 10.7 s), and the rolling
-24 h ceiling is 8,640 requests; neither is a promise, because descriptions run last in a
+24 h ceiling is 5,000 requests; neither is a promise, because descriptions run last in a
 processor tick and are bounded by `description_seconds_per_tick`.
 
 ### Above 3x
@@ -498,7 +498,7 @@ guards apply, all of them config values:
   rules;
 - at most `adaptive.above_3x_climbs_per_day` (one) above-3x climb per Rome day, so 7x takes
   at least three clean days;
-- a rolling 24 h request ceiling of `adaptive.rolling_24h_ceiling_requests` (8,640): while it
+- a rolling 24 h request ceiling of `adaptive.rolling_24h_ceiling_requests` (5,000): while it
   is reached, no above-3x climb is allowed and a level above 3x drops back to 3x;
 - a level above 3x is dropped straight to 3x when fewer than
   `adaptive.demand_hold_above_3x_waiting` (250) descriptions are waiting (a high level with
@@ -515,23 +515,21 @@ also reset the current level's stint, so the next above-3x climb needs a fresh 6
 level as `n/8`, its spacing and speed, the ceiling, and `above 3x: <guard>` (or `n/a`, `at the
 ceiling`, `ready`); the service log prints the same guard on every ladder move.
 
-**What the shipped numbers actually do.** 7x at 10.7 s sends about 8,100 requests a day, and
-the hourly buckets over-count by up to one hour (about 8,400 at most), so the shipped 8,640 lets
-a clean 7x run hold while still capping anything faster than one request per 10 s. A ceiling
-below what a level sends in a day makes that level unreachable or short-lived: with 5,000 the
-5x run filled the window before the next Rome day's climb, so the ladder cycled 3x, 4x, 5x,
-ceiling drop and never reached 7x. On clean traffic with a full queue the shipped ladder reaches
-7x on day 3 (three Rome-day climbs) and stays there:
+**What the shipped numbers actually do.** With `rolling_24h_ceiling_requests: 5000` and a full
+queue, the 6 -> 7 climb happens at midnight and the 5x run fills the window about twenty hours
+later, so the ladder cycles 3x, 4x, 5x, ceiling drop every second day and does **not** reach 7x.
+That is the safe direction, not a fault. 7x arrives only on a day the window has room, or after
+the ceiling is raised:
 
-| `rolling_24h_ceiling_requests` | 7x reached (clean-traffic simulation) |
-|---|---|
-| 5,000 | no, in 12 simulated days |
-| 6,000 | yes, day 3, for about 10 h before a ceiling drop |
-| 8,000 | yes, day 3, then ceiling drops (7x's day exceeds 8,000) |
-| 8,640 (shipped) | yes, day 3, and it stays at 7x |
+| `rolling_24h_ceiling_requests` | 7x reached (clean-traffic simulation) | requests/day |
+|---|---|---|
+| 5,000 (shipped) | no, in 12 simulated days | 2.8k to 4.7k |
+| 6,000 | yes, day 3, for about 10 h before a ceiling drop | 4.0k to 5.0k |
+| 7,000 | yes, day 3, for about 22 h | up to 6.65k |
+| 8,000 | yes, day 3, and it stays at 7x | 7.0k per day |
 
 A sustained 7x day would need about 1,230 OpenRouter requests against a provider limit of
-1,000, so a sustained 7x day trades the free LLM budget for speed. Lower the speed instead by
+1,000, so raising the ceiling trades the free LLM budget for speed. Lower the speed instead by
 setting `adaptive.max_level` (6 is 4x, 5 is 3x).
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run

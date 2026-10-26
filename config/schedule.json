@@ -31,7 +31,7 @@
     "climb_min_requests": 200,
     "climb_min_requests_above_3x": 600,
     "above_3x_climbs_per_day": 1,
-    "rolling_24h_ceiling_requests": 8640,
+    "rolling_24h_ceiling_requests": 5000,
     "demand_hold_above_3x_waiting": 250,
     "llm_above_4x_stop_share": 0.75,
     "above_3x_hold_hours": 24,
