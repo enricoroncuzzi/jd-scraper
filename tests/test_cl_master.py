@@ -130,3 +130,56 @@ def test_compose_reproduces_todays_letter_byte_for_byte():
         "At Example Labs, built a coordinator agent.\n\n"
         "I am based in Italy. I would be glad to discuss how my background fits your team."
     )
+
+
+@pytest.mark.parametrize("cv_pool,cl_pool,expected,deprecated", [
+    ({"lp.a": "A"}, {}, {"lp.a": "A"}, True),             # CV only: keep working, deprecate
+    ({}, {"lp.b": "B"}, {"lp.b": "B"}, False),           # CL only: the target state
+    ({"lp.a": "A"}, {"lp.a": "A"}, {"lp.a": "A"}, True), # identical: deprecate
+    ({}, {}, {}, False),                                 # neither: CV bullets only
+])
+def test_the_pool_transition_table(cv_pool, cl_pool, expected, deprecated):
+    from src.tailor.cl_master import merge_proof_pools
+    assert merge_proof_pools(cv_pool, cl_pool) == (expected, deprecated)
+
+
+def test_a_conflicting_pool_stops_and_names_the_file_to_fix():
+    from src.tailor.cl_master import merge_proof_pools
+    with pytest.raises(ValueError, match=r"differs .*lp\.a.*CV_master\.md"):
+        merge_proof_pools({"lp.a": "A"}, {"lp.a": "B"})
+    with pytest.raises(ValueError, match=r"differs .*lp\.b.*CV_master\.md"):
+        merge_proof_pools({"lp.a": "A"}, {"lp.a": "A", "lp.b": "B"})
+
+
+def _cv_master_with_pool(tmp_path, pool_line: str | None) -> str:
+    """A minimal CV master, with the given '- lp.id :: text' line as its pool or none."""
+    pool = f"\n## Letter Proof Pool\n\n{pool_line}\n" if pool_line else ""
+    path = tmp_path / "CV_master.md"
+    path.write_text(
+        "## Summary\ns\n\n## Skills\n\n**Languages:** Python\n\n## Experience\n\n"
+        "**AI Engineer**\n  : **Hey-Movo**\n\n- Built a coordinator agent.\n" + pool)
+    return str(path)
+
+
+def test_load_letter_sources_keeps_an_identical_pool_and_deprecates(tmp_path):
+    # The CV pool must be the fixture's exact line: two non-empty, different pools stop the
+    # load by design (see the conflict test above).
+    from src.tailor.cl_master import load_letter_sources
+    pool_line = next(line for line in EXAMPLE_CL_MASTER.splitlines()
+                     if line.startswith("- lp."))
+    canonical, master, deprecated = load_letter_sources(
+        _cv_master_with_pool(tmp_path, pool_line), write_cl_master(tmp_path))
+    assert canonical.bullet_text("lp.example.0") == master.proof_pool["lp.example.0"]
+    assert "lp.example.0" in canonical.eligible_proof_ids()
+    assert master.letterhead.name == "Alex Doe"
+    assert deprecated is True
+
+
+def test_load_letter_sources_takes_the_cl_pool_when_the_cv_has_none(tmp_path):
+    # The target state at the loader level: no legacy pool, CL_master.md owns it.
+    from src.tailor.cl_master import load_letter_sources
+    canonical, master, deprecated = load_letter_sources(
+        _cv_master_with_pool(tmp_path, None), write_cl_master(tmp_path))
+    assert canonical.bullet_text("lp.example.0") == master.proof_pool["lp.example.0"]
+    assert "lp.example.0" in canonical.eligible_proof_ids()
+    assert deprecated is False

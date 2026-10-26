@@ -14,7 +14,7 @@ behaviour without review.
 import re
 from dataclasses import dataclass
 
-from src.tailor.cv_master import load_canonical, parse_proof_pool_line
+from src.tailor.cv_master import CanonicalCV, load_canonical, parse_proof_pool_line
 from src.tailor.validate import BANNED_PHRASES, has_dash
 
 COMPANY_TOKEN = "{company}"
@@ -295,3 +295,34 @@ def load_cl_master(path: str) -> CoverLetterMaster:
     if violations:
         raise ValueError("\n".join(violations))
     return master
+
+
+def merge_proof_pools(
+    cv_pool: dict[str, str], cl_pool: dict[str, str]
+) -> tuple[dict[str, str], bool]:
+    """Design 6.2: the pool moves from CV_master.md to CL_master.md and the two copies must
+    never disagree. Returns the effective pool and whether the legacy CV-master pool is still
+    the one in use (the tailor prints one deprecation line when it is). A disagreement stops
+    packaging and says what to make consistent; it does not silently pick a side."""
+    if cv_pool and cl_pool:
+        if cv_pool != cl_pool:
+            differing = sorted(set(cv_pool) ^ set(cl_pool)) or sorted(
+                k for k in cv_pool if cv_pool[k] != cl_pool[k])
+            raise ValueError(
+                "the Letter Proof Pool is in both masters and differs "
+                f"({', '.join(differing)}): make them identical, or delete the pool from "
+                "CV_master.md so CL_master.md owns it")
+        return dict(cl_pool), True
+    if cv_pool:
+        return dict(cv_pool), True
+    return dict(cl_pool), False
+
+
+def load_letter_sources(
+    cv_master_path: str, cl_master_path: str
+) -> tuple[CanonicalCV, CoverLetterMaster, bool]:
+    """Both masters, with the pool resolved: what tailor.run and check_cv_sources load."""
+    canonical = load_canonical(cv_master_path)
+    master = load_cl_master(cl_master_path)
+    pool, deprecated = merge_proof_pools(canonical.letter_proof_pool, master.proof_pool)
+    return canonical.with_letter_proof_pool(pool), master, deprecated
