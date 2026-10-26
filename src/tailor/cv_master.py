@@ -1,5 +1,5 @@
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass
@@ -124,6 +124,15 @@ _POOL_STRIP_RE = re.compile(r"\n*## Letter Proof Pool\n.*\Z", re.DOTALL)
 _POOL_LINE_RE = re.compile(r"^-\s*(?P<id>lp\.\S+)\s*::\s*(?P<text>.+)$")
 
 
+def parse_proof_pool_line(line: str) -> tuple[str, str] | None:
+    """One '- lp.<id> :: <text>' pool line, or None. The single definition of the pool
+    format, shared by CV_master.md and CL_master.md."""
+    m = _POOL_LINE_RE.match(line.strip())
+    if not m:
+        return None
+    return m.group("id"), m.group("text").strip()
+
+
 def _letter_proof_pool(raw: str) -> dict[str, str]:
     """Parse the '## Letter Proof Pool' tail section: cover-letter-only proof
     sentences, never part of the rendered CV or the CV byte-match gate."""
@@ -132,9 +141,9 @@ def _letter_proof_pool(raw: str) -> dict[str, str]:
         return {}
     pool = {}
     for line in m.group(1).splitlines():
-        pm = _POOL_LINE_RE.match(line.strip())
-        if pm:
-            pool[pm.group("id")] = pm.group("text").strip()
+        parsed = parse_proof_pool_line(line)
+        if parsed:
+            pool[parsed[0]] = parsed[1]
     return pool
 
 
@@ -156,6 +165,10 @@ class CanonicalCV:
 
     def all_bullet_texts(self) -> set[str]:
         return {t for s in self.sections for t in s.bullets.values()}
+
+    def with_letter_proof_pool(self, pool: dict[str, str]) -> "CanonicalCV":
+        """The same CV with another proof pool: after CL_master.md takes it over (design 6.2)."""
+        return replace(self, letter_proof_pool=dict(pool))
 
     def eligible_proof_ids(self) -> list[str]:
         """Proof candidates for the cover letter: bullets that stand alone as a

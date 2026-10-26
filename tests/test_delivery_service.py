@@ -10,6 +10,7 @@ from src.delivery.service import DeliverService, send_with_fallback
 from src.delivery.settings import DeliverySettings
 from src.processor.config import load_processor_config
 from tests.delivery_helpers import NOW, scored_job
+from tests.tailor_helpers import write_cl_master
 from tests.linkedin_fakes import FakePace
 
 DAY = date(2026, 10, 14)
@@ -158,11 +159,12 @@ def test_a_persistently_rejected_send_does_not_report_work_forever(store_conn, m
     assert second.did_work is False  # every send was rejected, so the loop may idle
 
 
-def _packaging_service(tmp_path, tailor_run, cv_master):
+def _packaging_service(tmp_path, tailor_run, cv_master, cl_master=None):
     from src.delivery.autopackage import PackagingConfig
     settings = DeliverySettings(output_path=str(tmp_path), delivery_time=time(8, 0),
                                 timezone=ZoneInfo("Europe/Rome"))
-    pkg = PackagingConfig(str(cv_master), str(tmp_path / "CV_css.md"), "key")
+    pkg = PackagingConfig(str(cv_master), str(tmp_path / "CV_css.md"),
+                          str(cl_master) if cl_master else write_cl_master(tmp_path), "key")
     return DeliverService(cfg=load_processor_config(), settings=settings, packaging=pkg, pace=FakePace(),
                           tailor_run=tailor_run, send=Outbox(),
                           connect_neon=lambda: (_ for _ in ()).throw(RuntimeError("no neon in tests")))
@@ -194,6 +196,25 @@ def test_a_missing_cv_source_sends_one_failure_message_a_day(store_conn, tmp_pat
     for minute in range(8 * 60):  # stays inside one local day
         service.tick(store_conn, start + timedelta(minutes=minute))
     assert len([m for m in service.send.sent if m.startswith("Auto-apply FAILED")]) == 1
+
+
+def test_a_missing_letter_master_stops_the_pass_before_any_job(store_conn, tmp_path):
+    (tmp_path / "CV_css.md").write_text("css")
+    master = tmp_path / "CV_master.md"
+    master.write_text("cv")
+    scored_job(store_conn, 1, 9, stage="delivered", note_day=DAY)
+    calls = []
+    service = _packaging_service(tmp_path, lambda *a, **kw: calls.append(a), master,
+                                 cl_master=tmp_path / "absent_CL_master.md")
+    start = datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc)
+    for minute in range(8 * 60):
+        service.tick(store_conn, start + timedelta(minutes=minute))
+    assert calls == []                    # no job was ever attempted
+    failed = [m for m in service.send.sent if m.startswith("Auto-apply FAILED")]
+    assert len(failed) == 1 and "CL_MASTER_PATH" in failed[0]
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM kv_state WHERE key LIKE %s", ("package_fail:%",))
+        assert cur.fetchone()[0] == 0     # no backoff row, so no 1h/6h/24h retries
 
 
 class _Response:

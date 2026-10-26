@@ -34,6 +34,7 @@ from src.delivery.jobs import DeliveryJob, load_jobs, to_scored_offer
 from src.delivery.settings import DeliverySettings
 from src.linkedin.pace import PACKAGING_KIND, PaceBusy, PaceGateClosed
 from src.processor.config import ProcessorConfig
+from src.tailor.cl_master import load_letter_sources
 from src.scorer import _openrouter_quota_exhausted
 from src.services.pulse import pulse
 
@@ -42,6 +43,7 @@ from src.services.pulse import pulse
 class PackagingConfig:
     cv_master_path: str
     css_path: str
+    cl_master_path: str
     llm_api_key: str
 
 
@@ -53,12 +55,24 @@ PACKAGE_MAX_ATTEMPTS = 3
 
 
 def check_cv_sources(pkg: PackagingConfig) -> None:
-    """Fail up front, loudly, when the CV source is not deployed (as run_autoapply does)."""
+    """Fail up front, loudly, when the CV or letter source is not deployed or the masters do
+    not load (as run_autoapply does). A missing or invalid CL_master.md stops packaging here,
+    before any job is tried, so it is one error rather than a retried failure per job
+    (design 6.3)."""
     if not os.path.exists(pkg.cv_master_path):
         raise FileNotFoundError(
             f"CV master source not found at {pkg.cv_master_path!r} - set CV_MASTER_PATH")
     if pkg.css_path and not os.path.exists(pkg.css_path):
         raise FileNotFoundError(f"CV CSS source not found at {pkg.css_path!r} - set CV_CSS_PATH")
+    if not os.path.exists(pkg.cl_master_path):
+        raise FileNotFoundError(
+            f"cover-letter master not found at {pkg.cl_master_path!r} - set CL_MASTER_PATH")
+    try:
+        load_letter_sources(pkg.cv_master_path, pkg.cl_master_path)
+    except ValueError as exc:
+        raise ValueError(
+            f"tailoring sources are invalid (check CL_MASTER_PATH and "
+            f"CV_MASTER_PATH): {exc}") from exc
 
 
 def package_day(job: DeliveryJob, settings: DeliverySettings, now: datetime) -> str:
@@ -151,8 +165,8 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
                   pace, *, now: datetime, tailor_run, classify=classify_channel,
                   notify=notify_package) -> list[dict]:
     """Package every due candidate. `tailor_run(note_path, output_root, cv_master,
-    css, api_key, package_day=None)` is tailor.run; `package_day` is the day folder
-    the package belongs in (see `package_day`). An OpenRouter daily-quota error ends
+    css, api_key, package_day=None, cl_master_path=None)` is tailor.run; `package_day` is
+    the day folder the package belongs in (see `package_day`). An OpenRouter daily-quota error ends
     the loop; any other failure skips that job (it is retried on the next pass)."""
     due = candidates(conn, cfg, now)
     if not due:
@@ -179,7 +193,8 @@ def run_packaging(conn, cfg: ProcessorConfig, settings: DeliverySettings, pkg: P
         path = note_path(settings, job, job.note_day)
         try:
             directory = tailor_run(path, settings.output_path, pkg.cv_master_path, pkg.css_path,
-                                   pkg.llm_api_key, package_day=package_day(job, settings, now))
+                                   pkg.llm_api_key, package_day=package_day(job, settings, now),
+                                   cl_master_path=pkg.cl_master_path)
         except Exception as exc:  # noqa: BLE001 - one bad job must not stop the rest
             print(f"[deliver] tailoring failed for {job.company}: {exc}")
             if _openrouter_quota_exhausted(exc):

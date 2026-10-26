@@ -66,32 +66,41 @@ def test_master_renders_to_single_page(tmp_path):
     assert pdf_page_count(out) == 1
 
 
-def test_cover_letter_html_letterhead():
+def test_cover_letter_html_is_byte_identical_to_the_legacy_template():
+    from src.tailor.cl_master import parse_cl_master
     from src.tailor.render_pdf import cover_letter_html
+    from tests.tailor_helpers import EXAMPLE_CL_MASTER
 
-    html = cover_letter_html("Dear Acme team,\n\nI built X.\n\nLooking forward.")
-    assert "Enrico Roncuzzi" in html
-    assert "AI / ML Engineer" in html
-    assert "COVER LETTER" in html
-    assert "<p>Dear Acme team,</p>" in html
-    assert "<p>I built X.</p>" in html
-    assert "334 814 7584" in html        # dash-free phone in the letterhead
-    assert "334-814-7584" not in html    # no dash tell
+    letterhead = parse_cl_master(EXAMPLE_CL_MASTER).letterhead
+    html = cover_letter_html("Dear Acme team,\n\nI built X.\n\nLooking forward.", letterhead)
 
-
-def test_compose_cover_letter_orders_parts_and_fixed_close():
-    from src.tailor.render_pdf import compose_cover_letter
-    from src.tailor.generate import FIXED_CLOSE
-
-    body = compose_cover_letter(
-        company="Acme",
-        hook="I follow how Acme builds travel tools.",
-        bridge="At Hey Movo I built a coordinator agent using the Model Context Protocol.",
-        proof_text="Built the agentic layer with planner and critic loops.",
+    assert html == (
+        '<!doctype html>\n'
+        '<html><head><meta charset="utf-8"><style>\n'
+        "@page { size: A4; margin: 0; }\n"
+        "body { margin: 0; font-family: Helvetica, Arial, sans-serif; color: #1f2937; }\n"
+        ".page { padding: 64px 74px; }\n"
+        '.name { text-align: center; font-family: Georgia, "Times New Roman", serif; '
+        "font-weight: bold; font-size: 27px; letter-spacing: 1px; color: #111827; }\n"
+        ".tagline { text-align: center; color: #6b7280; font-size: 12px; margin-top: 5px; }\n"
+        ".contact { text-align: center; color: #6b7280; font-size: 10.5px; margin-top: 6px; }\n"
+        ".rule { border: none; border-top: 1px solid #d1d5db; margin: 16px 0 0; }\n"
+        ".title { text-align: center; font-family: Georgia, serif; font-weight: bold; "
+        "font-size: 15px; letter-spacing: 3px; margin: 22px 0 18px; color: #111827; }\n"
+        ".body p { font-size: 12px; line-height: 1.6; margin: 0 0 13px; text-align: left; }\n"
+        ".sign { font-size: 12px; margin-top: 20px; color: #111827; }\n"
+        '</style></head>\n<body><div class="page">\n'
+        '  <div class="name">Alex Doe</div>\n'
+        '  <div class="tagline">AI / ML Engineer | LLM &amp; Agentic Systems | Production ML</div>\n'
+        '  <div class="contact">alex.doe@example.com &nbsp;&middot;&nbsp; '
+        "(+00) 000 000 0000 &nbsp;&middot;&nbsp; linkedin.com/in/example &nbsp;&middot;&nbsp; "
+        "Italy</div>\n"
+        '  <hr class="rule">\n'
+        '  <div class="title">COVER LETTER</div>\n'
+        '  <div class="body"><p>Dear Acme team,</p>\n<p>I built X.</p>\n'
+        "<p>Looking forward.</p></div>\n"
+        '  <div class="sign">Alex Doe</div>\n'
+        "</div></body></html>"
     )
-    parts = [p.strip() for p in body.split("\n\n") if p.strip()]
-    assert parts[0] == "Dear Acme team,"
-    assert parts[1].startswith("I follow how Acme")
-    assert "Model Context Protocol" in parts[2]
-    assert parts[3] == "Built the agentic layer with planner and critic loops."
-    assert parts[4] == FIXED_CLOSE
+    assert "&amp; Agentic" in html          # "&" is escaped once
+    assert "&amp;nbsp;" not in html         # the separator is html, not escaped text

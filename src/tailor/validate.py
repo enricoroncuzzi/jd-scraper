@@ -81,6 +81,11 @@ def validate_cv(assembled_md: str, canonical: CanonicalCV) -> list[str]:
     return violations
 
 
+def has_dash(text: str) -> bool:
+    """The one dash rule: the model's text and the hand-written letter master both use it."""
+    return any(d in text for d in ("—", "–", " - "))
+
+
 def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
     violations: list[str] = []
     combined = f"{hook} {bridge}"
@@ -88,7 +93,7 @@ def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
     for phrase in BANNED_PHRASES:
         if phrase in low:
             violations.append(f"banned phrase: {phrase!r}")
-    if "—" in combined or "–" in combined or " - " in combined:
+    if has_dash(combined):
         violations.append("dash used (write with commas/periods)")
     words = len(combined.split())
     if words > 100:

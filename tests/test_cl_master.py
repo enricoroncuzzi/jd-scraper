@@ -1,0 +1,197 @@
+import pytest
+
+from tests.tailor_helpers import EXAMPLE_CL_MASTER, write_cl_master
+
+
+def test_the_shipped_example_parses():
+    from src.tailor.cl_master import parse_cl_master
+    parse_cl_master(EXAMPLE_CL_MASTER)
+
+
+def test_letterhead_and_letter_parts_in_order():
+    from src.tailor.cl_master import parse_cl_master
+    m = parse_cl_master(EXAMPLE_CL_MASTER)
+    assert m.letterhead.name == "Alex Doe"
+    assert m.letterhead.title == "COVER LETTER"
+    assert m.letterhead.contact == (
+        "alex.doe@example.com", "(+00) 000 000 0000", "linkedin.com/in/example", "Italy")
+    assert [p.kind for p in m.parts] == ["fixed", "hook", "bridge", "proof", "fixed"]
+    assert m.parts[0].text == "Dear {company} team,"
+    assert m.parts[-1].text == (
+        "I am based in Italy. I would be glad to discuss how my background fits your team.")
+    assert list(m.proof_pool) == ["lp.example.0"]
+
+
+def test_each_rule_break_names_its_line(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+
+    def broken(old, new):
+        return write_cl_master(tmp_path, EXAMPLE_CL_MASTER.replace(old, new, 1))
+
+    with pytest.raises(ValueError, match=r"line \d+: slot \{\{proof\}\} comes before"):
+        load_cl_master(broken("{{bridge}}\n\n{{proof}}", "{{proof}}\n\n{{bridge}}"))
+    with pytest.raises(ValueError, match=r"line \d+: .*slot must be alone in its paragraph"):
+        load_cl_master(broken("{{hook}}", "{{hook}} and more"))
+    with pytest.raises(ValueError, match=r"line \d+: unknown slot \{\{Proof\}\}"):
+        load_cl_master(broken("{{proof}}", "{{Proof}}"))
+    with pytest.raises(ValueError, match=r"line \d+: unknown brace group \{companY\}"):
+        load_cl_master(broken("Dear {company} team,", "Dear {companY} team,"))
+    with pytest.raises(ValueError, match=r"line \d+: unbalanced brace"):
+        load_cl_master(broken("Dear {company} team,", "Dear {company team,"))
+    with pytest.raises(ValueError, match=r"line \d+: unbalanced brace"):
+        load_cl_master(broken("Dear {company} team,", "Dear company} team,"))
+    with pytest.raises(ValueError, match=r"line \d+: unterminated HTML comment"):
+        load_cl_master(broken("{{hook}}", "<!-- note\n{{hook}}"))
+    with pytest.raises(ValueError, match=r"line \d+: missing slot \{\{bridge\}\}"):
+        load_cl_master(broken("{{bridge}}\n\n", ""))
+    with pytest.raises(ValueError, match=r"line \d+: duplicate proof-pool id 'lp.example.0'"):
+        load_cl_master(broken("- lp.example.0 ::", "- lp.example.0 :: more\n- lp.example.0 ::"))
+    with pytest.raises(ValueError, match=r"line \d+: unknown letterhead key 'phone'"):
+        load_cl_master(broken("- title:", "- phone: 1\n- title:"))
+    with pytest.raises(ValueError, match="missing section '## Proof Pool'"):
+        load_cl_master(broken("## Proof Pool", "## Proofs"))
+
+
+def test_content_rules_reject_a_dash_and_a_banned_phrase(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+    with pytest.raises(ValueError, match=r"line \d+: dash used"):
+        load_cl_master(write_cl_master(
+            tmp_path, EXAMPLE_CL_MASTER.replace(
+                "Dear {company} team,", "Dear {company} team - hello")))
+    with pytest.raises(ValueError, match=r"line \d+: banned phrase: 'excited to'"):
+        load_cl_master(write_cl_master(
+            tmp_path, EXAMPLE_CL_MASTER.replace("I am based in Italy.", "Excited to join.")))
+
+
+def test_wrapped_lines_join_with_a_single_space(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+    m = load_cl_master(write_cl_master(tmp_path, EXAMPLE_CL_MASTER.replace(
+        "I am based in Italy. I would be glad",
+        "I am based in Italy.\nI would be glad")))
+    assert m.parts[-1].text == (
+        "I am based in Italy. I would be glad to discuss how my background fits your team.")
+
+
+def test_comment_lines_keep_error_line_numbers(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+    text = EXAMPLE_CL_MASTER.replace(
+        "{{hook}}", "<!-- a\nmulti line\nnote -->\n{{hook}}").replace("{{proof}}", "{{Proof}}")
+    n = text.splitlines().index("{{Proof}}") + 1
+    with pytest.raises(ValueError, match=rf"line {n}: unknown slot"):
+        load_cl_master(write_cl_master(tmp_path, text))
+
+
+def test_the_pool_can_be_swapped_into_a_copy_of_the_canonical_cv(tmp_path):
+    from src.tailor.cl_master import parse_cl_master
+    from src.tailor.cv_master import load_canonical
+
+    cv = tmp_path / "CV_master.md"
+    cv.write_text(
+        "## Summary\ns\n\n## Skills\n\n**Languages:** Python\n\n## Experience\n\n"
+        "**AI Engineer**\n  : **Hey-Movo**\n\n- Built a coordinator agent.\n")
+    canonical = load_canonical(str(cv))
+    moved = canonical.with_letter_proof_pool({"lp.example.0": "Built one."})
+    assert moved.letter_proof_pool == {"lp.example.0": "Built one."}
+    assert canonical.letter_proof_pool == {}          # the original is untouched
+    assert moved.bullet_text("lp.example.0") == "Built one."
+    assert parse_cl_master(EXAMPLE_CL_MASTER).proof_pool["lp.example.0"].startswith(
+        "At Example Labs")
+
+
+def test_the_example_master_passes_the_voice_check(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+    load_cl_master(write_cl_master(tmp_path))
+
+
+def test_compose_reproduces_todays_letter_byte_for_byte():
+    from src.tailor.cl_master import parse_cl_master
+    body = parse_cl_master(EXAMPLE_CL_MASTER).compose(
+        company=" Acme ",
+        hook=" I follow how Acme builds travel tools. ",
+        bridge="At Example Labs I built a coordinator agent with the Model Context Protocol.",
+        proof_text="At Example Labs, built a coordinator agent.\n",
+    )
+    assert body == (
+        "Dear Acme team,\n\n"
+        "I follow how Acme builds travel tools.\n\n"
+        "At Example Labs I built a coordinator agent with the Model Context Protocol.\n\n"
+        "At Example Labs, built a coordinator agent.\n\n"
+        "I am based in Italy. I would be glad to discuss how my background fits your team."
+    )
+
+
+@pytest.mark.parametrize("cv_pool,cl_pool,expected,deprecated", [
+    ({"lp.a": "A"}, {}, {"lp.a": "A"}, True),             # CV only: keep working, deprecate
+    ({}, {"lp.b": "B"}, {"lp.b": "B"}, False),           # CL only: the target state
+    ({"lp.a": "A"}, {"lp.a": "A"}, {"lp.a": "A"}, True), # identical: deprecate
+    ({}, {}, {}, False),                                 # neither: CV bullets only
+])
+def test_the_pool_transition_table(cv_pool, cl_pool, expected, deprecated):
+    from src.tailor.cl_master import merge_proof_pools
+    assert merge_proof_pools(cv_pool, cl_pool) == (expected, deprecated)
+
+
+def test_a_conflicting_pool_stops_and_names_the_file_to_fix():
+    from src.tailor.cl_master import merge_proof_pools
+    with pytest.raises(ValueError, match=r"differs .*lp\.a.*CV_master\.md"):
+        merge_proof_pools({"lp.a": "A"}, {"lp.a": "B"})
+    with pytest.raises(ValueError, match=r"differs .*lp\.b.*CV_master\.md"):
+        merge_proof_pools({"lp.a": "A"}, {"lp.a": "A", "lp.b": "B"})
+
+
+def _cv_master_with_pool(tmp_path, pool_line: str | None) -> str:
+    """A minimal CV master, with the given '- lp.id :: text' line as its pool or none."""
+    pool = f"\n## Letter Proof Pool\n\n{pool_line}\n" if pool_line else ""
+    path = tmp_path / "CV_master.md"
+    path.write_text(
+        "## Summary\ns\n\n## Skills\n\n**Languages:** Python\n\n## Experience\n\n"
+        "**AI Engineer**\n  : **Hey-Movo**\n\n- Built a coordinator agent.\n" + pool)
+    return str(path)
+
+
+def test_load_letter_sources_keeps_an_identical_pool_and_deprecates(tmp_path):
+    # The CV pool must be the fixture's exact line: two non-empty, different pools stop the
+    # load by design (see the conflict test above).
+    from src.tailor.cl_master import load_letter_sources
+    pool_line = next(line for line in EXAMPLE_CL_MASTER.splitlines()
+                     if line.startswith("- lp."))
+    canonical, master, deprecated = load_letter_sources(
+        _cv_master_with_pool(tmp_path, pool_line), write_cl_master(tmp_path))
+    assert canonical.bullet_text("lp.example.0") == master.proof_pool["lp.example.0"]
+    assert "lp.example.0" in canonical.eligible_proof_ids()
+    assert master.letterhead.name == "Alex Doe"
+    assert deprecated is True
+
+
+def test_load_letter_sources_takes_the_cl_pool_when_the_cv_has_none(tmp_path):
+    # The target state at the loader level: no legacy pool, CL_master.md owns it.
+    from src.tailor.cl_master import load_letter_sources
+    canonical, master, deprecated = load_letter_sources(
+        _cv_master_with_pool(tmp_path, None), write_cl_master(tmp_path))
+    assert canonical.bullet_text("lp.example.0") == master.proof_pool["lp.example.0"]
+    assert "lp.example.0" in canonical.eligible_proof_ids()
+    assert deprecated is False
+
+
+def test_a_letterhead_naming_the_owner_still_loads(tmp_path):
+    # The real master's letterhead names the owner. The voice check (validate.check_voice) is
+    # for the prose the model writes, so a name and a signature must not be rejected: the file
+    # the owner actually places would otherwise refuse to load.
+    from src.tailor.cl_master import load_cl_master
+    master = load_cl_master(write_cl_master(
+        tmp_path, EXAMPLE_CL_MASTER.replace("Alex Doe", "Enrico Roncuzzi")))
+    assert master.letterhead.name == "Enrico Roncuzzi"
+    assert master.letterhead.signature == "Enrico Roncuzzi"
+
+
+def test_the_voice_check_still_rejects_third_person_prose(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+    with pytest.raises(ValueError, match=r"line \d+: third person .*He says"):
+        load_cl_master(write_cl_master(
+            tmp_path, EXAMPLE_CL_MASTER.replace(
+                "I am based in Italy.", "He says I am based in Italy.")))
+    with pytest.raises(ValueError, match=r"line \d+: .*built it for his team"):
+        load_cl_master(write_cl_master(
+            tmp_path, EXAMPLE_CL_MASTER.replace(
+                "schema validated model context protocol",
+                "schema validated model context protocol, built it for his team")))

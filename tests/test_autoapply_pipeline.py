@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock
 from src.models import ScoredOffer
 from src.autoapply.pipeline import run_autoapply
+from tests.tailor_helpers import EXAMPLE_CL_MASTER, write_cl_master
 
 
 def _offer(id, score, link=None, title="AI Engineer", company="Acme", remote_verdict="not_checked"):
@@ -17,7 +18,7 @@ def cv_paths(tmp_path):
     master.write_text("cv")
     css = tmp_path / "CV_css.md"
     css.write_text("css")
-    return str(master), str(css)
+    return str(master), str(css), write_cl_master(tmp_path)
 
 
 def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False):
@@ -44,7 +45,8 @@ def _patch_common(monkeypatch, tailor_dir="/out/acme", already_packaged=False):
     )
     monkeypatch.setattr(
         "src.autoapply.pipeline.tailor_cli.run",
-        lambda note_path, out_root, master, css, key: calls["tailor_run"].append(note_path) or tailor_dir,
+        lambda note_path, out_root, master, css, key, cl_master_path: calls["tailor_run"].append(
+            note_path) or tailor_dir,
     )
     monkeypatch.setattr(
         "src.autoapply.pipeline.write_manifest",
@@ -66,7 +68,7 @@ def test_run_autoapply_skips_offers_below_threshold(monkeypatch, cv_paths):
     offers = [_offer(1, score=5)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -79,7 +81,7 @@ def test_run_autoapply_tailors_and_notifies_above_threshold_offer(monkeypatch, c
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -95,7 +97,7 @@ def test_run_autoapply_dry_run_skips_notify_but_still_tracks(monkeypatch, cv_pat
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=True,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -116,7 +118,7 @@ def test_run_autoapply_respects_already_packaged_dedup(monkeypatch, cv_paths):
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -130,7 +132,7 @@ def test_run_autoapply_packages_every_qualifying_offer(monkeypatch, cv_paths):
     offers = [_offer(1, score=9), _offer(2, score=9), _offer(3, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -148,7 +150,7 @@ def test_run_autoapply_continues_past_tailoring_failure(monkeypatch, cv_paths):
     offers = [_offer(1, score=9)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -176,7 +178,7 @@ def test_run_autoapply_stops_when_openrouter_quota_is_exhausted(monkeypatch, cv_
     offers = [_offer(1, score=9, company="First"), _offer(2, score=9, company="Second")]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -192,7 +194,7 @@ def test_run_autoapply_no_candidates_short_circuits_without_db_calls(monkeypatch
     )
     results = run_autoapply(
         [], threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -207,7 +209,7 @@ def test_run_autoapply_raises_when_cv_master_path_missing(monkeypatch, tmp_path,
     with pytest.raises(FileNotFoundError, match="CV_MASTER_PATH"):
         run_autoapply(
             offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-            cv_master_path=missing, css_path=cv_paths[1], llm_api_key="k",
+            cv_master_path=missing, css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
             dry_run=False,
             telegram_token="tok", telegram_chat_id="chat1",
         )
@@ -220,10 +222,36 @@ def test_run_autoapply_raises_when_css_path_missing(monkeypatch, tmp_path, cv_pa
     with pytest.raises(FileNotFoundError, match="CV_CSS_PATH"):
         run_autoapply(
             offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-            cv_master_path=cv_paths[0], css_path=missing, llm_api_key="k",
+            cv_master_path=cv_paths[0], css_path=missing, cl_master_path=cv_paths[2], llm_api_key="k",
             dry_run=False,
             telegram_token="tok", telegram_chat_id="chat1",
         )
+
+
+def test_run_autoapply_raises_when_cl_master_path_missing(monkeypatch, tmp_path, cv_paths):
+    calls = _patch_common(monkeypatch)
+    with pytest.raises(FileNotFoundError, match="CL_MASTER_PATH"):
+        run_autoapply(
+            [_offer(1, score=9)], threshold=8, output_path="/out", tier=1,
+            db_url="postgresql://test", cv_master_path=cv_paths[0], css_path=cv_paths[1],
+            cl_master_path=str(tmp_path / "does-not-exist.md"), llm_api_key="k",
+            dry_run=False, telegram_token="tok", telegram_chat_id="chat1",
+        )
+    assert calls["tailor_run"] == []
+
+
+def test_run_autoapply_raises_before_tailoring_when_cl_master_is_invalid(
+        monkeypatch, tmp_path, cv_paths):
+    calls = _patch_common(monkeypatch)
+    invalid = write_cl_master(tmp_path, EXAMPLE_CL_MASTER.replace("I am based in", "He is based in"))
+    with pytest.raises(ValueError, match="third person"):
+        run_autoapply(
+            [_offer(1, score=9)], threshold=8, output_path="/out", tier=1,
+            db_url="postgresql://test", cv_master_path=cv_paths[0], css_path=cv_paths[1],
+            cl_master_path=invalid, llm_api_key="k",
+            dry_run=False, telegram_token="tok", telegram_chat_id="chat1",
+        )
+    assert calls["tailor_run"] == []
 
 
 def test_run_autoapply_below_threshold_short_circuits_before_path_check(monkeypatch, tmp_path):
@@ -231,7 +259,7 @@ def test_run_autoapply_below_threshold_short_circuits_before_path_check(monkeypa
     offers = [_offer(1, score=5)]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url=None,
-        cv_master_path=str(tmp_path / "does-not-exist.md"), css_path="", llm_api_key="k",
+        cv_master_path=str(tmp_path / "does-not-exist.md"), css_path="", cl_master_path=str(tmp_path / "does-not-exist.md"), llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )
@@ -247,7 +275,7 @@ def test_only_confirmed_and_not_checked_offers_are_packaged(monkeypatch, cv_path
     ]
     results = run_autoapply(
         offers, threshold=8, output_path="/out", tier=1, db_url="postgresql://test",
-        cv_master_path=cv_paths[0], css_path=cv_paths[1], llm_api_key="k",
+        cv_master_path=cv_paths[0], css_path=cv_paths[1], cl_master_path=cv_paths[2], llm_api_key="k",
         dry_run=False,
         telegram_token="tok", telegram_chat_id="chat1",
     )

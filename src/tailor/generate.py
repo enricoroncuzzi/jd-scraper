@@ -17,11 +17,6 @@ from src.scorer import (
 from src.tailor.jd_source import JobDescription
 from src.tailor.cv_master import CanonicalCV
 
-FIXED_CLOSE = (
-    "I am based in Italy. I would be glad to discuss how my background fits "
-    "your team."
-)
-
 
 class CoverLetterParts(BaseModel):
     hook: str

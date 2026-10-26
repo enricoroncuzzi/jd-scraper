@@ -6,6 +6,7 @@ from src.autoapply.classify import classify_channel
 from src.autoapply.package import write_manifest, notify_package
 from src import storage
 from src.scorer import _openrouter_quota_exhausted
+from src.tailor.cl_master import load_letter_sources
 import tailor as tailor_cli
 
 
@@ -21,6 +22,7 @@ def run_autoapply(
     db_url: str | None,
     cv_master_path: str,
     css_path: str,
+    cl_master_path: str,
     llm_api_key: str,
     dry_run: bool,
     telegram_token: str,
@@ -55,6 +57,12 @@ def run_autoapply(
             f"CV CSS source not found at {css_path!r} - set CV_CSS_PATH "
             "(or deploy the CV source to this path) before auto-apply can tailor anything"
         )
+    if not os.path.exists(cl_master_path):
+        raise FileNotFoundError(
+            f"cover-letter master not found at {cl_master_path!r} - set CL_MASTER_PATH "
+            "(or deploy the letter source to this path) before auto-apply can tailor anything"
+        )
+    load_letter_sources(cv_master_path, cl_master_path)
 
     results: list[dict] = []
     for offer in candidates:
@@ -66,7 +74,9 @@ def run_autoapply(
 
         note_path = _note_path(offer, output_path, tier, today)
         try:
-            directory = tailor_cli.run(note_path, output_path, cv_master_path, css_path, llm_api_key)
+            directory = tailor_cli.run(
+                note_path, output_path, cv_master_path, css_path, llm_api_key,
+                cl_master_path=cl_master_path)
         except Exception as e:
             print(f"[autoapply] tailoring failed for {offer.company}: {e}")
             if _openrouter_quota_exhausted(e):

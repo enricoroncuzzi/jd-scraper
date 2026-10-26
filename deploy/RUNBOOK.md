@@ -267,6 +267,29 @@ loses nothing.
   stay; older code ignores it.
 - Voluntary stop of LinkedIn requests: `sudo systemctl stop jds-collect-linkedin jds-process jds-deliver`.
 
+### The CV and cover-letter sources
+
+`tailor.py` reads three personal files that are never in git (`AGENTS.md`, "Config and
+secrets"): `CV_master.md`, `CV_css.md` and `CL_master.md`. Place them **before** the code
+that reads them: a packaging pass without `CL_master.md` stops at its first attempt and
+`jds-deliver` sends one "Auto-apply FAILED" notice for that day, by design.
+
+1. Copy `CL_master.md` next to the server's `CV_master.md`, in the directory its
+   `CV_MASTER_PATH` names.
+2. Add `CL_MASTER_PATH=<that directory>/CL_master.md` to the server's `.env`.
+3. Only then `git pull --ff-only` and restart `jds-deliver`.
+
+After editing either master on the Mac, copy the file over again. `CV_master.md` no longer
+owns the Letter Proof Pool; `CL_master.md` does, and a CV master that still carries it keeps
+working with one deprecation line per tailored job.
+
+Keep the pool in the server's `CV_master.md` as well, identical to `CL_master.md`'s, until you
+are sure the code will not be rolled back: old code reads the pool only from the CV master, and
+without it a rollback silently drops every pool sentence from the proof choices, with no error.
+To change a pool sentence, change it in both files in the same step: two copies that differ stop
+the pass with "the Letter Proof Pool is in both masters and differs". Delete the pool from
+`CV_master.md` only once the new code is settled.
+
 ### The LinkedIn pace and schedule gate
 
 The collector, the processor and the packaging stage of `jds-deliver` (which classifies a

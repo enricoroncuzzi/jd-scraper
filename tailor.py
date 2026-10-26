@@ -4,16 +4,16 @@ import urllib.parse
 from dotenv import load_dotenv
 
 # Loaded at import time (not just in __main__) so the CV_MASTER_PATH/CV_CSS_PATH/
-# JD_OUTPUT_ROOT overrides below see .env values regardless of who imports this
+# CL_MASTER_PATH/JD_OUTPUT_ROOT overrides below see .env values regardless of who imports this
 # module first (main.py imports this before ever calling load_config()).
 load_dotenv()
 
 from src.tailor.jd_source import parse_note
-from src.tailor.cv_master import load_canonical
+from src.tailor.cl_master import load_letter_sources
 from src.tailor.generate import generate
 from src.tailor.validate import validate_cv, validate_cover_letter, hook_claims
 from src.tailor.render_pdf import (
-    render_pdf, pdf_page_count, render_cover_letter_pdf, compose_cover_letter,
+    render_pdf, pdf_page_count, render_cover_letter_pdf,
 )
 from src.tailor.output import artifact_dir, write_sources, write_review
 from src.tailor.notify import notify, reveal
@@ -37,12 +37,15 @@ def _ordered_skill_ids(canonical, requested: list[str]) -> list[str]:
 
 # These absolute paths only exist on the captain's own Mac; every other machine
 # (VPS included) must set the env vars below to point at wherever the CV source
-# content and jd-output tree actually live on that host.
+# content, the cover-letter master and jd-output tree actually live on that host.
 _DEFAULT_MASTER = os.environ.get(
     "CV_MASTER_PATH", "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CV_master.md"
 )
 _DEFAULT_CSS = os.environ.get(
     "CV_CSS_PATH", "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/source/CV_css.md"
+)
+_DEFAULT_CL_MASTER = os.environ.get(
+    "CL_MASTER_PATH", "/Users/enricoroncuzzi/Desktop/raw/work/cv-source/CL_master.md"
 )
 _DEFAULT_ROOT = os.environ.get("JD_OUTPUT_ROOT", "/Users/enricoroncuzzi/Desktop/raw/work/jd-output")
 
@@ -54,9 +57,17 @@ def run(
     css_path: str,
     api_key: str,
     package_day: str | None = None,
+    *,
+    cl_master_path: str = _DEFAULT_CL_MASTER,
 ) -> str:
     jd = parse_note(note_path)
-    canonical = load_canonical(cv_master_path)
+    if not os.path.exists(cl_master_path):
+        raise FileNotFoundError(
+            f"cover-letter master not found at {cl_master_path!r} - set CL_MASTER_PATH")
+    canonical, letter_master, legacy_pool = load_letter_sources(cv_master_path, cl_master_path)
+    if legacy_pool:
+        print("[tailor] CV_master.md still carries the Letter Proof Pool; move it to "
+              "CL_master.md")
     print(f"[tailor] Tailoring for {jd.title} at {jd.company}...")
 
     sel = generate(jd, canonical, api_key)
@@ -95,10 +106,20 @@ def run(
         write_review(directory, jd.company, [f"tailored CV overflowed to {n_pages} pages"], [], claims)
         raise ValueError(f"HALTED: tailored CV overflowed to {n_pages} pages")
 
-    cover_body = compose_cover_letter(
+    cover_body = letter_master.compose(
         jd.company, cl.hook, cl.bridge, canonical.bullet_text(cl.proof_id)
     )
-    render_cover_letter_pdf(cover_body, os.path.join(directory, "Roncuzzi_CL.pdf"))
+    cl_pdf_path = os.path.join(directory, "Roncuzzi_CL.pdf")
+    render_cover_letter_pdf(cover_body, cl_pdf_path, letter_master.letterhead)
+    cl_pages = pdf_page_count(cl_pdf_path)
+    if cl_pages != 1:
+        # A FAIL review next to a lone CV PDF would be a half package jd-sync copies down:
+        # remove both, as the CV overflow removes its own PDF.
+        os.remove(cl_pdf_path)
+        os.remove(cv_pdf_path)
+        reason = f"tailored cover letter overflowed to {cl_pages} pages"
+        write_review(directory, jd.company, [], [reason], claims)
+        raise ValueError(f"HALTED: {reason}")
     write_sources(directory, cv_markdown, cover_body, sel.hr_message)
     write_review(directory, jd.company, cv_violations, cl_violations, claims)
 
@@ -123,10 +144,12 @@ def handle_uri(
     cv_master_path: str,
     css_path: str,
     api_key: str,
+    cl_master_path: str = _DEFAULT_CL_MASTER,
 ) -> str:
     try:
         note_path = resolve_uri(uri, jd_output_root)
-        directory = run(note_path, jd_output_root, cv_master_path, css_path, api_key)
+        directory = run(note_path, jd_output_root, cv_master_path, css_path, api_key,
+                        cl_master_path=cl_master_path)
     except Exception as e:
         notify("Tailoring halted", str(e)[:150])
         raise
@@ -138,9 +161,11 @@ def handle_uri(
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--uri" and len(args) >= 2:
-        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["LLM_API_KEY"])
+        handle_uri(args[1], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS,
+                   os.environ["LLM_API_KEY"])
     elif args and args[0] != "--uri":
-        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS, os.environ["LLM_API_KEY"])
+        run(args[0], _DEFAULT_ROOT, _DEFAULT_MASTER, _DEFAULT_CSS,
+            os.environ["LLM_API_KEY"])
     else:
         print("Usage: python tailor.py <note_path> | --uri <tailor:...>")
         sys.exit(1)

@@ -2,6 +2,7 @@ import re
 from html import escape as _html_escape
 from markdown_it import MarkdownIt
 from mdit_py_plugins.deflist import deflist_plugin
+from src.tailor.cl_master import Letterhead
 from src.tailor.icons import ICONS
 
 _ICON_RE = re.compile(r'<span class="iconify" data-icon="([^"]+)"></span>')
@@ -144,16 +145,10 @@ def pdf_page_count(path: str) -> int:
 
 
 # --- Cover letter (Enhancv-style letterhead) ---------------------------------
-# No dash characters anywhere in the header/signature (space-separated phone,
-# "|" and "/" in the tagline, comma in the signature) to keep the whole document
-# dash-free, matching the generation style.
-_CL_NAME = "Enrico Roncuzzi"
-_CL_TAGLINE = "AI / ML Engineer | LLM &amp; Agentic Systems | Production ML"
-_CL_CONTACT = (
-    "enrico.roncuzzi98@gmail.com &nbsp;&middot;&nbsp; (+39) 334 814 7584 "
-    "&nbsp;&middot;&nbsp; linkedin.com/in/enricoroncuzzi &nbsp;&middot;&nbsp; Italy"
-)
-_CL_SIGNATURE = "Enrico Roncuzzi"
+# The letterhead values come from CL_master.md (src/tailor/cl_master.py), so the owner's
+# name, tagline, contact details and signature are not in this repository. The master's
+# fixed text follows the same dash-free rule the generated text does.
+CONTACT_SEPARATOR = " &nbsp;&middot;&nbsp; "
 
 _COVER_TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -173,36 +168,35 @@ body {{ margin: 0; font-family: Helvetica, Arial, sans-serif; color: #1f2937; }}
   <div class="tagline">{tagline}</div>
   <div class="contact">{contact}</div>
   <hr class="rule">
-  <div class="title">COVER LETTER</div>
+  <div class="title">{title}</div>
   <div class="body">{body}</div>
   <div class="sign">{signature}</div>
 </div></body></html>"""
 
 
-def compose_cover_letter(company: str, hook: str, bridge: str, proof_text: str) -> str:
-    from src.tailor.generate import FIXED_CLOSE
+def cover_letter_html(cover_text: str, letterhead: Letterhead) -> str:
+    """Wrap the composed cover-letter body (greeting + paragraphs) in the letterhead.
 
-    greeting = f"Dear {company.strip()} team,"
-    return "\n\n".join([greeting, hook.strip(), bridge.strip(), proof_text.strip(), FIXED_CLOSE])
-
-
-def cover_letter_html(cover_text: str) -> str:
-    """Wrap the generated cover-letter body (greeting + paragraphs) in the letterhead."""
+    `letterhead` is a `src.tailor.cl_master.Letterhead`. Each contact item is escaped and
+    then joined with the same separator the template used as a constant, so the HTML is
+    byte-identical to the letterhead the code used to carry."""
     paras = [p.strip() for p in re.split(r"\n\s*\n", cover_text.strip()) if p.strip()]
     body = "\n".join(f"<p>{_html_escape(p)}</p>" for p in paras)
     return _COVER_TEMPLATE.format(
-        name=_html_escape(_CL_NAME),
-        tagline=_CL_TAGLINE,
-        contact=_CL_CONTACT,
+        name=_html_escape(letterhead.name),
+        tagline=_html_escape(letterhead.tagline),
+        contact=CONTACT_SEPARATOR.join(_html_escape(i) for i in letterhead.contact),
+        title=_html_escape(letterhead.title),
         body=body,
-        signature=_html_escape(_CL_SIGNATURE),
+        signature=_html_escape(letterhead.signature),
     )
 
 
-def render_cover_letter_pdf(cover_text: str, out_path: str) -> None:
+def render_cover_letter_pdf(cover_text: str, out_path: str,
+                            letterhead: Letterhead) -> None:
     from playwright.sync_api import sync_playwright
 
-    html = cover_letter_html(cover_text)
+    html = cover_letter_html(cover_text, letterhead)
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(
