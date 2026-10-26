@@ -55,6 +55,19 @@ class CoverLetterMaster:
     letterhead_lines: dict[str, int]
     proof_pool_lines: dict[str, int]
 
+    def compose(self, company: str, hook: str, bridge: str, proof_text: str) -> str:
+        """Today's letter, from the master: fixed paragraphs verbatim, the three slots filled
+        from the model's selection, {company} substituted. Byte-identical to the legacy
+        compose_cover_letter for the same letterhead and close."""
+        values = {"hook": hook.strip(), "bridge": bridge.strip(), "proof": proof_text.strip()}
+        out = []
+        for part in self.parts:
+            if part.kind == "fixed":
+                out.append(part.text.replace(COMPANY_TOKEN, company.strip()))
+            else:
+                out.append(values[part.kind])
+        return "\n\n".join(out)
+
 
 def _err(line: int, what: str) -> str:
     return f"CL master line {line}: {what}"

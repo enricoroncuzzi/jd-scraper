@@ -113,3 +113,20 @@ def test_the_example_master_loads_whatever_the_voice_check_state(tmp_path):
     # text and pool sentence are first person.
     from src.tailor.cl_master import load_cl_master
     load_cl_master(write_cl_master(tmp_path))
+
+
+def test_compose_reproduces_todays_letter_byte_for_byte():
+    from src.tailor.cl_master import parse_cl_master
+    body = parse_cl_master(EXAMPLE_CL_MASTER).compose(
+        company=" Acme ",
+        hook=" I follow how Acme builds travel tools. ",
+        bridge="At Example Labs I built a coordinator agent with the Model Context Protocol.",
+        proof_text="At Example Labs, built a coordinator agent.\n",
+    )
+    assert body == (
+        "Dear Acme team,\n\n"
+        "I follow how Acme builds travel tools.\n\n"
+        "At Example Labs I built a coordinator agent with the Model Context Protocol.\n\n"
+        "At Example Labs, built a coordinator agent.\n\n"
+        "I am based in Italy. I would be glad to discuss how my background fits your team."
+    )
