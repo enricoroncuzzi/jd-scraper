@@ -293,6 +293,19 @@ def test_the_specific_expiry_reasons_still_win_over_the_age_out(store_conn, cfg)
     assert _state(store_conn, gone)[:2] == ("expired", "description_refused")
 
 
+def test_an_aged_out_job_is_not_described_alerted_or_waiting(store_conn, cfg):
+    job = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                      location="Berlin, Germany", tier_hint=3)
+    _age(store_conn, {job: 100})
+    assert expire_stale(store_conn, cfg, NOW) == 1
+    with store_conn.cursor() as cur:
+        assert describe._next_job(cur, cfg, NOW) is None
+    from src.delivery.alerts import due_alerts
+    from src.delivery.daily import waiting_count
+    assert due_alerts(store_conn, cfg) == []
+    assert waiting_count(store_conn, 3) == 0
+
+
 def test_a_description_round_beats_before_every_fetch(store_conn, cfg, pulses):
     for n in range(3):
         _tiered_job(store_conn, cfg, f"390000000{n + 1}")

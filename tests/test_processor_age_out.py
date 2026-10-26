@@ -5,6 +5,7 @@ import pytest
 
 from src.processor import age_out
 from src.processor.describe import expire_stale
+from src.services import status
 from tests.test_processor_describe import NOW, _age, _state, _tiered_job, cfg  # noqa: F401
 
 
@@ -85,3 +86,16 @@ def test_the_dry_run_reports_a_switched_off_rule(store_conn, cfg, capsys):
 def test_the_dry_run_and_the_undo_together_are_refused(store_conn, cfg):
     with pytest.raises(SystemExit):
         age_out.main(["--dry-run", "--undo"], conn=store_conn, cfg=cfg, now=NOW)
+
+
+def test_the_status_page_counts_expired_jobs_by_reason(store_conn, cfg):
+    jobs = [_tiered_job(store_conn, cfg, f"390000000{n}", title="Python Developer",
+                        location="Berlin, Germany", tier_hint=3) for n in (1, 2, 3)]
+    with store_conn.cursor() as cur:
+        for job, reason in zip(jobs, ("aged_out", "aged_out", "posting_too_old")):
+            cur.execute("UPDATE jobs SET stage = 'expired', stage_reason = %s, "
+                        "stage_changed_at = %s WHERE id = %s", (reason, NOW, job))
+    store_conn.commit()
+    text = status.render(store_conn, NOW)
+    assert "Expired by reason, last 7 days (Rome):" in text
+    assert "  aged_out: 2" in text and "  posting_too_old: 1" in text

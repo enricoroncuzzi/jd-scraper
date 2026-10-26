@@ -104,6 +104,12 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
         lines.append("Jobs by tier and stage (oldest first_seen):")
         for tier, stage, count, oldest in cur.fetchall():
             lines.append(f"  tier {tier:<2} {stage:<13} {count:>6}   {rome(oldest, schedule)}")
+        cur.execute("SELECT stage_reason, count(*) FROM jobs WHERE stage = 'expired' "
+                    "AND stage_changed_at >= %s GROUP BY 1 ORDER BY 2 DESC, 1",
+                    (now - timedelta(days=7),))
+        lines.append("Expired by reason, last 7 days (Rome):")
+        for reason, count in cur.fetchall():
+            lines.append(f"  {reason}: {count}")
         try:
             cfg = load_processor_config()
         except (ValueError, OSError) as exc:

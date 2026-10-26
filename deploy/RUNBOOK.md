@@ -564,7 +564,16 @@ LinkedIn pace: adaptive level 2/8 (50s, 1.5x), ceiling 8, above 3x: n/a, 3/20 re
 
 `last request` names the kind of the last request: `search`, `description` or `packaging`.
 
-The same output ends with requests and new jobs per source, one row per Rome day for the last
+The same output also counts expired jobs by reason over the last seven days, so an age-out wave
+is visible as its own line rather than folded into a stage total:
+
+```
+Expired by reason, last 7 days (Rome):
+  aged_out: 1991
+  posting_too_old: 12
+```
+
+and ends with requests and new jobs per source, one row per Rome day for the last
 seven days (today included):
 
 ```
