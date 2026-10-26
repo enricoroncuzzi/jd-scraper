@@ -1,6 +1,6 @@
 from src.tailor.cv_master import load_canonical
 from src.tailor.validate import (
-    validate_cv, validate_cover_letter, hook_claims, REQUIRED_METRICS,
+    validate_cv, validate_cover_letter, hook_claims, check_voice, REQUIRED_METRICS,
 )
 
 MASTER = """# Enrico Roncuzzi
@@ -117,3 +117,87 @@ def test_validate_cover_letter_rejects_company_first_opener():
 def test_hook_claims_splits_sentences():
     claims = hook_claims("Heymondo builds travel insurance. You use AI for claims.")
     assert len(claims) == 2
+
+
+def test_check_voice_passes_a_first_person_hook_and_bridge():
+    assert check_voice(
+        "I focus on building reliable LLM pipelines with rigorous evaluation. "
+        "At Hey Movo I built a coordinator agent using the Model Context Protocol."
+    ) == []
+
+
+def test_check_voice_flags_a_hook_that_names_the_owner():
+    assert check_voice(
+        "Enrico focuses on building reliable LLM pipelines. I want to bring that "
+        "to your evals work."
+    ) == ["Enrico focuses on building reliable LLM pipelines."]
+
+
+def test_check_voice_flags_the_owner_surname_alone():
+    assert check_voice(
+        "Roncuzzi builds production-grade multi-agent systems."
+    ) == ["Roncuzzi builds production-grade multi-agent systems."]
+
+
+def test_check_voice_flags_a_third_person_possessive_bridge():
+    assert check_voice(
+        "His work on coordinator agents transfers directly to your evals need."
+    ) == ["His work on coordinator agents transfers directly to your evals need."]
+
+
+def test_check_voice_flags_he_and_him():
+    text = (
+        "The agent he built ships tools over the Model Context Protocol. "
+        "Acme needs exactly that, so I am writing to him."
+    )
+    assert check_voice(text) == [
+        "The agent he built ships tools over the Model Context Protocol.",
+        "Acme needs exactly that, so I am writing to him.",
+    ]
+
+
+def test_check_voice_is_case_insensitive():
+    assert check_voice("ENRICO builds production agent systems.") == [
+        "ENRICO builds production agent systems."
+    ]
+
+
+def test_check_voice_matches_whole_words_only():
+    # "the", "other", "their" and "where" all contain "he" as a substring
+    assert check_voice(
+        "The company's other teams build where their own models run."
+    ) == []
+
+
+def test_check_voice_allows_third_person_about_the_company_or_others():
+    assert check_voice(
+        "Their engineering team ships weekly and the founders keep their own evals. "
+        "I want to join that team."
+    ) == []
+
+
+def test_validate_cover_letter_flags_a_third_person_hook():
+    v = validate_cover_letter(
+        "Enrico builds production-grade multi-agent systems for live platforms.",
+        "At Hey Movo I built a coordinator agent using the Model Context Protocol.",
+        "Acme",
+    )
+    assert any("third person" in x.lower() for x in v)
+
+
+def test_validate_cover_letter_flags_a_third_person_bridge():
+    v = validate_cover_letter(
+        "I follow how Acme applies AI to travel insurance.",
+        "His work on LLM pipelines transfers to their evals need with MCP.",
+        "Acme",
+    )
+    assert any("third person" in x.lower() for x in v)
+
+
+def test_validate_cover_letter_passes_when_voice_is_first_person():
+    v = validate_cover_letter(
+        "I follow how Acme applies AI to travel insurance.",
+        "At Hey Movo I built a coordinator agent using the Model Context Protocol.",
+        "Acme",
+    )
+    assert not any("third person" in x.lower() for x in v)

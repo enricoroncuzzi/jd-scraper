@@ -25,6 +25,12 @@ _CONCRETE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The letter is written by Enrico as "I", so his own name or a third-person
+# pronoun about him breaks the voice. In a letter about him a bare "he" has no
+# other referent; third person about the company or anyone else ("the team ...
+# their") is fine and deliberately not matched here.
+_OWNER_REF_RE = re.compile(r"\b(?:Enrico|Roncuzzi|he|his|him)\b", re.IGNORECASE)
+
 
 def _cv_bullets(md: str) -> list[str]:
     m = re.search(r"## Experience\n(.*?)(?=\n## |\Z)", md, re.DOTALL)
@@ -46,6 +52,10 @@ def _section_order(md: str) -> list[str]:
         if re.match(r"^\*\*.+\*\*$", s) and not line.startswith(" "):
             names.append(s.strip("*").strip())
     return names
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
 
 
 def validate_cv(assembled_md: str, canonical: CanonicalCV) -> list[str]:
@@ -89,8 +99,22 @@ def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
             "hook opens with the company describing itself (mail-merge tell); "
             "open with Enrico first instead"
         )
+    for sentence in check_voice(combined):
+        violations.append(
+            f"third person about Enrico in the hook or bridge: {sentence!r}"
+        )
     return violations
 
 
 def hook_claims(hook: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", hook.strip()) if s.strip()]
+    return _sentences(hook)
+
+
+def check_voice(text: str) -> list[str]:
+    """Sentences that refer to the letter's author in the third person.
+
+    The hook and the bridge are written by the owner in his own voice, so a
+    sentence naming him ("Enrico", "Roncuzzi") or using he/his/him about him is
+    a violation. Third person about the company or another person is allowed.
+    """
+    return [s for s in _sentences(text) if _OWNER_REF_RE.search(s)]

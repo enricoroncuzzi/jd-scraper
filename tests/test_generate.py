@@ -81,6 +81,18 @@ def test_prompt_includes_all_bullets_and_hr_direction(tmp_path):
     assert "hr_message" in low
 
 
+def test_prompt_asks_for_a_first_person_hook_and_bridge(tmp_path):
+    low = build_prompt(_jd(), _canon(tmp_path)).lower()
+    # The old rule invited the third-person opening real letters drifted into.
+    assert "must be about enrico" not in low
+    hook_rule = low.split("   - hook (1 to 2 sentences)", 1)[1].split("   - bridge", 1)[0]
+    bridge_rule = low.split("   - bridge (1 sentence)", 1)[1].split("   - proof_id", 1)[0]
+    for rule in (hook_rule, bridge_rule):
+        assert "first person" in rule
+    assert "your own interest" in hook_rule
+    assert "never name enrico" in hook_rule
+
+
 _WORK_ARRANGEMENT_WORDS = ("remote", "hybrid", "on-site", "onsite", "in-office")
 
 

@@ -196,3 +196,23 @@ def test_run_halts_on_invalid_proof_id(tmp_path, monkeypatch):
     d = os.path.join(str(tmp_path / "o"), "2026-07-02", "tier1", "tailored", "acme_ai_engineer_5")
     assert not os.path.exists(os.path.join(d, "Roncuzzi_CV.pdf"))
     assert "FAIL" in open(os.path.join(d, "CLAIMS_REVIEW.txt")).read()
+
+
+def test_run_halts_on_a_third_person_cover_letter(tmp_path, monkeypatch):
+    # The letter is written by Enrico as "I": a third-person hook is a letter
+    # violation like a banned phrase, so it takes the same halt path.
+    master, note = _setup(tmp_path)
+    sel = _full_selection(master)
+    sel.cover_letter.hook = "Enrico builds production grade multi-agent systems for live platforms."
+    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: sel)
+    monkeypatch.setattr(tailor_cli, "render_pdf", lambda md, css, out: open(out, "w").write("PDF"))
+    monkeypatch.setattr(tailor_cli, "render_cover_letter_pdf", lambda text, out: None)
+    monkeypatch.setattr(tailor_cli, "pdf_page_count", lambda path: 1)
+
+    with pytest.raises(ValueError, match="HALTED"):
+        tailor_cli.run(str(note), str(tmp_path / "o"), master, "", "fake")
+    d = os.path.join(str(tmp_path / "o"), "2026-07-02", "tier1", "tailored", "acme_ai_engineer_5")
+    assert not os.path.exists(os.path.join(d, "Roncuzzi_CV.pdf"))
+    review = open(os.path.join(d, "CLAIMS_REVIEW.txt")).read()
+    assert "FAIL" in review
+    assert "third person" in review.lower()
