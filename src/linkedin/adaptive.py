@@ -687,7 +687,8 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
 
     fresh = _signals_fresh(policy, signals, now)
     if is_above_speed(policy, level, 3.0):
-        if fresh and signals is not None and signals.demand_waiting < policy.demand_hold_above_3x_waiting:
+        if (fresh and signals is not None
+                and signals.demand_waiting < policy.demand_hold_above_3x_waiting):
             target = hold_level(policy)
             state["level"] = target
             _reset_stint(state, target)
