@@ -17,6 +17,10 @@ from src.jobstore.db import utcnow
 
 SCHEDULE_CONFIG_PATH = "config/schedule.json"
 HOURS_PER_DAY = 24
+# The ladder's hard bound: state normalization and the per-level memory can hold this
+# many levels, so a config that lists more is rejected at start rather than silently
+# capped later. src/linkedin/adaptive.py imports it as MAX_LEVELS.
+MAX_LADDER_LEVELS = 8
 
 
 @dataclass(frozen=True)
@@ -36,13 +40,20 @@ class AdaptivePolicy:
     is a config value; the shipped block enables it, and `enabled: false` is the off switch."""
 
     enabled: bool = False
-    levels_seconds: tuple[float, ...] = (75.0, 50.0, 37.5, 30.0, 25.0)
+    levels_seconds: tuple[float, ...] = (75.0, 50.0, 37.5, 30.0, 25.0, 18.75, 15.0, 10.7)
+    max_level: int = MAX_LADDER_LEVELS
     protect_window_requests: int = 20
     protect_min_requests: int = 10
     protect_drop_rate: float = 0.30
     protect_drop_two_rate: float = 0.50
     protect_drop_streak: int = 4
     climb_min_requests: int = 200
+    climb_min_requests_above_3x: int = 600
+    above_3x_climbs_per_day: int = 1
+    rolling_24h_ceiling_requests: int = 5000
+    demand_hold_above_3x_waiting: int = 250
+    llm_above_4x_stop_share: float = 0.75
+    above_3x_hold_hours: int = 24
     climb_max_upper_refusal_rate: float = 0.12
     climb_max_gap_seconds: int = 3600
     memory_first_hours: int = 2
@@ -149,9 +160,12 @@ def _load_refusals(data: dict) -> RefusalPolicy:
 
 
 ADAPTIVE_KEYS = {
-    "enabled", "levels_seconds", "protect_window_requests", "protect_min_requests",
+    "enabled", "levels_seconds", "max_level", "protect_window_requests", "protect_min_requests",
     "protect_drop_rate", "protect_drop_two_rate", "protect_drop_streak",
-    "climb_min_requests", "climb_max_upper_refusal_rate", "climb_max_gap_seconds",
+    "climb_min_requests", "climb_min_requests_above_3x", "above_3x_climbs_per_day",
+    "rolling_24h_ceiling_requests", "demand_hold_above_3x_waiting",
+    "llm_above_4x_stop_share", "above_3x_hold_hours",
+    "climb_max_upper_refusal_rate", "climb_max_gap_seconds",
     "memory_first_hours", "memory_max_hours", "clean_day_min_requests",
     "demand_min_waiting", "demand_ease_waiting", "demand_ease_interval_seconds",
     "signal_refresh_seconds", "llm_climb_stop_share", "emergency_spacing_seconds",
@@ -189,14 +203,23 @@ def _load_adaptive(data: dict, base_spacing: float) -> AdaptivePolicy:
     enabled = adaptive.get("enabled", False)
     if not isinstance(enabled, bool):
         raise ValueError(f"schedule.adaptive.enabled must be a boolean, got {enabled!r}")
+    # A config without the key keeps the pre-ladder five levels, so an old file runs at
+    # the ceiling it always had (max_level defaults to the ladder length).
     levels = adaptive.get("levels_seconds", [75, 50, 37.5, 30, 25])
-    if (not isinstance(levels, list) or len(levels) != 5
+    if (not isinstance(levels, list) or len(levels) < 2
             or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
                        for v in levels)
             or any(a <= b for a, b in zip(levels, levels[1:]))):
-        raise ValueError("schedule.adaptive.levels_seconds must be 5 strictly decreasing "
-                         f"positive numbers, got {levels!r}")
+        raise ValueError("schedule.adaptive.levels_seconds must be 2 or more strictly "
+                         f"decreasing positive numbers, got {levels!r}")
+    if len(levels) > MAX_LADDER_LEVELS:
+        raise ValueError("schedule.adaptive.levels_seconds must not exceed "
+                         f"MAX_LADDER_LEVELS ({MAX_LADDER_LEVELS}), got {len(levels)}")
     levels = tuple(float(v) for v in levels)
+    max_level = _adaptive_int(adaptive, "max_level", len(levels), minimum=2)
+    if max_level > len(levels):
+        raise ValueError("schedule.adaptive.max_level must be <= the number of "
+                         f"levels_seconds ({len(levels)}), got {max_level!r}")
     if enabled and levels[0] != base_spacing:
         raise ValueError("schedule.adaptive.levels_seconds[0] must equal "
                          "pace.start_spacing_seconds when the ladder is enabled")
@@ -221,6 +244,10 @@ def _load_adaptive(data: dict, base_spacing: float) -> AdaptivePolicy:
     demand_ease = _adaptive_int(adaptive, "demand_ease_waiting", 250, minimum=0)
     if demand_ease > demand_min:
         raise ValueError("schedule.adaptive.demand_ease_waiting must be <= demand_min_waiting")
+    demand_hold = _adaptive_int(adaptive, "demand_hold_above_3x_waiting", 250, minimum=0)
+    if demand_hold > demand_min:
+        raise ValueError("schedule.adaptive.demand_hold_above_3x_waiting must be <= "
+                         "demand_min_waiting")
     emergency_spacing = adaptive.get("emergency_spacing_seconds", 150.0)
     if (not isinstance(emergency_spacing, (int, float)) or isinstance(emergency_spacing, bool)
             or emergency_spacing <= levels[-1]):
@@ -229,12 +256,21 @@ def _load_adaptive(data: dict, base_spacing: float) -> AdaptivePolicy:
     return AdaptivePolicy(
         enabled=enabled,
         levels_seconds=levels,
+        max_level=max_level,
         protect_window_requests=window,
         protect_min_requests=min_requests,
         protect_drop_rate=drop_rate,
         protect_drop_two_rate=drop_two,
         protect_drop_streak=streak,
         climb_min_requests=_adaptive_int(adaptive, "climb_min_requests", 200),
+        climb_min_requests_above_3x=_adaptive_int(
+            adaptive, "climb_min_requests_above_3x", 600),
+        above_3x_climbs_per_day=_adaptive_int(adaptive, "above_3x_climbs_per_day", 1),
+        rolling_24h_ceiling_requests=_adaptive_int(
+            adaptive, "rolling_24h_ceiling_requests", 5000),
+        demand_hold_above_3x_waiting=demand_hold,
+        llm_above_4x_stop_share=_adaptive_ratio(adaptive, "llm_above_4x_stop_share", 0.75),
+        above_3x_hold_hours=_adaptive_int(adaptive, "above_3x_hold_hours", 24),
         climb_max_upper_refusal_rate=_adaptive_ratio(
             adaptive, "climb_max_upper_refusal_rate", 0.12),
         climb_max_gap_seconds=_adaptive_int(adaptive, "climb_max_gap_seconds", 3600,

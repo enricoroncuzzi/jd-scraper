@@ -48,6 +48,13 @@ class ProcessorConfig:
     backoff_first_minutes: int = 30
     backoff_cap_hours: int = 12
     llm_stop_at_requests: int = 950
+    # The 96 h age-out (src/processor/describe.py `expire_stale`): a job still waiting for
+    # its description in these tiers, in a class at or past the minimum, is marked expired
+    # with reason `aged_out`. It deletes nothing and the CLI can undo it.
+    age_out_enabled: bool = True
+    age_out_hours: int = 96
+    age_out_tiers: tuple[int, ...] = (3, 4)
+    age_out_min_class: int = 2
     # The source's structured work mode (freehire, Himalayas) is a shortcut only
     # for hybrid/on-site: the scout measured 99.8% agreement on 420 decided jobs.
     structured_remote_enabled: bool = True
@@ -109,6 +116,30 @@ def _require_hours(data: dict, key: str, default: int, where: str = "processor")
     return value
 
 
+def _load_age_out(data: dict) -> dict:
+    """Validate the optional `age_out` block. A missing block keeps the shipped rule."""
+    block = data.get("age_out", {})
+    if not isinstance(block, dict):
+        raise ValueError(f"processor.age_out must be an object, got {block!r}")
+    enabled = block.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"processor.age_out.enabled must be a boolean, got {enabled!r}")
+    hours = _require_hours(block, "hours", 96, where="processor.age_out")
+    tiers = block.get("tiers", [3, 4])
+    if (not isinstance(tiers, list) or not tiers
+            or any(not isinstance(tier, int) or isinstance(tier, bool)
+                   or tier not in (1, 2, 3, 4) for tier in tiers)
+            or len(set(tiers)) != len(tiers)):
+        raise ValueError("processor.age_out.tiers must be a non-empty list of unique "
+                         f"tiers from 1 to 4, got {tiers!r}")
+    min_class = block.get("min_class", 2)
+    if not isinstance(min_class, int) or isinstance(min_class, bool) or min_class < 0:
+        raise ValueError("processor.age_out.min_class must be an integer >= 0, "
+                         f"got {min_class!r}")
+    return {"age_out_enabled": enabled, "age_out_hours": hours,
+            "age_out_tiers": tuple(tiers), "age_out_min_class": min_class}
+
+
 def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
                           tier_paths: list[str] = TIER_CONFIG_PATHS) -> ProcessorConfig:
     with open(path) as handle:
@@ -145,4 +176,5 @@ def load_processor_config(path: str = PROCESSOR_CONFIG_PATH,
             data.get("remote_verifier", {}).get("occasional_presence_prompt", True)),
         merged_call_enabled=bool(data.get("merged_call", {}).get("enabled", False)),
         fetch_order=load_fetch_order(data.get("description_order")),
+        **_load_age_out(data),
     )

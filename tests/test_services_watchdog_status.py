@@ -148,7 +148,8 @@ def test_status_shows_stages_slices_pace_budget_and_services(store_conn):
     store_conn.commit()
     text = status.render(store_conn, NOW)
     assert "tier -  seen" in text and "linkedin" in text
-    assert "LinkedIn pace: adaptive level 1/5 (75s, 1x), 0/20 refused in trailing 20, 0/0 refused today, 0 refusals in a row" in text
+    assert ("LinkedIn pace: adaptive level 1/8 (75s, 1x), ceiling 8, above 3x: n/a, "
+            "0/20 refused in trailing 20, 0/0 refused today, 0 refusals in a row") in text
     assert "linkedin   cadence: 4h x1" in text
     assert "openrouter today (UTC): 7 requests" in text and "process" in text
 
@@ -231,7 +232,7 @@ def test_status_shows_the_description_queue_split_by_priority_class(store_conn):
                 cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
     store_conn.commit()
     text = status.render(store_conn, NOW, ScheduleConfig())
-    assert "1 pick in 4 is oldest-first" in text
+    assert "one pick in 8 is the head tier's floor pick" in text
     assert "ai_country 0" in text and "unclassified 1" in text
     assert "other_city 1" in text and "(no waiting descriptions)" in text
 
@@ -365,7 +366,7 @@ def test_the_status_line_shows_the_level_the_last_move_and_the_next_climb(store_
              "last_move": {"at": NOW.isoformat(), "kind": "climb", "from": 1, "to": 2,
                             "reason": "climb: cautious upper 11.4%, 43/h vs 14/h"}}
     text = _render_adaptive(store_conn, state)
-    assert "LinkedIn pace: adaptive level 2/5 (50s, 1.5x)" in text
+    assert "LinkedIn pace: adaptive level 2/8 (50s, 1.5x), ceiling 8" in text
     assert "2/20 refused in trailing 20" in text
     assert "last move: climb 1 -> 2" in text
     assert "next climb: 40/200 requests at this level" in text
@@ -384,6 +385,59 @@ def test_the_status_line_shows_a_blocked_target_level(store_conn):
                                "blocked_until": (NOW + timedelta(hours=2)).isoformat()}}}
     text = _render_adaptive(store_conn, state)
     assert "next climb: level 3 blocked until" in text
+
+
+def test_the_status_line_shows_which_above_three_x_guard_holds_the_ladder(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 5,
+             "day": NOW.date().isoformat(),
+             "window": [[NOW.replace(minute=0, second=0, microsecond=0).isoformat(), 5000]],
+             "levels": {"5": {"requests": 600, "refusals": 0, "successes": 600,
+                               "active_seconds": 15000.0, "first_at": None,
+                               "last_at": None, "cooldown_hours": 2.0,
+                               "blocked_until": None}}}
+    text = _render_adaptive(store_conn, state)
+    assert "adaptive level 5/8 (25s, 3x), ceiling 8, above 3x: rolling 24h" in text
+
+
+def test_the_status_line_says_when_the_ladder_may_climb_above_three_x(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 5,
+             "day": NOW.date().isoformat(),
+             "signals": {"demand": 5000, "llm": 100, "llm_day": NOW.date().isoformat(),
+                          "llm_stop": 800, "at": NOW.isoformat()},
+             "levels": {"5": {"requests": 600, "refusals": 0, "successes": 600,
+                              "active_seconds": 15000.0, "first_at": None,
+                              "last_at": None, "cooldown_hours": 2.0,
+                              "blocked_until": None}}}
+    assert "above 3x: ready" in _render_adaptive(store_conn, state)
+
+
+def test_the_status_line_says_when_above_three_x_does_not_apply(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 1}
+    assert "above 3x: n/a" in _render_adaptive(store_conn, state)
+
+
+def test_the_status_line_shows_an_ordinary_blocker_above_three_x(store_conn):
+    # No signals and the 600-request gate already open: the ladder cannot climb at all, and
+    # the page must show the ordinary blocker rather than claim it is ready.
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 5,
+             "levels": {"5": {"requests": 600, "refusals": 0, "successes": 600,
+                              "active_seconds": 15000.0, "first_at": None,
+                              "last_at": None, "cooldown_hours": 2.0,
+                              "blocked_until": None}}}
+    assert "above 3x: signals unavailable" in _render_adaptive(store_conn, state)
+
+
+def test_the_status_line_says_when_the_ceiling_is_the_reason(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 8}
+    assert "above 3x: at the ceiling" in _render_adaptive(store_conn, state)
+
+
+def test_the_status_line_renders_a_ceiling_move(store_conn):
+    state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 5,
+             "last_move": {"at": NOW.isoformat(), "kind": "ceiling", "from": 6, "to": 5,
+                           "reason": "rolling 24h 5001/5000"}}
+    text = _render_adaptive(store_conn, state)
+    assert "last move: ceiling 6 -> 5" in text and "rolling 24h 5001/5000" in text
 
 
 def test_the_status_line_shows_the_emergency_brake(store_conn):

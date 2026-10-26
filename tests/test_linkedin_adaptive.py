@@ -1,10 +1,13 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from src.linkedin.adaptive import (
-    Signals, blank_state, climb_blockers, current_level, effective_spacing,
-    parse_iso, paused_day, review, wilson_upper,
+    MAX_LEVELS, Signals, above_3x_guard, above_3x_status, blank_state, climb_blockers,
+    current_level, effective_spacing, hold_level, is_above_speed, level_text,
+    normalize_state, parse_iso, paused_day, review, rolling_24h_requests,
+    speed_multiple, wilson_upper,
 )
-from src.linkedin.schedule import AdaptivePolicy
+from src.linkedin.schedule import AdaptivePolicy, load_schedule_config
 
 NOW = datetime(2026, 10, 20, 4, 30, tzinfo=timezone.utc)
 POLICY = AdaptivePolicy(enabled=True)
@@ -38,9 +41,214 @@ def test_off_switch_returns_the_base_spacing_and_keeps_the_memory():
     assert result["levels"]["3"]["cooldown_hours"] == 8
 
 
-def test_the_five_levels_map_to_the_approved_spacings():
-    assert [effective_spacing(POLICY, {"active": True, "level": n}) for n in range(1, 6)] == [
-        75, 50, 37.5, 30, 25]
+def test_the_eight_levels_map_to_their_spacings_and_speeds():
+    assert [effective_spacing(POLICY, {"active": True, "level": n}) for n in range(1, 9)] == [
+        75, 50, 37.5, 30, 25, 18.75, 15, 10.7]
+    assert [round(speed_multiple(POLICY, n), 1) for n in range(1, 9)] == [
+        1, 1.5, 2, 2.5, 3, 4, 5, 7]
+    assert level_text(POLICY, 6) == "6/8 (18.75s, 4x)"
+    assert hold_level(POLICY) == 5
+    assert is_above_speed(POLICY, 6, 3.0) and not is_above_speed(POLICY, 5, 3.0)
+    assert is_above_speed(POLICY, 7, 4.0) and not is_above_speed(POLICY, 6, 4.0)
+
+
+def test_a_climb_above_three_x_needs_600_requests_at_the_level():
+    state = {**blank_state(POLICY), "active": True, "level": 5}
+    state["levels"]["4"] = _stint(successes=100)
+    state["levels"]["5"] = _stint(requests=599, successes=599)
+    assert "599/600 requests at this level" in above_3x_guard(POLICY, state, NOW, HIGH)
+    state["levels"]["5"] = _stint(requests=600, successes=600)
+    assert above_3x_guard(POLICY, state, NOW, HIGH) is None
+    climbed = review(state, POLICY, NOW, day=NOW.date(), outcome="clean", level=5,
+                     signals=HIGH)
+    assert current_level(climbed) == 6
+    assert climbed["day_above_3x_climbs"] == 1
+
+
+def test_only_one_climb_above_three_x_per_rome_day():
+    state = {**blank_state(POLICY), "active": True, "level": 6,
+             "day": NOW.date().isoformat(), "day_above_3x_climbs": 1}
+    state["levels"]["5"] = _stint(successes=300)
+    state["levels"]["6"] = _stint(requests=600, successes=600)
+    assert "climb already used today (1/1)" in above_3x_guard(POLICY, state, NOW, HIGH)
+    tomorrow = NOW + timedelta(days=1)
+    state["day"] = None
+    climbed = review(state, POLICY, tomorrow, day=tomorrow.date(), outcome="clean",
+                     level=6, signals=HIGH)
+    assert current_level(climbed) == 7 and climbed["day_above_3x_climbs"] == 1
+
+
+def test_the_rolling_24h_ceiling_holds_the_ladder_at_three_x():
+    hour = NOW.replace(minute=0, second=0, microsecond=0)
+    state = {**blank_state(POLICY), "active": True, "level": 6,
+             "day": NOW.date().isoformat(),
+             "window": [[hour.isoformat(), POLICY.rolling_24h_ceiling_requests]]}
+    state["levels"]["5"] = _stint(successes=300)
+    state["levels"]["6"] = _stint(requests=600, successes=600)
+    assert above_3x_guard(POLICY, state, NOW, HIGH).startswith("rolling 24h ")
+    dropped = review(state, POLICY, NOW + timedelta(seconds=25), day=NOW.date(),
+                     outcome="clean", level=6, signals=HIGH)
+    assert current_level(dropped) == 5
+    assert dropped["last_move"]["kind"] == "ceiling"
+
+
+def test_the_rolling_window_forgets_buckets_older_than_a_day():
+    hour = NOW.replace(minute=0, second=0, microsecond=0)
+    state = {**blank_state(POLICY), "window": [
+        [(hour - timedelta(hours=25)).isoformat(), 400],
+        [(hour - timedelta(hours=23)).isoformat(), 100]]}
+    assert rolling_24h_requests(state, NOW) == 100
+    state = review({**state, "active": True, "level": 1}, POLICY, NOW, day=NOW.date(),
+                   outcome="clean", level=1, signals=HIGH)
+    assert rolling_24h_requests(state, NOW) == 101
+    assert [key for key, _count in state["window"]] == [
+        (hour - timedelta(hours=23)).isoformat(), hour.isoformat()]
+
+
+def test_the_rolling_window_keeps_a_bucket_whose_hour_is_still_inside_the_day():
+    hour = NOW.replace(minute=0, second=0, microsecond=0)
+    now = hour + timedelta(minutes=30)
+    inside = {**blank_state(POLICY),
+              "window": [[(hour - timedelta(hours=24)).isoformat(), 1000]]}
+    assert rolling_24h_requests(inside, now) == 1000
+    outside = {**blank_state(POLICY),
+               "window": [[(hour - timedelta(hours=25)).isoformat(), 1000]]}
+    assert rolling_24h_requests(outside, now) == 0
+
+
+def test_the_shipped_ceiling_cycles_three_to_five_x_and_never_holds_seven_x():
+    # The 5,000 rolling ceiling is the approved default. With a full queue the 5x run fills
+    # the window about twenty hours in, so the ladder drops back to 3x and 7x is reached only
+    # by raising `rolling_24h_ceiling_requests`. This test is the guard on that decision: it
+    # fails if the shipped ceiling is raised.
+    policy = load_schedule_config().adaptive
+    rome = ZoneInfo("Europe/Rome")
+    state = {**blank_state(policy), "active": True}
+    now, end, peak, moves = NOW, NOW + timedelta(days=8), 1, set()
+    while now < end:
+        signals = Signals(demand_waiting=1200, llm_requests_today=100, llm_day=now.date(),
+                          llm_stop_requests=800, refreshed_at=now)
+        state = review(state, policy, now, day=now.astimezone(rome).date(),
+                       outcome="clean", level=current_level(state), signals=signals,
+                       throughput_check=False)
+        if state.get("last_move"):
+            moves.add(state["last_move"]["kind"])
+        peak = max(peak, current_level(state))
+        now += timedelta(seconds=effective_spacing(policy, state))
+    assert peak == 7                       # 5x is reached, 7x is not
+    assert "ceiling" in moves              # the rolling ceiling is what ends the 5x run
+    assert current_level(state) <= 7
+
+
+def test_a_level_above_three_x_drops_to_three_x_when_the_queue_empties():
+    quiet = Signals(demand_waiting=100, llm_requests_today=100, llm_stop_requests=800)
+    state = {**blank_state(POLICY), "active": True, "level": 7}
+    dropped = review(state, POLICY, NOW, day=NOW.date(), outcome="neutral", level=7,
+                     signals=quiet)
+    assert current_level(dropped) == 5
+    assert dropped["last_move"]["kind"] == "demand"
+    assert dropped["last_move"]["reason"] == "queue empty above 3x"
+    held = review(state, POLICY, NOW, day=NOW.date(), outcome="neutral", level=7,
+                  signals=HIGH)
+    assert current_level(held) == 7
+
+
+def test_climbing_above_four_x_needs_openrouter_headroom():
+    state = {**blank_state(POLICY), "active": True, "level": 6,
+             "day": NOW.date().isoformat()}
+    state["levels"]["5"] = _stint(successes=300)
+    state["levels"]["6"] = _stint(requests=600, successes=600)
+    tight = Signals(demand_waiting=5000, llm_requests_today=600, llm_stop_requests=800)
+    assert above_3x_guard(POLICY, state, NOW, tight) == "OpenRouter 600/600 above 4x"
+    roomy = Signals(demand_waiting=5000, llm_requests_today=599, llm_stop_requests=800)
+    assert above_3x_guard(POLICY, state, NOW, roomy) is None
+    at_four = {**state, "level": 5, "levels": {
+        **state["levels"], "5": _stint(requests=600, successes=600)}}
+    assert [b for b in climb_blockers(POLICY, at_four, NOW, tight) if "above 4x" in b] == []
+
+
+def test_a_protect_drop_from_above_three_x_never_lands_above_three_x():
+    hot = ([("clean", None)] * 14 + [("refused", None), ("clean", None)] * 5
+           + [("refused", None)])
+    assert current_level(feed(hot, start_level=7)) == 5
+    assert current_level(feed([("refused", None), ("clean", None)] * 5,
+                              start_level=8)) == 5
+    assert current_level(feed([("refused", None), ("clean", None)] * 5,
+                              start_level=6)) == 4
+
+
+def test_a_drop_or_brake_from_above_three_x_blocks_above_three_x_for_a_day():
+    dropped = feed([("refused", None), ("clean", None)] * 5, start_level=8)
+    hold = parse_iso(dropped["above_3x_hold_until"])
+    assert hold is not None and hold > NOW
+    dropped["levels"]["5"] = _stint(requests=600, successes=600)
+    assert above_3x_guard(POLICY, dropped, NOW + timedelta(hours=23), HIGH).startswith(
+        "held until ")
+    assert above_3x_guard(POLICY, dropped, NOW + timedelta(hours=25), HIGH) is None
+    braked = feed([("clean", None), ("neutral", "http_999")], start_level=7)
+    assert current_level(braked) == 1
+    assert parse_iso(braked["above_3x_hold_until"]) is not None
+
+
+def test_the_configured_ceiling_caps_the_ladder():
+    capped = AdaptivePolicy(enabled=True, max_level=6)
+    state = {**blank_state(capped), "active": True, "level": 6}
+    state["levels"]["5"] = _stint(successes=300)
+    state["levels"]["6"] = _stint(requests=600, successes=600)
+    assert climb_blockers(capped, state, NOW, HIGH) == ["top level"]
+    assert current_level(review(state, capped, NOW, day=NOW.date(), outcome="clean",
+                                level=6, signals=HIGH)) == 6
+
+
+def test_lowering_the_ceiling_drops_the_stored_level():
+    capped = AdaptivePolicy(enabled=True, max_level=6)
+    assert normalize_state({**blank_state(POLICY), "level": 8}, capped)["level"] == 6
+
+
+def test_a_policy_shorter_than_the_stored_level_still_spaces_the_request():
+    five = AdaptivePolicy(enabled=True, levels_seconds=(75, 50, 37.5, 30, 25), max_level=5)
+    assert effective_spacing(five, {"active": True, "level": 8}) == 25
+    assert len(blank_state()["levels"]) == MAX_LEVELS
+
+
+def test_a_level_above_three_x_keeps_the_brake_and_the_daily_pause():
+    braked = feed([("clean", None), ("neutral", "http_999")], start_level=7)
+    assert current_level(braked) == 1
+    assert braked["brake"]["reason"] == "http_999"
+    paused = review(braked, POLICY, NOW + timedelta(minutes=62), day=NOW.date(),
+                    outcome="neutral", level=1, block="http_999", signals=HIGH)
+    assert paused_day(paused) == NOW.date()
+
+
+def test_above_three_x_status_names_the_guard_or_says_why_it_does_not_apply():
+    signals = {"demand": 5000, "llm": 100, "llm_day": NOW.date().isoformat(),
+               "llm_stop": 800, "at": NOW.isoformat()}
+    assert above_3x_status(POLICY, {**blank_state(POLICY), "active": True, "level": 4},
+                           NOW) == "n/a"
+    assert above_3x_status(POLICY, {**blank_state(POLICY), "active": True, "level": 8},
+                           NOW) == "at the ceiling"
+    used = {**blank_state(POLICY), "active": True, "level": 5, "signals": signals,
+            "day": NOW.date().isoformat(), "day_above_3x_climbs": 1}
+    used["levels"]["5"] = _stint(requests=600, successes=600)
+    assert above_3x_status(POLICY, used, NOW) == "climb already used today (1/1)"
+    ready = {**blank_state(POLICY), "active": True, "level": 5, "signals": signals,
+             "day": NOW.date().isoformat()}
+    ready["levels"]["5"] = _stint(requests=600, successes=600)
+    assert above_3x_status(POLICY, ready, NOW) == "ready"
+
+
+def test_a_refusal_cluster_above_three_x_is_remembered_when_the_queue_empties_mid_cluster():
+    # The holds return, so if they ran before the protect drop a queue crossing on the tenth
+    # request would land the ladder at 3x with no memory of the refusals. The drop must win.
+    quiet = Signals(demand_waiting=100, llm_requests_today=100, llm_day=NOW.date(),
+                    llm_stop_requests=800, refreshed_at=None)
+    state = feed([("refused", None), ("clean", None)] * 4 + [("refused", None)],
+                 start_level=7)
+    assert current_level(state) == 7          # nine requests: below the protect sample
+    dropped = feed([("clean", None)], start=state, signals=quiet)
+    assert dropped["last_move"]["kind"] == "drop"
+    assert parse_iso(dropped["above_3x_hold_until"]) is not None
+    assert parse_iso(dropped["levels"]["7"]["blocked_until"]) is not None
 
 
 def test_thirty_percent_trailing_refusals_drop_one_level():

@@ -5,15 +5,19 @@ guest fragment is fetched through the shared pace. A host throttle (429/999)
 returns the job to the queue unchanged except for its `rate_limited` mark, with no
 per-job penalty; job-specific refusals (401/403/503/504) and the unreadable-markup
 path keep the 30 minutes doubling to 12 hours backoff. The job expires after 7
-days of host refusals, or when the posting is over 30 days old. The title+company
-fallback is never used as a description.
+days of host refusals, when the posting is over 30 days old, or when it has waited
+`age_out.hours` (96) for a description in tiers 3 and 4 as a non-AI posting, which marks it
+`expired` with reason `aged_out` (nothing is deleted, and `age_out.enabled` turns the rule
+off). The title+company fallback is never used as a description.
 
-The queue keeps the tier rotation of `_next_job`: a job past
-`description_urgent_after_hours` is guaranteed a share of the picks (one pick in
-`quota_one_in` per tier, run exactly as before), and the other picks take the tier
-whose turn it is and prefer the best priority class inside it
-(`src/processor/fetch_order.py`). Nothing is dropped, skipped or expired early;
-the pace and the number of requests are unaffected.
+The queue order is `_next_job`'s: a **floor pick** (one pick in
+`quota_one_in`, decided by the head tier's own counter) takes a job past
+`description_urgent_after_hours` first, in any tier and class except the jobs the age-out
+covers (tiers 3 and 4 non-AI, which the value order serves or the age-out expires),
+else the head tier's oldest important job; every other pick is a **value pick** that
+orders the whole queue by the measured class yield (`src/processor/fetch_order.py`) and
+then by age. The pick affects only the order: nothing is dropped, skipped or expired
+early, and the pace and the number of requests are unaffected.
 """
 import time
 from dataclasses import dataclass
@@ -24,6 +28,7 @@ import requests
 from src.linkedin.description import fetch_description
 from src.processor.cheap import finish_with_description
 from src.processor.config import ProcessorConfig
+from src.processor.fetch_order import UNRANKED, FetchOrder
 from src.processor.state import JobRow, defer, load_job, set_stage
 from src.services.pulse import pulse
 
@@ -50,25 +55,44 @@ _HEAD_TIER_SQL = ("WITH waiting AS (SELECT tier, first_seen_at FROM jobs WHERE "
                   "SELECT w.tier FROM waiting w LEFT JOIN kv_state k ON k.key = %s || w.tier "
                   "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier LIMIT 1")
 _PICKS_SQL = "SELECT coalesce((value->>'n')::int, 0) FROM kv_state WHERE key = %s"
-# The floor pick: exactly the two queries this stage ran before the priority order.
-_URGENT_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " AND first_seen_at < %s "
+# The floor pick's urgent pass: the oldest job past the 60-hour band. `{exclude}` drops the
+# jobs the age-out rule covers (`_urgent_query`): those are served by the value order or age out.
+_URGENT_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " AND first_seen_at < %s{exclude} "
                "ORDER BY first_seen_at, tier, note_no LIMIT 1")
-# The tier rotation, with one extra sort key for the class pick. A floor pick that
-# finds no urgent job runs this too, without the `first_seen_at >= cutoff` guard the
-# old code needed: the urgent query already covered every job past the cutoff.
-_ROTATION_SQL = ("WITH waiting AS (SELECT id, tier, first_seen_at, note_no, description_class "
-                 "FROM jobs WHERE " + _WAITING + ") "
-                 "SELECT w.id FROM waiting w LEFT JOIN kv_state k ON k.key = %s || w.tier "
-                 "ORDER BY (k.value->>'at')::timestamptz NULLS FIRST, w.tier, {order} LIMIT 1")
-_ROTATION_ORDER = {"quota": "w.first_seen_at, w.note_no",
-                   "class": "w.description_class, w.first_seen_at, w.note_no"}
+# The floor pick of the head tier: its oldest important job (an AI-title class), or -
+# with the order disabled - its oldest job whatever its class. A NULL array keeps the
+# disabled behaviour, which is exactly the order before this feature existed.
+_FLOOR_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " AND tier = %s "
+              "AND (%s::smallint[] IS NULL OR description_class = ANY(%s::smallint[])) "
+              "ORDER BY first_seen_at, note_no LIMIT 1")
+# The value pick: one global order on the measured class yield, then the oldest job.
+# The CASE maps a stored (tier, class) pair to its global value rank; unclassified
+# rows and ranks no class covers fall through to the ELSE and sort last.
+_VALUE_SQL = ("SELECT id FROM jobs WHERE " + _WAITING + " "
+              "ORDER BY {rank}, first_seen_at, note_no LIMIT 1")
+
+
+def value_rank_case(order: FetchOrder) -> tuple[str, tuple]:
+    """The SQL sort expression that ranks a waiting job by its global value rank.
+
+    Returns the `CASE ... END` fragment and its bound parameters. Tiers 1 to 4 are
+    enumerated because the store has no other tiers, so the default class order can be
+    expanded without a join.
+    """
+    clauses, params = [], []
+    for tier in (1, 2, 3, 4):
+        for stored, cls in enumerate(order.order_for(tier).classes):
+            clauses.append("WHEN tier = %s AND description_class = %s THEN %s")
+            params.extend((tier, stored, order.value_rank[cls.name]))
+    sql = "CASE " + " ".join(clauses) + f" ELSE {UNRANKED} END"
+    return sql, tuple(params)
 
 
 @dataclass(frozen=True)
 class Pick:
     """The next job to fetch, why it was chosen, and whose turn decided that."""
     job: JobRow
-    kind: str      # "quota" (the floor share) or "class" (the priority class)
+    kind: str      # "quota" (the floor pick) or "value" (the value rank)
     tier: int      # the head tier whose pick counter decided the kind
 
 
@@ -131,27 +155,62 @@ def waiting_by_class(cur, now: datetime) -> list[tuple[int, int | None, int, dat
     return cur.fetchall()
 
 
+def age_out_where(cfg: ProcessorConfig) -> tuple[str, tuple]:
+    """The aged-out predicate, shared by the rule and the CLI so they cannot drift.
+
+    Only a job *still waiting* for its description qualifies: a `seen` job whose text has
+    already landed is advanced by the next cheap check, and the age-out runs before it.
+    """
+    return ("stage = 'seen' AND tier = ANY(%s::smallint[]) AND description_class >= %s "
+            "AND description_status IN ('pending', 'rate_limited')",
+            (list(cfg.age_out_tiers), cfg.age_out_min_class))
+
+
 def expire_stale(conn, cfg: ProcessorConfig, now: datetime) -> int:
-    """Expire jobs that waited too long. Returns how many."""
+    """Expire jobs that waited too long. Returns how many.
+
+    The 96 h age-out is a fourth statement, appended last so the more specific reasons
+    (`description_refused`, `posting_too_old`, `waited_too_long`) keep winning on a job
+    that matches two. It writes only `stage`, `stage_reason` and `stage_changed_at`, so
+    nothing is lost and `python -m src.processor.age_out --undo` can restore it.
+    """
     statements = [
         ("description_refused",
          "stage = 'seen' AND description_status = 'rate_limited' AND first_refused_at < %s",
-         now - timedelta(days=cfg.refusal_expiry_days)),
+         (now - timedelta(days=cfg.refusal_expiry_days),)),
         ("posting_too_old",
          "stage IN ('seen', 'described') AND posted_at IS NOT NULL AND posted_at < %s",
-         now - timedelta(days=cfg.posting_max_age_days)),
+         (now - timedelta(days=cfg.posting_max_age_days),)),
         ("waited_too_long",
          "stage IN ('seen', 'described') AND first_seen_at < %s",
-         now - timedelta(days=cfg.posting_max_age_days)),
+         (now - timedelta(days=cfg.posting_max_age_days),)),
     ]
+    if cfg.age_out_enabled:
+        where, params = age_out_where(cfg)
+        statements.append(("aged_out", where + " AND first_seen_at < %s",
+                           (*params, now - timedelta(hours=cfg.age_out_hours))))
     total = 0
     with conn.cursor() as cur:
-        for reason, condition, cutoff in statements:
+        for reason, condition, params in statements:
             cur.execute(
                 f"UPDATE jobs SET stage = 'expired', stage_reason = %s, stage_changed_at = %s "
-                f"WHERE {condition}", (reason, now, cutoff))
+                f"WHERE {condition}", (reason, now, *params))
             total += cur.rowcount
     return total
+
+
+def _urgent_query(cfg: ProcessorConfig, now: datetime) -> tuple[str, tuple]:
+    """The floor pick's urgent pass and its parameters.
+
+    A job the age-out rule covers (`age_out_where`, so the two rules cannot drift) is left
+    out: it must not take a floor turn from the head tier's important work. `IS NOT TRUE`
+    keeps an unclassified job, for which the predicate is NULL, in the band.
+    """
+    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
+    if not cfg.age_out_enabled:
+        return _URGENT_SQL.format(exclude=""), (now, cutoff)
+    where, params = age_out_where(cfg)
+    return _URGENT_SQL.format(exclude=f" AND ({where}) IS NOT TRUE"), (now, cutoff, *params)
 
 
 def _head_tier(cur, now: datetime) -> int | None:
@@ -169,34 +228,41 @@ def _picks_done(cur, tier: int) -> int:
 
 
 def _next_job(cur, cfg: ProcessorConfig, now: datetime) -> Pick | None:
-    """The next job to fetch a description for, by kind, inside the tier rotation.
+    """The next job to fetch a description for, by kind, with the head tier's turn.
 
-    The head tier (the one whose last fetch attempt is oldest, ties to the lowest
-    tier) decides the kind from its own counter:
+    The head tier (the one whose last fetch attempt is oldest, ties to the lowest tier)
+    decides the kind from its own counter:
 
-    * a **floor pick** (one in `cfg.fetch_order.quota_one_in`) is today's pick: a job
-      past `description_urgent_after_hours` goes first whatever its tier, oldest
-      first, else that tier's oldest job. This is the 60-hour rule as a guaranteed
-      share of the fetches, not as absolute priority.
-    * a **class pick** takes the same tier rotation (the turn key first) and then the
-      best priority class, then the oldest job. It has no urgent cutoff, so a fresh
-      high-value job can precede an aged low-value one.
+    * a **floor pick** (one in `cfg.fetch_order.quota_one_in`) is the fairness pick: a job
+      past `description_urgent_after_hours` goes first, oldest first, in every tier and class
+      except the jobs the age-out rule covers (`age_out_where`: they are served by the value
+      order or age out, and must not take the head tier's floor), else the head tier's oldest
+      important job (an AI-title class), else the value order. This is the 60-hour rule as
+      a guaranteed share of the fetches, not as absolute priority.
+    * a **value pick** orders the whole queue by the measured class yield across tiers
+      (`fetch_order.value_rank`), then by age, so the best class never waits behind another
+      tier's worst.
 
-    Ties break on `note_no` so the pick is stable for jobs recorded in the same
-    second. With the order disabled every pick is a floor pick, i.e. exactly the
+    Ties break on `note_no` so the pick is stable for jobs recorded in the same second. With
+    the order disabled every pick is a floor pick with no class preference, i.e. exactly the
     behaviour before this order existed.
     """
     head = _head_tier(cur, now)
     if head is None:
         return None
-    kind = "quota" if cfg.fetch_order.quota_turn(_picks_done(cur, head)) else "class"
+    kind = "quota" if cfg.fetch_order.quota_turn(_picks_done(cur, head)) else "value"
     row = None
     if kind == "quota":
-        cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
-        cur.execute(_URGENT_SQL, (now, cutoff))
+        cur.execute(*_urgent_query(cfg, now))
         row = cur.fetchone()
-    if row is None:
-        cur.execute(_ROTATION_SQL.format(order=_ROTATION_ORDER[kind]), (now, TURN_KEY))
+        if row is None:
+            ranks = (list(cfg.fetch_order.important_ranks(head))
+                     if cfg.fetch_order.enabled else None)
+            cur.execute(_FLOOR_SQL, (now, head, ranks, ranks))
+            row = cur.fetchone()
+    if row is None and cfg.fetch_order.enabled:
+        rank_sql, rank_params = value_rank_case(cfg.fetch_order)
+        cur.execute(_VALUE_SQL.format(rank=rank_sql), (now, *rank_params))
         row = cur.fetchone()
     if row is None:
         return None
@@ -235,11 +301,12 @@ def pick_queries(cfg: ProcessorConfig, now: datetime) -> list[tuple[str, str, tu
     For the EXPLAIN test in `tests/test_processor_describe.py`, so the queries that
     are measured are the ones the pick really runs.
     """
-    cutoff = now - timedelta(hours=cfg.description_urgent_after_hours)
+    ranks = list(cfg.fetch_order.important_ranks(1))
+    rank_sql, rank_params = value_rank_case(cfg.fetch_order)
     return [("head", _HEAD_TIER_SQL, (now, TURN_KEY)),
-            ("urgent", _URGENT_SQL, (now, cutoff)),
-            ("rotation_quota", _ROTATION_SQL.format(order=_ROTATION_ORDER["quota"]), (now, TURN_KEY)),
-            ("rotation_class", _ROTATION_SQL.format(order=_ROTATION_ORDER["class"]), (now, TURN_KEY))]
+            ("urgent", *_urgent_query(cfg, now)),
+            ("floor", _FLOOR_SQL, (now, 1, ranks, ranks)),
+            ("value", _VALUE_SQL.format(rank=rank_sql), (now, *rank_params))]
 
 
 def _linkedin_id(cur, job_id) -> str | None:
@@ -274,6 +341,12 @@ def describe_next(conn, pace, cfg: ProcessorConfig, now: datetime, *,
         # whose fetches keep being throttled must not keep taking the next turn. The
         # floor share counts against the tier whose turn decided the kind.
         _record_turn(cur, job.tier)
+        if pick.kind == "quota" and pick.tier != job.tier:
+            # A floor pick that fell through to the value order served another tier.
+            # Stamp the head too, or a tier with nothing important waiting stays head
+            # for ever (a never-served tier sorts first) and every other tier's floor
+            # starves.
+            _record_turn(cur, pick.tier)
         _record_pick(cur, pick.tier)
         if result.status == "ok":
             cur.execute(

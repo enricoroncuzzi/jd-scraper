@@ -8,7 +8,7 @@ from src.linkedin.adaptive import (
     Signals, blank_state, maybe_refresh_signals, read_signals,
 )
 from src.linkedin.pace import ManagedPace, PaceBudget, PaceBusy, PaceGateClosed
-from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig
+from src.linkedin.schedule import AdaptivePolicy, ScheduleConfig, local_day
 
 WED_NOON = datetime(2026, 10, 14, 10, 0, tzinfo=timezone.utc)  # 12:00 Rome, Wednesday
 WINDOWED = ScheduleConfig(closed_hours=(0, 6))
@@ -589,6 +589,35 @@ HIGH = lambda now: Signals(5000, 100, now.date(), 800, None)  # noqa: E731
 def _adaptive(budget, state):
     budget.snapshot()
     _set(budget, adaptive_state=Json(state))
+
+
+def test_a_ladder_move_logs_the_level_the_ceiling_and_the_above_three_x_guard(
+        make_budget, capsys):
+    schedule = ScheduleConfig(adaptive=AdaptivePolicy(enabled=True))
+    budget = make_budget(FakeTime(), schedule=schedule)
+    # A protect drop from 3 to 1 with 19 of 20 refused: no signals needed, so the refresh
+    # cannot move the level and the test stays offline and deterministic.
+    _adaptive(budget, {**blank_state(schedule.adaptive), "active": True, "level": 3,
+                       "day": local_day(schedule, WED_NOON).isoformat(),
+                       "trailing": ["refused"] * 20})
+    with budget.slot("search"):
+        pass
+    lines = capsys.readouterr().out.splitlines()
+    assert ("[pace] ladder drop 3 -> 1: level 1/8 (75s, 1x), ceiling 8, "
+            "above 3x: n/a (protect: trailing 20 refused 95%)") in lines
+
+
+def test_a_demand_hold_above_three_x_logs_the_guard_that_now_holds_it(make_budget, capsys):
+    schedule = ScheduleConfig(adaptive=AdaptivePolicy(enabled=True))
+    budget = make_budget(FakeTime(), schedule=schedule)
+    _adaptive(budget, {**blank_state(schedule.adaptive), "active": True, "level": 6,
+                       "day": local_day(schedule, WED_NOON).isoformat()})
+    with budget.slot("search"):
+        pass
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith("[pace] ladder demand 6 -> 5: level 5/8 (25s, 3x), "
+                              "ceiling 8, above 3x: 0/600 requests at this level")
+               for line in lines)
 
 
 def test_the_off_switch_spaces_every_request_at_75_seconds(make_budget):

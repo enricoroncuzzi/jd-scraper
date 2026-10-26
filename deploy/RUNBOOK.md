@@ -284,10 +284,17 @@ configured in `config/schedule.json`:
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
 | `adaptive.enabled` | `true` | the ladder's off switch; `false` returns to exactly 75 s |
-| `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25` | the five levels (1x to 3x), the same every day |
+| `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25, 18.75, 15, 10.7` | the ladder: 1x, 1.5x, 2x, 2.5x, 3x, 4x, 5x, 7x (two to eight entries, strictly decreasing; the code bound is `MAX_LADDER_LEVELS` = 8) |
+| `adaptive.max_level` | `8` | the ceiling: the ladder never climbs past this level. Lower it to `6` for 4x or `5` for 3x, with no code change; a stored level above the new ceiling is clamped on the next request |
 | `adaptive.protect_window_requests` / `protect_min_requests` | `20` / `10` | the trailing window and the minimum sample for the share tiers |
 | `adaptive.protect_drop_rate` / `protect_drop_two_rate` / `protect_drop_streak` | `0.30` / `0.50` / `4` | one level at 30 % refused, two at 50 % or four in a row |
-| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
+| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate at and below 3x: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
+| `adaptive.climb_min_requests_above_3x` | `600` | a climb into or within the levels above 3x needs this many requests at the current level (about 4 h at 3x), on top of every other gate |
+| `adaptive.above_3x_climbs_per_day` | `1` | at most one climb above 3x per Rome day, so 7x takes at least three clean days |
+| `adaptive.rolling_24h_ceiling_requests` | `5000` | a rolling 24 h request ceiling, counted in hourly buckets inside the adaptive state; when it is reached the ladder may not climb above 3x and a level above 3x drops to 3x until the window falls back under it |
+| `adaptive.demand_hold_above_3x_waiting` | `250` | a level above 3x is dropped straight to 3x when fewer jobs than this are waiting for a description |
+| `adaptive.llm_above_4x_stop_share` | `0.75` | no climb above 4x once 75 % of the ladder's OpenRouter stop line is spent (600 of 800 by default), so the day can still finish scoring |
+| `adaptive.above_3x_hold_hours` | `24` | a protect drop or a brake from a level above 3x blocks any above-3x climb for this long |
 | `adaptive.climb_max_gap_seconds` | `3600` | a gap longer than this is capped when measuring successes per hour |
 | `adaptive.memory_first_hours` / `memory_max_hours` | `2` / `24` | a level that caused a drop waits 2, 4, 8, ... up to 24 h |
 | `adaptive.clean_day_min_requests` | `100` | a clean day with at least this many requests halves the memory |
@@ -322,8 +329,11 @@ pace ladder, and it does not move the slice's cadence.
 Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
 point where an overdue description may spend more than one tick) and
 `description_urgent_after_hours` (`60`, the age past which a waiting job is eligible for the
-floor pick: it is guaranteed one pick in `description_order.quota_one_in` per tier ahead of the
-class order, not absolute priority), `config/deliver.json`
+floor pick: the head tier's floor pick, one pick in `description_order.quota_one_in`, is
+guaranteed to take the oldest job past that age in any tier and class except the jobs the 96 h
+age-out covers, and otherwise takes that tier's oldest AI-title job; it is a share of the
+fetches, not absolute priority),
+`config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
 repeats at most once a day), `config/llm_fallback.json` `share` (`0.2`), `min_calls` (`5`) and
 `enabled` (the fallback alert's off switch), and `config/sources.json` `spacing_seconds` (`[1, 2]`
@@ -336,12 +346,13 @@ fetching next (see "Which description goes next" below). Every key, with the shi
 | Setting | Shipped value | Meaning |
 |---|---|---|
 | `description_order.enabled` | `true` | the whole order; `false` (edit + restart `jds-process`, no deploy) reproduces the pre-order behaviour exactly, one plain oldest-first pick per fetch |
-| `description_order.quota_one_in` | `4` | one pick in four, per tier, is the plain oldest-first pick (the 60-hour floor and the rotation); `1` makes every pick one |
+| `description_order.quota_one_in` | `8` | one pick in eight is the head tier's floor pick (the 60-hour band less the jobs the age-out covers, else that tier's oldest AI-title job); `1` makes every pick one |
+| `description_order.value_rank` | `ai_country 0, ai 1, ai_city 2, other_country 3, other 4, other_city 5` | the measured `score >= 7` yield of each class, pooled across tiers (19.2 %, 17.6 %, 4.2 %, 3.3 %, 1.2 %, 0.68 %); lower is better. Every class name the `classes` lists use must be ranked, and only those |
 | `description_order.backfill_per_tick` | `500` | waiting jobs given a priority class per processor tick when they have none (a 3,000-row backlog takes six ticks) |
 | `description_order.ai_title_keywords` | `AI, GenAI, generative AI, artificial intelligence, machine learning, ML, MLOps, deep learning, LLM, LLMs, NLP, data scientist(s), data science, computer vision` | whole-word title keywords that make a title "AI/ML/DS"; matched case-insensitively on word boundaries |
 | `description_order.senior_title_keywords` | `Senior, Sr, Lead, Principal, Staff, Head, Director, VP, Vice President, Chief, Manager` | whole-word seniority keywords that demote an AI title to the `other` classes |
 | `description_order.classes` | `default` (tiers 1, 3, 4): `ai_country`, `ai_city`, `other_country`, `other_city`; `"2"`: `ai`, `other` | the class order per tier, best first; tier 2 omits `location`, since it accepts any work mode |
-| `description_pick_count:<tier>` (kv_state) | one row per tier | how many picks that tier has made, i.e. the phase of its floor share; deleting the rows only resets the phase |
+| `description_pick_count:<tier>` (kv_state) | one row per tier | how many picks that tier has made, i.e. the phase of its floor share; deleting the rows only resets the phase. The counter belongs to the head tier whose turn decides the kind, not to the tier that is served, and a floor attempt always advances the head |
 
 The block is validated when the config loads, so edit only the `enabled` value (or a value this
 table documents); a malformed `description_order` block stops every service that loads the
@@ -352,11 +363,59 @@ or either keyword list changes the ranks, so run
 `psql jds -c "UPDATE jobs SET description_class = NULL WHERE stage = 'seen' AND tier IS NOT NULL AND description_status IN ('pending', 'rate_limited');"`
 and let the next ticks reclassify the backlog at `description_order.backfill_per_tick`.
 
+### The 96 h age-out
+
+A job still waiting for its description, in tier 3 or 4, in a class at or past
+`age_out.min_class`, is marked `stage = 'expired', stage_reason = 'aged_out'` once it is
+`age_out.hours` old. Nothing is deleted: the row keeps its tier, class, sightings, description
+and score, and `python -m src.processor.age_out --undo` restores it. The rule is a fourth
+statement in `expire_stale`, after the three older reasons, so a job that matches two keeps the
+more specific reason. Tiers 1 and 2, and the AI-title classes, are never aged out.
+
+| Setting | Shipped value | Meaning |
+|---|---|---|
+| `age_out.enabled` | `true` | the rule's off switch; `false` skips the statement and the CLI reports `age-out is disabled` |
+| `age_out.hours` | `96` | how long a job may wait for a description before it is aged out |
+| `age_out.tiers` | `[3, 4]` | the tiers the rule applies to; tiers 1 and 2 are served on arrival and are never aged out |
+| `age_out.min_class` | `2` | the lowest `description_class` the rule applies to, so `other_country` and `other_city`; classes 0 and 1 are never aged out |
+
+**Deploying it, and the day 0 reset.** The first tick after the deploy is the reset; there is no
+separate purge. Do it in this order:
+
+1. `git pull --ff-only`, then `pip install -r requirements.txt`. The new code is on disk while
+   the old `jds-process` still runs, so the dry run can see the rule before it writes anything.
+2. `python -m src.processor.age_out --dry-run` (the default action, no writes). On 2026-10-26
+   it reads about 1,991 (tier 3 1,309, tier 4 682), about 21 `score >= 7` offers given up. The
+   number is "at most" the count the tick expires: the three older reasons run first, so a job
+   both past 96 h and past the 30-day posting age is counted here and expires as
+   `posting_too_old`.
+3. `sudo systemctl restart jds-process`. That tick performs the reset; nothing else to run.
+
+The first daily digest after it prints `expired 1309` for tier 3 and `expired 682` for tier 4,
+then the steady-state aged-out count: no aged-out job ever reaches delivery or an alert.
+`jds-deliver` copies `expired` jobs to Neon, so the day 0 jobs land there on the next delivery
+(small rows, no description); an undone job keeps its stale row there until it finishes again
+and the upsert overwrites it.
+
+**Undoing it.** Set `age_out.enabled` to `false` in `config/processor.json`, restart
+`jds-process` (otherwise the next tick re-expires the same still-old rows), then
+
+```
+python -m src.processor.age_out --undo
+Restored 1991 jobs from aged_out to seen
+```
+
+The undo writes only `stage`, `stage_reason`, `stage_changed_at` (now(), because the column is
+`NOT NULL`) and `archived_at = NULL`. It does not touch `next_attempt_at`, the description, the
+score or the verdict, so a job that was in a refusal backoff keeps its backoff. Switch the rule
+back on when the ordering or the pace has been fixed.
+
 The base is a constant 75 s on every day, jittered +/-20 %, and nothing clamps it: there is no
 request cap, so open hours do not set a floor and a finished day changes nothing (the
 2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut
-throughput). When the ladder is enabled it replaces the base with one of the five levels; when
-it is off the request path is exactly the fixed 75 s and makes no extra reads. The shared counter still records each request per Rome calendar day, but it is
+throughput). When the ladder is enabled it replaces the base with one of the configured
+levels (eight as shipped); when it is off the request path is exactly the fixed 75 s and makes
+no extra reads. The shared counter still records each request per Rome calendar day, but it is
 operator information: it never closes the gate. A refusal honours
 `Retry-After` or waits 60 s, doubling each consecutive refusal to a 30 min cap, and the first
 clean response resets it; the spacing around it does not move. When both a search and a
@@ -384,37 +443,94 @@ times in a row it stops, keeps its resume point, and the collector moves to the 
 The gate closes only for a configured `closed_hours` window: there is no night window as
 shipped and no daily cap.
 
-Which description goes next is decided by `src/processor/describe.py` `_next_job`, and it does
-not sweep the tiers in order. The head tier is the one whose last fetch attempt is oldest, and
-its own pick counter decides the kind of the pick:
+Which description goes next is decided by `src/processor/describe.py` `_next_job`. The head
+tier is the one whose last fetch attempt is oldest, and its own pick counter decides the kind of
+the pick:
 
-- one pick in `description_order.quota_one_in` per tier is the **floor pick**, exactly today's
-  queries: a job past `description_urgent_after_hours` (60 h) first, whatever its tier, oldest
-  first, else that tier's oldest job. The 60-hour rule is therefore a guaranteed share of the
-  fetches, not absolute priority.
-- every other pick is a **class pick**: the same tier rotation (the tier whose last attempt is
-  oldest goes first, ties to tier 1), then the best priority class inside that tier
-  (`ai_country` > `ai_city` > `other_country` > `other_city` for tiers 1/3/4; `ai` > `other` for
-  tier 2), then the oldest job, ties on `note_no`. A class pick has no urgent cutoff, so a fresh
-  high-value job can precede an aged low-value one.
+- one pick in `description_order.quota_one_in` (eight) is the **floor pick**: a job past
+  `description_urgent_after_hours` (60 h) first, oldest first, in every tier and class except
+  the jobs the 96 h age-out covers (the same `age_out` tiers and classes, so the two rules cannot
+  drift: tiers 1 and 2 in every class, tiers 3 and 4 only in their AI-title classes), else
+  the head tier's oldest __important__ job (its AI-title classes: `ai_country`, `ai_city`, or
+  tier 2's `ai`), else the value order. The 60-hour rule is therefore a guaranteed share of the
+  fetches, not absolute priority, and no tier's important work can starve. With all four tiers
+  waiting, a given tier's floor lands about every 24 to 32 picks.
+- every other pick is a **value pick**: one global order across all tiers by the measured class
+  yield (`description_order.value_rank`: `ai_country` > `ai` > `ai_city` > `other_country` >
+  `other` > `other_city`), then by age, ties on `note_no`. A value pick has no urgent cutoff, so
+  a fresh high-value job can precede an aged low-value one, and a tier no longer buys a turn
+  with age alone: the best class in any tier goes before another tier's worst.
 
 The class is written when the cheap checks assign the tier and read as one smallint column
-(`jobs.description_class`); the rotation and the floor share are `kv_state` rows per tier
+(`jobs.description_class`); the turn and the floor share are `kv_state` rows per tier
 (`description_turn:<tier>`, `description_pick_count:<tier>`), not new timestamps. Deleting the
 turn rows restarts the rotation from tier 1, deleting the pick rows only resets the share's
 phase. The pace, the number of requests and the set of jobs fetched are unaffected, only the
-order. The measured effect: at the 2:1 inflow/capacity of 2026-10-20, the most valuable jobs
-reach a description at a median of 3 h and a p90 of 13 h (max 26 h) in every tier, against a p90
-of 193 h in the old order; low-value jobs are still fetched but their tail waits about 10 days
-at day 12 (median 167 h, p90 229 h, max 244 h) and ages out at the 30-day expiry, because
-description capacity is about half of the inflow. `description_order.quota_one_in` is the dial
-that trades high-value latency against that tail (1 = pure FIFO, 4 = shipped); more description
-capacity is a pace decision outside this change.
+order. The scout's model puts the value order at about +20 % `score >= 7` a day (45.0 to 54.4),
+not the +26 % of a per-(tier, class) rank, because about 18 % of the class-3 turns still go to
+tier 4's `other_city` in arrival order.
+
+The accepted consequence, knowingly: the lowest-value postings mostly wait and then age out.
+Tier 4 `other_city` (0.28 % yield) and tier 3 `other_city` (1.45 %) are at the bottom of the
+value order and the age-out keeps them out of the floor's 60-hour band, so they never take a
+floor turn and mostly reach the 96 h age-out described below. Tier 1 `other_city` (0.22 %) and
+tier 2's `other` (1.2 %) rank above tier 4's class 3 but below tiers 3 and 4's `other_country`,
+and since only tiers 3 and 4 have an age-out they keep the 60-hour band and otherwise reach the
+30-day expiry.
+
+`description_order.quota_one_in` is the dial that trades high-value latency against that tail
+(1 = pure FIFO, 8 = shipped); more description capacity is a pace decision outside this change.
 
 A flat 75 s over 24 h is about 1,152 requests; with the +/-20 % jitter the mean stays at 75 s.
-Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's 3x
-level (25 s) is a ceiling of about 3,456 requests, not a promise: descriptions run last in a
+Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's ceiling
+is the configured top level (7x as shipped, about 8,100 requests at 10.7 s), and the rolling
+24 h ceiling is 5,000 requests; neither is a promise, because descriptions run last in a
 processor tick and are bounded by `description_seconds_per_tick`.
+
+### Above 3x
+
+The ladder may climb past 3x, up to the configured ceiling (`adaptive.max_level`, 8 as
+shipped, which is 7x). Every protection below 3x keeps its mechanism up there, and five more
+guards apply, all of them config values:
+
+- a climb into or within the levels above 3x needs `adaptive.climb_min_requests_above_3x`
+  (600) requests at the current level, on top of the usual 200-request gate and evidence
+  rules;
+- at most `adaptive.above_3x_climbs_per_day` (one) above-3x climb per Rome day, so 7x takes
+  at least three clean days;
+- a rolling 24 h request ceiling of `adaptive.rolling_24h_ceiling_requests` (5,000): while it
+  is reached, no above-3x climb is allowed and a level above 3x drops back to 3x;
+- a level above 3x is dropped straight to 3x when fewer than
+  `adaptive.demand_hold_above_3x_waiting` (250) descriptions are waiting (a high level with
+  nothing to fetch only burns the window);
+- no climb above 4x once `adaptive.llm_above_4x_stop_share` (75 %) of the ladder's OpenRouter
+  stop line is spent, so the day can still finish scoring. The guard only stops climbing: work
+  already described is fetched and scored when the UTC day turns, so a late-day description
+  may wait unscored.
+
+A protect drop that starts above 3x never lands above 3x, and any protect drop or brake from
+above 3x blocks above-3x climbing for `adaptive.above_3x_hold_hours` (24 h). Both drop paths
+also reset the current level's stint, so the next above-3x climb needs a fresh 600 requests at
+3x: that is deliberate, not a bug in the status line. `python -m src.services.status` shows the
+level as `n/8`, its spacing and speed, the ceiling, and `above 3x: <guard>` (or `n/a`, `at the
+ceiling`, `ready`); the service log prints the same guard on every ladder move.
+
+**What the shipped numbers actually do.** With `rolling_24h_ceiling_requests: 5000` and a full
+queue, the 6 -> 7 climb happens at midnight and the 5x run fills the window about twenty hours
+later, so the ladder cycles 3x, 4x, 5x, ceiling drop every second day and does **not** reach 7x.
+That is the safe direction, not a fault. 7x arrives only on a day the window has room, or after
+the ceiling is raised:
+
+| `rolling_24h_ceiling_requests` | 7x reached (clean-traffic simulation) | requests/day |
+|---|---|---|
+| 5,000 (shipped) | no, in 12 simulated days | 2.8k to 4.7k |
+| 6,000 | yes, day 3, for about 10 h before a ceiling drop | 4.0k to 5.0k |
+| 7,000 | yes, day 3, for about 22 h | up to 6.65k |
+| 8,000 | yes, day 3, and it stays at 7x | 7.0k per day |
+
+A sustained 7x day would need about 1,230 OpenRouter requests against a provider limit of
+1,000, so raising the ceiling trades the free LLM budget for speed. Lower the speed instead by
+setting `adaptive.max_level` (6 is 4x, 5 is 3x).
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
 `*-*-* 00..01,05..06,11..23:00/30:00`: every 30 min, outside the 07:00-11:00 delivery window
@@ -447,12 +563,21 @@ row and the last success, and adds any wait in Rome time:
 
 ```
 LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, 0/342 refused today, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome, last move: disabled
-LinkedIn pace: adaptive level 2/5 (50s, 1.5x), 3/20 refused in trailing 20, 7/342 refused today, 1 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, last move: climb 1 -> 2 at 09:34 Rome (cautious upper 11.4%, 43/h vs 14/h), next climb: 41/200 requests at this level
+LinkedIn pace: adaptive level 2/8 (50s, 1.5x), ceiling 8, above 3x: n/a, 3/20 refused in trailing 20, 7/342 refused today, 1 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, last move: climb 1 -> 2 at 09:34 Rome (cautious upper 11.4%, 43/h vs 14/h), next climb: 41/200 requests at this level
 ```
 
 `last request` names the kind of the last request: `search`, `description` or `packaging`.
 
-The same output ends with requests and new jobs per source, one row per Rome day for the last
+The same output also counts expired jobs by reason over the last seven days, so an age-out wave
+is visible as its own line rather than folded into a stage total:
+
+```
+Expired by reason, last 7 days (Rome):
+  aged_out: 1991
+  posting_too_old: 12
+```
+
+and ends with requests and new jobs per source, one row per Rome day for the last
 seven days (today included):
 
 ```
@@ -522,6 +647,21 @@ If the extra night requests are the problem, also restore the closed window in t
 No database change and no code change is needed: the pace and the closed window are read from
 config at service start.
 
+**Lowering the ladder ceiling without a rollback.** Edit `adaptive.max_level` and nothing else:
+`6` is 4x, `5` is 3x. Restart the three LinkedIn units; a stored level above the new ceiling is
+clamped on the next request, and no code change is involved.
+
+**Rolling the code back.** Revert `config/schedule.json` in the same step as the code. The
+previous release's validator rejects `max_level` and the other new `adaptive` keys, so every
+LinkedIn service would refuse to start with the new config on disk. `config/processor.json`
+needs no such care: `load_processor_config` reads with `data.get`, so the new `age_out` and
+`value_rank` keys are harmless to an older checkout.
+
+**First deploy of the longer ladder.** Ship `adaptive.max_level: 5` and raise it to `6` after a
+clean day and to `8` after another. A live level-5 stint can already carry its 600 requests
+when the service restarts, so with the ceiling at 8 the first clean request after the deploy
+may climb straight to 4x; the staged ceiling makes the ramp visible instead.
+
 The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
 its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,
 VP, Director) plus `10+ years`, `8+ years`, `7+ years`, `C++`, `Rust`, `Java` and `on-site only`;
@@ -545,7 +685,7 @@ that first.
    the pace line. Then restart `jds-collect-linkedin` and `jds-deliver` back to back. The schema
    is already current, so their `init_store` runs no DDL.
 4. The ladder ships on: `adaptive.enabled` is true, so the pace line must read `LinkedIn pace:
-   adaptive level 1/5 (75s, 1x)`. The old live row may still carry `weekday_spacing_seconds`,
+   adaptive level 1/8 (75s, 1x), ceiling 8`. The old live row may still carry `weekday_spacing_seconds`,
    `weekend_spacing_seconds` and `nudge`; they are ignored.
 5. Enabling the ladder requires `adaptive.levels_seconds[0]` to match
    `pace.start_spacing_seconds` (75 as shipped); change the two together or not at all.
@@ -567,8 +707,8 @@ request path reads the `jobs` waiting count and the `llm_budget` row at most onc
 produce four dropped-connection events because a description request retries (5/15/45 s); three
 within ten minutes brake the pace. The climb gate admits at most 14 refusals in 200 (7.0
 percent), just under the 2026-10-19 rate (7.7 percent), so the ladder rarely climbs on a typical
-6 to 8 percent day. The 3x level is a ceiling, not a promise: descriptions run last in a
-processor tick and are bounded by `description_seconds_per_tick`.
+6 to 8 percent day. The configured top level is a ceiling, not a promise: descriptions run
+last in a processor tick and are bounded by `description_seconds_per_tick`.
 
 ### Deploying per-source request tracking
 

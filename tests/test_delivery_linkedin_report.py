@@ -124,14 +124,14 @@ def _adaptive_lines(conn, state, schedule=ACTIVE):
 
 def test_the_block_shows_the_adaptive_spacing(store_conn):
     state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 2}
-    assert _adaptive_lines(store_conn, state)[3] == "Fixed spacing: 50s (adaptive level 2 of 5)"
+    assert _adaptive_lines(store_conn, state)[3] == "Fixed spacing: 50s (adaptive level 2 of 8)"
 
 
 def test_the_block_shows_the_emergency_spacing(store_conn):
     state = {**blank_state(ACTIVE.adaptive), "active": True, "level": 1,
              "brake": {"since": NOW.isoformat(), "reason": "http_999", "clean": 0}}
     assert _adaptive_lines(store_conn, state)[3] == (
-        "Fixed spacing: 150s (emergency brake, level 1 of 5)")
+        "Fixed spacing: 150s (emergency brake, level 1 of 8)")
 
 
 def test_report_renders_corrupt_state(store_conn):

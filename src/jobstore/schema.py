@@ -103,7 +103,7 @@ DDL: list[str] = [
     """CREATE INDEX IF NOT EXISTS jobs_next_attempt_idx ON jobs (next_attempt_at)
        WHERE stage IN ('seen', 'described')""",
     # The description queue (src/processor/describe.py `_next_job`): the floor pick reads the
-    # waiting set in first_seen_at order, the class pick reads it with the priority class
+    # waiting set in first_seen_at order, the value pick reads it with the best value rank
     # first. Without this they fell back to a full scan (23 ms on 200k rows, every fetch).
     # The partial predicate matches the queries exactly.
     """CREATE INDEX IF NOT EXISTS jobs_description_queue_idx ON jobs (first_seen_at, tier, note_no)

@@ -9,36 +9,118 @@
   "cheap_checks_per_tick": 200,
   "refusal_expiry_days": 7,
   "posting_max_age_days": 30,
+  "age_out": {
+    "enabled": true,
+    "hours": 96,
+    "tiers": [
+      3,
+      4
+    ],
+    "min_class": 2
+  },
   "backoff_first_minutes": 30,
   "backoff_cap_hours": 12,
   "llm_stop_at_requests": 950,
-  "title_prefilter": {"1": true, "2": true, "3": true, "4": true},
-  "remote_rules": {"enabled": true, "occasional_presence": true, "cloud_hybrid": true},
-  "structured_remote": {"enabled": true, "explicit_remote_wins": true},
-  "remote_hint": {"advised_when_silent": true, "never_reject_on_occasional": true},
-  "remote_verifier": {"occasional_presence_prompt": true},
-  "merged_call": {"enabled": false},
+  "title_prefilter": {
+    "1": true,
+    "2": true,
+    "3": true,
+    "4": true
+  },
+  "remote_rules": {
+    "enabled": true,
+    "occasional_presence": true,
+    "cloud_hybrid": true
+  },
+  "structured_remote": {
+    "enabled": true,
+    "explicit_remote_wins": true
+  },
+  "remote_hint": {
+    "advised_when_silent": true,
+    "never_reject_on_occasional": true
+  },
+  "remote_verifier": {
+    "occasional_presence_prompt": true
+  },
+  "merged_call": {
+    "enabled": false
+  },
   "description_order": {
     "enabled": true,
-    "quota_one_in": 4,
+    "quota_one_in": 8,
     "backfill_per_tick": 500,
-    "ai_title_keywords": ["AI", "GenAI", "generative AI", "artificial intelligence",
-                          "machine learning", "ML", "MLOps", "deep learning", "LLM", "LLMs",
-                          "NLP", "data scientist", "data scientists", "data science",
-                          "computer vision"],
-    "senior_title_keywords": ["Senior", "Sr", "Lead", "Principal", "Staff", "Head",
-                              "Director", "VP", "Vice President", "Chief", "Manager"],
+    "ai_title_keywords": [
+      "AI",
+      "GenAI",
+      "generative AI",
+      "artificial intelligence",
+      "machine learning",
+      "ML",
+      "MLOps",
+      "deep learning",
+      "LLM",
+      "LLMs",
+      "NLP",
+      "data scientist",
+      "data scientists",
+      "data science",
+      "computer vision"
+    ],
+    "senior_title_keywords": [
+      "Senior",
+      "Sr",
+      "Lead",
+      "Principal",
+      "Staff",
+      "Head",
+      "Director",
+      "VP",
+      "Vice President",
+      "Chief",
+      "Manager"
+    ],
     "classes": {
       "default": [
-        {"name": "ai_country", "title": "ai", "location": "country_only"},
-        {"name": "ai_city", "title": "ai", "location": "other"},
-        {"name": "other_country", "title": "other", "location": "country_only"},
-        {"name": "other_city", "title": "other", "location": "other"}
+        {
+          "name": "ai_country",
+          "title": "ai",
+          "location": "country_only"
+        },
+        {
+          "name": "ai_city",
+          "title": "ai",
+          "location": "other"
+        },
+        {
+          "name": "other_country",
+          "title": "other",
+          "location": "country_only"
+        },
+        {
+          "name": "other_city",
+          "title": "other",
+          "location": "other"
+        }
       ],
       "2": [
-        {"name": "ai", "title": "ai"},
-        {"name": "other", "title": "other"}
+        {
+          "name": "ai",
+          "title": "ai"
+        },
+        {
+          "name": "other",
+          "title": "other"
+        }
       ]
+    },
+    "value_rank": {
+      "ai_country": 0,
+      "ai": 1,
+      "ai_city": 2,
+      "other_country": 3,
+      "other": 4,
+      "other_city": 5
     }
   }
 }

@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from src.processor.config import load_processor_config
 
 
@@ -47,9 +51,9 @@ def test_the_description_stage_has_a_time_budget_per_tick():
     assert load_processor_config().description_seconds_per_tick == 120
 
 
-def test_the_shipped_config_turns_the_order_on_with_a_quota_of_four():
+def test_the_shipped_config_turns_the_order_on_with_a_quota_of_eight():
     cfg = load_processor_config()
-    assert (cfg.fetch_order.enabled, cfg.fetch_order.quota_one_in) == (True, 4)
+    assert (cfg.fetch_order.enabled, cfg.fetch_order.quota_one_in) == (True, 8)
     assert cfg.fetch_order.backfill_per_tick == 500
     assert [c.name for c in cfg.fetch_order.order_for(1).classes] == [
         "ai_country", "ai_city", "other_country", "other_city"]
@@ -124,3 +128,36 @@ def test_the_occasional_presence_prompt_is_on_and_configurable(tmp_path):
     path = tmp_path / "processor.json"
     path.write_text(json.dumps(data))
     assert load_processor_config(str(path)).occasional_presence_prompt is False
+
+
+def test_the_shipped_age_out_is_the_captains_96_hour_rule():
+    cfg = load_processor_config()
+    assert (cfg.age_out_enabled, cfg.age_out_hours) == (True, 96)
+    assert (cfg.age_out_tiers, cfg.age_out_min_class) == ((3, 4), 2)
+
+
+@pytest.mark.parametrize("block", [
+    {"enabled": "yes"},
+    {"hours": 0},
+    {"hours": "96"},
+    {"tiers": []},
+    {"tiers": [3, 5]},
+    {"tiers": [3, 3]},
+    {"min_class": -1},
+])
+def test_a_malformed_age_out_block_fails_loudly(tmp_path, block):
+    data = json.load(open("config/processor.json"))
+    data["age_out"] = block
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match="age_out"):
+        load_processor_config(str(path))
+
+
+def test_a_config_without_an_age_out_block_still_loads(tmp_path):
+    data = json.load(open("config/processor.json"))
+    del data["age_out"]
+    path = tmp_path / "processor.json"
+    path.write_text(json.dumps(data))
+    cfg = load_processor_config(str(path))
+    assert (cfg.age_out_enabled, cfg.age_out_hours) == (True, 96)
