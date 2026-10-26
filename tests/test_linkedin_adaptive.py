@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from src.linkedin.adaptive import (
     MAX_LEVELS, Signals, above_3x_guard, above_3x_status, blank_state, climb_blockers,
@@ -6,7 +7,7 @@ from src.linkedin.adaptive import (
     normalize_state, parse_iso, paused_day, review, rolling_24h_requests,
     speed_multiple, wilson_upper,
 )
-from src.linkedin.schedule import AdaptivePolicy
+from src.linkedin.schedule import AdaptivePolicy, load_schedule_config
 
 NOW = datetime(2026, 10, 20, 4, 30, tzinfo=timezone.utc)
 POLICY = AdaptivePolicy(enabled=True)
@@ -81,7 +82,7 @@ def test_the_rolling_24h_ceiling_holds_the_ladder_at_three_x():
     hour = NOW.replace(minute=0, second=0, microsecond=0)
     state = {**blank_state(POLICY), "active": True, "level": 6,
              "day": NOW.date().isoformat(),
-             "window": [[hour.isoformat(), 5000]]}
+             "window": [[hour.isoformat(), POLICY.rolling_24h_ceiling_requests]]}
     state["levels"]["5"] = _stint(successes=300)
     state["levels"]["6"] = _stint(requests=600, successes=600)
     assert above_3x_guard(POLICY, state, NOW, HIGH).startswith("rolling 24h ")
@@ -113,6 +114,27 @@ def test_the_rolling_window_keeps_a_bucket_whose_hour_is_still_inside_the_day():
     outside = {**blank_state(POLICY),
                "window": [[(hour - timedelta(hours=25)).isoformat(), 1000]]}
     assert rolling_24h_requests(outside, now) == 0
+
+
+def test_the_shipped_ladder_reaches_seven_x_and_holds_it_on_clean_traffic():
+    policy = load_schedule_config().adaptive
+    rome = ZoneInfo("Europe/Rome")
+    state = {**blank_state(policy), "active": True}
+    now, end, first_top, moves = NOW, NOW + timedelta(days=6), None, set()
+    while now < end:
+        signals = Signals(demand_waiting=1200, llm_requests_today=100, llm_day=now.date(),
+                          llm_stop_requests=800, refreshed_at=now)
+        state = review(state, policy, now, day=now.astimezone(rome).date(),
+                       outcome="clean", level=current_level(state), signals=signals,
+                       throughput_check=False)
+        if state.get("last_move"):
+            moves.add(state["last_move"]["kind"])
+        if current_level(state) == policy.max_level and first_top is None:
+            first_top = now
+        now += timedelta(seconds=effective_spacing(policy, state))
+    assert first_top is not None and first_top - NOW < timedelta(days=4)
+    assert current_level(state) == policy.max_level
+    assert "ceiling" not in moves
 
 
 def test_a_level_above_three_x_drops_to_three_x_when_the_queue_empties():

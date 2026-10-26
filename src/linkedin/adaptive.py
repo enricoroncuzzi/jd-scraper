@@ -18,7 +18,7 @@ Above 3x (`is_above_speed(policy, level, 3.0)`) the same protections apply plus 
 guards, all deterministic and all config values: a climb into or within the above-3x
 levels needs `climb_min_requests_above_3x` (600) requests at the current level, at most
 `above_3x_climbs_per_day` (one) such climb happens per Rome day, a rolling 24 h request
-count of `rolling_24h_ceiling_requests` (5,000) blocks above-3x climbs and drops the ladder
+count of `rolling_24h_ceiling_requests` (8,640) blocks above-3x climbs and drops the ladder
 back to 3x, a level above 3x is dropped the moment fewer than
 `demand_hold_above_3x_waiting` (250) descriptions wait, and no climb targets a level above
 4x once `llm_above_4x_stop_share` (75 percent) of the ladder's OpenRouter stop line is

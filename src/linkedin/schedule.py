@@ -50,7 +50,7 @@ class AdaptivePolicy:
     climb_min_requests: int = 200
     climb_min_requests_above_3x: int = 600
     above_3x_climbs_per_day: int = 1
-    rolling_24h_ceiling_requests: int = 5000
+    rolling_24h_ceiling_requests: int = 8640
     demand_hold_above_3x_waiting: int = 250
     llm_above_4x_stop_share: float = 0.75
     above_3x_hold_hours: int = 24
@@ -267,7 +267,7 @@ def _load_adaptive(data: dict, base_spacing: float) -> AdaptivePolicy:
             adaptive, "climb_min_requests_above_3x", 600),
         above_3x_climbs_per_day=_adaptive_int(adaptive, "above_3x_climbs_per_day", 1),
         rolling_24h_ceiling_requests=_adaptive_int(
-            adaptive, "rolling_24h_ceiling_requests", 5000),
+            adaptive, "rolling_24h_ceiling_requests", 8640),
         demand_hold_above_3x_waiting=demand_hold,
         llm_above_4x_stop_share=_adaptive_ratio(adaptive, "llm_above_4x_stop_share", 0.75),
         above_3x_hold_hours=_adaptive_int(adaptive, "above_3x_hold_hours", 24),
