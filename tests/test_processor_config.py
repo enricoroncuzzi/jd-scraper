@@ -47,9 +47,9 @@ def test_the_description_stage_has_a_time_budget_per_tick():
     assert load_processor_config().description_seconds_per_tick == 120
 
 
-def test_the_shipped_config_turns_the_order_on_with_a_quota_of_four():
+def test_the_shipped_config_turns_the_order_on_with_a_quota_of_eight():
     cfg = load_processor_config()
-    assert (cfg.fetch_order.enabled, cfg.fetch_order.quota_one_in) == (True, 4)
+    assert (cfg.fetch_order.enabled, cfg.fetch_order.quota_one_in) == (True, 8)
     assert cfg.fetch_order.backfill_per_tick == 500
     assert [c.name for c in cfg.fetch_order.order_for(1).classes] == [
         "ai_country", "ai_city", "other_country", "other_city"]

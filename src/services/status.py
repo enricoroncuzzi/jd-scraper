@@ -196,9 +196,11 @@ def _description_queue_lines(cur, now: datetime, schedule: ScheduleConfig, cfg) 
     waiting still gets a line, so a tier that has gone silent is visible.
     """
     order = cfg.fetch_order
-    quota = f"1 pick in {order.quota_one_in} is oldest-first" if order.enabled else "order disabled"
-    names = ", ".join(cls.name for cls in order.order_for(1).classes)
-    lines = [f"Description queue by priority class (tiers 1/3/4: {names}; {quota}):"]
+    ranks = ", ".join(f"{name} {rank}" for name, rank in
+                      sorted(order.value_rank.items(), key=lambda item: item[1]))
+    quota = (f"one pick in {order.quota_one_in} is the head tier's floor pick"
+             if order.enabled else "order disabled")
+    lines = [f"Description queue by value rank ({ranks}; {quota}):"]
     rows = waiting_by_class(cur, now)
     by_tier: dict[int, dict] = {}
     for tier, rank, count, oldest in rows:

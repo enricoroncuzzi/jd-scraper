@@ -43,7 +43,7 @@ def test_the_important_classes_are_the_ai_title_ones():
 def test_the_shipped_config_ranks_the_classes_by_measured_yield():
     order = load_fetch_order(json.loads(Path("config/processor.json").read_text())
                              ["description_order"])
-    assert order.quota_one_in == 4          # the floor share moves to 8 with the order change
+    assert order.quota_one_in == 8          # one pick in eight is the head tier's floor pick
     assert [order.rank(1, stored) for stored in range(4)] == [0, 2, 3, 5]
     assert [order.rank(2, stored) for stored in range(2)] == [1, 4]
     assert order.important_ranks(1) == (0, 1)

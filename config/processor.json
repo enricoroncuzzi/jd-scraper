@@ -39,7 +39,7 @@
   },
   "description_order": {
     "enabled": true,
-    "quota_one_in": 4,
+    "quota_one_in": 8,
     "backfill_per_tick": 500,
     "ai_title_keywords": [
       "AI",

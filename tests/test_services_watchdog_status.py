@@ -232,7 +232,7 @@ def test_status_shows_the_description_queue_split_by_priority_class(store_conn):
                 cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (job,))
     store_conn.commit()
     text = status.render(store_conn, NOW, ScheduleConfig())
-    assert "1 pick in 4 is oldest-first" in text
+    assert "one pick in 8 is the head tier's floor pick" in text
     assert "ai_country 0" in text and "unclassified 1" in text
     assert "other_city 1" in text and "(no waiting descriptions)" in text
 

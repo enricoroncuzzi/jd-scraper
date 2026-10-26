@@ -329,8 +329,10 @@ pace ladder, and it does not move the slice's cadence.
 Other keys this design adds: `config/processor.json` `description_deadline_hours` (`24`, the
 point where an overdue description may spend more than one tick) and
 `description_urgent_after_hours` (`60`, the age past which a waiting job is eligible for the
-floor pick: it is guaranteed one pick in `description_order.quota_one_in` per tier ahead of the
-class order, not absolute priority), `config/deliver.json`
+floor pick: the head tier's floor pick, one pick in `description_order.quota_one_in`, is
+guaranteed to take the oldest job past that age whatever its class, and otherwise takes that
+tier's oldest AI-title job; it is a share of the fetches, not absolute priority),
+`config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
 repeats at most once a day), `config/llm_fallback.json` `share` (`0.2`), `min_calls` (`5`) and
 `enabled` (the fallback alert's off switch), and `config/sources.json` `spacing_seconds` (`[1, 2]`
@@ -343,12 +345,13 @@ fetching next (see "Which description goes next" below). Every key, with the shi
 | Setting | Shipped value | Meaning |
 |---|---|---|
 | `description_order.enabled` | `true` | the whole order; `false` (edit + restart `jds-process`, no deploy) reproduces the pre-order behaviour exactly, one plain oldest-first pick per fetch |
-| `description_order.quota_one_in` | `4` | one pick in four, per tier, is the plain oldest-first pick (the 60-hour floor and the rotation); `1` makes every pick one |
+| `description_order.quota_one_in` | `8` | one pick in eight is the head tier's floor pick (the 60-hour band, else that tier's oldest AI-title job); `1` makes every pick one |
+| `description_order.value_rank` | `ai_country 0, ai 1, ai_city 2, other_country 3, other 4, other_city 5` | the measured `score >= 7` yield of each class, pooled across tiers (19.2 %, 17.6 %, 4.2 %, 3.3 %, 1.2 %, 0.68 %); lower is better. Every class name the `classes` lists use must be ranked, and only those |
 | `description_order.backfill_per_tick` | `500` | waiting jobs given a priority class per processor tick when they have none (a 3,000-row backlog takes six ticks) |
 | `description_order.ai_title_keywords` | `AI, GenAI, generative AI, artificial intelligence, machine learning, ML, MLOps, deep learning, LLM, LLMs, NLP, data scientist(s), data science, computer vision` | whole-word title keywords that make a title "AI/ML/DS"; matched case-insensitively on word boundaries |
 | `description_order.senior_title_keywords` | `Senior, Sr, Lead, Principal, Staff, Head, Director, VP, Vice President, Chief, Manager` | whole-word seniority keywords that demote an AI title to the `other` classes |
 | `description_order.classes` | `default` (tiers 1, 3, 4): `ai_country`, `ai_city`, `other_country`, `other_city`; `"2"`: `ai`, `other` | the class order per tier, best first; tier 2 omits `location`, since it accepts any work mode |
-| `description_pick_count:<tier>` (kv_state) | one row per tier | how many picks that tier has made, i.e. the phase of its floor share; deleting the rows only resets the phase |
+| `description_pick_count:<tier>` (kv_state) | one row per tier | how many picks that tier has made, i.e. the phase of its floor share; deleting the rows only resets the phase. The counter belongs to the head tier whose turn decides the kind, not to the tier that is served, and a floor attempt always advances the head |
 
 The block is validated when the config loads, so edit only the `enabled` value (or a value this
 table documents); a malformed `description_order` block stops every service that loads the
@@ -392,32 +395,40 @@ times in a row it stops, keeps its resume point, and the collector moves to the 
 The gate closes only for a configured `closed_hours` window: there is no night window as
 shipped and no daily cap.
 
-Which description goes next is decided by `src/processor/describe.py` `_next_job`, and it does
-not sweep the tiers in order. The head tier is the one whose last fetch attempt is oldest, and
-its own pick counter decides the kind of the pick:
+Which description goes next is decided by `src/processor/describe.py` `_next_job`. The head
+tier is the one whose last fetch attempt is oldest, and its own pick counter decides the kind of
+the pick:
 
-- one pick in `description_order.quota_one_in` per tier is the **floor pick**, exactly today's
-  queries: a job past `description_urgent_after_hours` (60 h) first, whatever its tier, oldest
-  first, else that tier's oldest job. The 60-hour rule is therefore a guaranteed share of the
-  fetches, not absolute priority.
-- every other pick is a **class pick**: the same tier rotation (the tier whose last attempt is
-  oldest goes first, ties to tier 1), then the best priority class inside that tier
-  (`ai_country` > `ai_city` > `other_country` > `other_city` for tiers 1/3/4; `ai` > `other` for
-  tier 2), then the oldest job, ties on `note_no`. A class pick has no urgent cutoff, so a fresh
-  high-value job can precede an aged low-value one.
+- one pick in `description_order.quota_one_in` (eight) is the **floor pick**: a job past
+  `description_urgent_after_hours` (60 h) first, whatever its tier and class, oldest first, else
+  the head tier's oldest __important__ job (its AI-title classes: `ai_country`, `ai_city`, or
+  tier 2's `ai`), else the value order. The 60-hour rule is therefore a guaranteed share of the
+  fetches, not absolute priority, and no tier's important work can starve. With all four tiers
+  waiting, a given tier's floor lands about every 24 to 32 picks.
+- every other pick is a **value pick**: one global order across all tiers by the measured class
+  yield (`description_order.value_rank`: `ai_country` > `ai` > `ai_city` > `other_country` >
+  `other` > `other_city`), then by age, ties on `note_no`. A value pick has no urgent cutoff, so
+  a fresh high-value job can precede an aged low-value one, and a tier no longer buys a turn
+  with age alone: the best class in any tier goes before another tier's worst.
 
 The class is written when the cheap checks assign the tier and read as one smallint column
-(`jobs.description_class`); the rotation and the floor share are `kv_state` rows per tier
+(`jobs.description_class`); the turn and the floor share are `kv_state` rows per tier
 (`description_turn:<tier>`, `description_pick_count:<tier>`), not new timestamps. Deleting the
 turn rows restarts the rotation from tier 1, deleting the pick rows only resets the share's
 phase. The pace, the number of requests and the set of jobs fetched are unaffected, only the
-order. The measured effect: at the 2:1 inflow/capacity of 2026-10-20, the most valuable jobs
-reach a description at a median of 3 h and a p90 of 13 h (max 26 h) in every tier, against a p90
-of 193 h in the old order; low-value jobs are still fetched but their tail waits about 10 days
-at day 12 (median 167 h, p90 229 h, max 244 h) and ages out at the 30-day expiry, because
-description capacity is about half of the inflow. `description_order.quota_one_in` is the dial
-that trades high-value latency against that tail (1 = pure FIFO, 4 = shipped); more description
-capacity is a pace decision outside this change.
+order. The scout's model puts the value order at about +20 % `score >= 7` a day (45.0 to 54.4),
+not the +26 % of a per-(tier, class) rank, because about 18 % of the class-3 turns still go to
+tier 4's `other_city` in arrival order.
+
+The accepted consequence, knowingly: the lowest-value postings mostly wait and then age out.
+Tier 4 `other_city` (0.28 % yield) and tier 3 `other_city` (1.45 %) are at the bottom of the
+value order and are covered only by the floor's 60-hour band, so they mostly reach the 96 h
+age-out described below. Tier 1 `other_city` (0.22 %) and tier 2's `other` (1.2 %) rank above
+tier 4's class 3 but below tiers 3 and 4's `other_country`, and since only tiers 3 and 4 have an
+age-out they reach the 30-day expiry instead.
+
+`description_order.quota_one_in` is the dial that trades high-value latency against that tail
+(1 = pure FIFO, 8 = shipped); more description capacity is a pace decision outside this change.
 
 A flat 75 s over 24 h is about 1,152 requests; with the +/-20 % jitter the mean stays at 75 s.
 Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's ceiling

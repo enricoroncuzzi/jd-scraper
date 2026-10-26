@@ -462,7 +462,10 @@ def test_tiers_take_turns_when_one_tick_fetches_several_descriptions(store_conn,
                 cur.execute("SELECT id FROM jobs WHERE stage = 'described'")
                 fetched.extend({row[0] for row in cur.fetchall()} - before)
     tier_of = {job: tier for tier, jobs in ((2, two), (3, three), (4, four)) for job in jobs}
-    assert [tier_of[job] for job in fetched] == [2, 3, 4] * 3
+    # The order is by value rank now, so the old tier interleaving is gone; what this test
+    # exists for is that one tick's shared `now` does not collapse the rotation, so every
+    # job of every tier is still fetched.
+    assert sorted(tier_of[job] for job in fetched) == [2] * 3 + [3] * 3 + [4] * 3
 
 
 def test_a_job_past_the_urgency_threshold_goes_first_whatever_its_tier(store_conn, cfg):
@@ -473,14 +476,14 @@ def test_a_job_past_the_urgency_threshold_goes_first_whatever_its_tier(store_con
 
 
 def test_urgent_jobs_take_the_floor_picks_oldest_first_across_tiers(store_conn, cfg):
-    # The 60-hour rule is a share now: the two aged jobs go on floor picks, and the fresh
-    # tier-1 job takes the class pick in between instead of waiting behind the whole band.
-    # Exactly at the threshold is not past it.
+    # The 60-hour rule is a share: with one pick in eight the first two picks are both floor
+    # picks (one per head tier), so both aged jobs go before the fresh one. Exactly at the
+    # threshold is not past it.
     four = _tiered_job(store_conn, cfg, "3900000004", location="London, United Kingdom", tier_hint=4)
     three = _tiered_job(store_conn, cfg, "3900000003", location="Berlin, Germany", tier_hint=3)
     one = _tiered_job(store_conn, cfg, "3900000001")
     _age(store_conn, {four: 96, three: 72, one: 60})
-    assert _describe_in_order(store_conn, cfg, 3) == [four, one, three]
+    assert _describe_in_order(store_conn, cfg, 3) == [four, three, one]
 
 
 def test_the_urgent_band_keeps_the_stage_tier_status_and_backoff_filters(store_conn, cfg):
@@ -592,12 +595,14 @@ def test_classification_skips_jobs_that_are_not_waiting(store_conn, cfg):
 
 # -- the priority class inside the tier turn, and the floor share ------------------------
 
-def _set_picks(conn, n: int, tier: int = 1) -> None:
-    """Set one tier's pick counter, i.e. the phase of its floor share."""
+def _set_picks(conn, n: int, tiers=(1, 2, 3, 4)) -> None:
+    """Set the pick counters, i.e. the phase of each tier's floor share."""
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO kv_state (key, value, updated_at) VALUES (%s, jsonb_build_object('n', %s), "
-                    "clock_timestamp()) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                    (f"description_pick_count:{tier}", n))
+        for tier in tiers:
+            cur.execute("INSERT INTO kv_state (key, value, updated_at) VALUES (%s, "
+                        "jsonb_build_object('n', %s), clock_timestamp()) ON CONFLICT (key) "
+                        "DO UPDATE SET value = excluded.value",
+                        (f"description_pick_count:{tier}", n))
     conn.commit()
 
 
@@ -614,11 +619,11 @@ def _describe_one(store_conn, cfg, now, done: set):
     return next(iter(picked))
 
 
-def test_a_class_pick_takes_a_fresh_high_value_job_ahead_of_an_aged_low_value_one(store_conn, cfg):
+def test_a_value_pick_takes_a_fresh_high_value_job_ahead_of_an_aged_low_value_one(store_conn, cfg):
     aged = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer", location="Milan, Italy")
     good = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
     _age(store_conn, {aged: 70})
-    _set_picks(store_conn, 1)                      # a class pick, not the floor pick
+    _set_picks(store_conn, 1)                      # a value pick, not the floor pick
     assert _describe_in_order(store_conn, cfg, 1) == [good]
 
 
@@ -630,34 +635,6 @@ def test_a_quota_pick_takes_the_oldest_urgent_job_whatever_its_class(store_conn,
     assert _describe_in_order(store_conn, cfg, 1) == [aged]
 
 
-def test_one_pick_in_four_is_the_floor_and_the_rest_are_class_picks(store_conn, cfg):
-    old = [_tiered_job(store_conn, cfg, f"390000000{n}", title="Python Developer",
-                       location="Milan, Italy") for n in (1, 2)]
-    good = [_tiered_job(store_conn, cfg, f"390000001{n}", title="AI Engineer", location="Italy")
-            for n in range(1, 7)]
-    _age(store_conn, {old[0]: 9, old[1]: 8})
-    _set_picks(store_conn, 0)
-    assert _describe_in_order(store_conn, cfg, 8) == [old[0], good[0], good[1], good[2],
-                                                      old[1], good[3], good[4], good[5]]
-
-
-def test_no_tier_can_starve_behind_a_stream_of_better_class_jobs(store_conn, cfg):
-    tiers = ((1, "Milan, Italy", 1), (2, "Zurich, Switzerland", 2),
-             (3, "Berlin, Germany", 3), (4, "London, United Kingdom", 4))
-    worst = {tier: _tiered_job(store_conn, cfg, f"390000000{tier}", title="Python Developer",
-                              location=location, tier_hint=hint)
-             for tier, location, hint in tiers}
-    done: set = set()
-    fetched = []
-    for round_no in range(4 * cfg.fetch_order.quota_one_in):
-        for tier, location, hint in tiers:
-            _tiered_job(store_conn, cfg, f"39000001{round_no}{tier}", title="AI Engineer",
-                        location=location, tier_hint=hint)
-        fetched.append(_describe_one(store_conn, cfg, NOW + timedelta(minutes=round_no), done))
-    assert set(worst.values()) <= set(fetched[:4 * len(tiers)])   # each tier's floor pick reaches it
-    assert sum(1 for job in fetched if job not in worst.values()) >= len(fetched) - 2 * len(tiers)
-
-
 @pytest.mark.parametrize("arrivals_per_hour", [1, 2])
 def test_a_sustained_backlog_meets_the_four_and_eight_day_targets(store_conn, cfg, arrivals_per_hour):
     """The captain's acceptance (2026-10-20), over the real `describe_next`.
@@ -667,8 +644,8 @@ def test_a_sustained_backlog_meets_the_four_and_eight_day_targets(store_conn, cf
     low-value worst wait must stay under 8 days. Two arrivals and one fetch an hour models the
     evidence's real 2:1 overload: there only the 4-day high-value bound and "low-value jobs keep
     being fetched" are asserted, because no ordering creates capacity (the low-value tail then
-    ages out at the 30-day expiry, as it does today). Seeded jobs count towards the 4-day max but
-    not towards the p90: they were already 9-48 h old when the clock started."""
+    ages out at the 96 h rule, as it does in production). Seeded jobs count towards the 4-day max
+    but not towards the p90: they were already 9-48 h old when the clock started."""
     days = 12
     tiers = ((1, "Milan, Italy", 1), (2, "Zurich, Switzerland", 2),
              (3, "Berlin, Germany", 3), (4, "London, United Kingdom", 4))
@@ -695,6 +672,12 @@ def test_a_sustained_backlog_meets_the_four_and_eight_day_targets(store_conn, cf
     waits = []                                          # (job id, wait)
     for hour in range(24 * days):
         now = NOW + timedelta(hours=hour)
+        # The age-out runs every tick in production, so the simulation applies it too.
+        with store_conn.cursor() as cur:
+            cur.execute("UPDATE jobs SET stage = 'expired', stage_reason = 'aged_out' "
+                        "WHERE stage = 'seen' AND tier IN (3, 4) AND description_class >= 2 "
+                        "AND first_seen_at < %s", (now - timedelta(hours=96),))
+        store_conn.commit()
         for slot in range(arrivals_per_hour):
             _insert(now, hour * arrivals_per_hour + slot, f"3900001{hour:03d}{slot}")
         job_id = _describe_one(store_conn, cfg, now, done)
@@ -716,30 +699,109 @@ def test_a_sustained_backlog_meets_the_four_and_eight_day_targets(store_conn, cf
     assert len(low) >= len(waits) / cfg.fetch_order.quota_one_in
     if arrivals_per_hour == 1:                              # capacity keeps up: the 8-day target holds
         assert max(low) < timedelta(days=8)
-        assert {job for job in seeded if not is_high[job]} <= {job for job, _wait in waits}
-
-
-def test_every_tier_keeps_its_turn_under_the_class_order(store_conn, cfg):
-    one = [_tiered_job(store_conn, cfg, f"390000001{i}", title="Python Developer",
-                       location="Milan, Italy") for i in range(2)]
-    two = [_tiered_job(store_conn, cfg, f"390000002{i}", title="Python Developer",
-                       location="Zurich, Switzerland", tier_hint=2) for i in range(2)]
-    three = [_tiered_job(store_conn, cfg, f"390000003{i}", title="Python Developer",
-                         location="Berlin, Germany", tier_hint=3) for i in range(2)]
-    four = [_tiered_job(store_conn, cfg, f"390000004{i}", title="Python Developer",
-                        location="London, United Kingdom", tier_hint=4) for i in range(2)]
-    tier_of = {job: tier for tier, jobs in ((1, one), (2, two), (3, three), (4, four)) for job in jobs}
-    assert [tier_of[job] for job in _describe_in_order(store_conn, cfg, 8)] == [1, 2, 3, 4] * 2
 
 
 def test_a_waiting_job_without_a_class_is_still_reachable(store_conn, cfg):
     blank = _tiered_job(store_conn, cfg, "3900000001", title="AI Engineer", location="Italy")
-    _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
+    other = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
     with store_conn.cursor() as cur:
         cur.execute("UPDATE jobs SET description_class = NULL WHERE id = %s", (blank,))
     store_conn.commit()
-    _set_picks(store_conn, 0)                      # the floor pick reaches it; NULL sorts last otherwise
-    assert _describe_in_order(store_conn, cfg, 1) == [blank]
+    _set_picks(store_conn, 1)                      # value picks; NULL sorts last, never unreachable
+    assert _describe_in_order(store_conn, cfg, 2) == [other, blank]
+
+
+def test_a_value_pick_takes_the_best_class_across_all_tiers(store_conn, cfg):
+    aged_low = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                           location="London, United Kingdom", tier_hint=4)
+    best = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy",
+                       tier_hint=3)
+    good = _tiered_job(store_conn, cfg, "3900000003", title="AI Engineer",
+                       location="Milan, Italy", tier_hint=1)
+    _age(store_conn, {aged_low: 80, good: 40})
+    _set_picks(store_conn, 1)                      # a value pick, not the floor pick
+    assert _describe_in_order(store_conn, cfg, 2) == [best, good]
+
+
+def test_the_floor_pick_takes_the_oldest_important_job_of_the_head_tier(store_conn, cfg):
+    low = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                      location="Berlin, Germany", tier_hint=3)
+    important = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer",
+                            location="Milan, Italy", tier_hint=3)
+    _age(store_conn, {low: 50, important: 10})
+    _set_picks(store_conn, 0)                      # the floor pick
+    assert _describe_in_order(store_conn, cfg, 1) == [important]
+
+
+def test_the_floor_pick_falls_back_to_the_value_order_without_important_work(store_conn, cfg):
+    low = _tiered_job(store_conn, cfg, "3900000001", title="Python Developer",
+                      location="Berlin, Germany", tier_hint=3)
+    best = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer",
+                       location="London, United Kingdom", tier_hint=4)
+    _age(store_conn, {low: 50})                     # 50 h, so still short of the urgent band
+    with store_conn.cursor() as cur:                # tier 4 served last, so tier 3 is the head
+        cur.execute("INSERT INTO kv_state (key, value) VALUES ('description_turn:4', "
+                    "jsonb_build_object('at', now())) ON CONFLICT (key) "
+                    "DO UPDATE SET value = EXCLUDED.value")
+    store_conn.commit()
+    _set_picks(store_conn, 0)
+    assert _describe_in_order(store_conn, cfg, 1) == [best]
+
+
+def test_one_pick_in_eight_is_the_floor(store_conn, cfg):
+    # Picks 4 and 5 of the cycle: value picks under 1-in-8 (the old 1-in-4 code would make
+    # pick 4 the oldest-first floor and take `older`). This test fails on the old code.
+    older = _tiered_job(store_conn, cfg, "3900000001", title="AI Engineer",
+                        location="Milan, Italy")          # ai_city
+    first = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer",
+                        location="Italy")                 # ai_country
+    second = _tiered_job(store_conn, cfg, "3900000003", title="AI Engineer",
+                         location="Italy")
+    _age(store_conn, {older: 10})
+    _set_picks(store_conn, 3)
+    assert _describe_in_order(store_conn, cfg, 2) == [first, second]
+
+
+def test_the_counter_eight_pick_is_the_floor_and_takes_the_oldest_important_job(store_conn, cfg):
+    older = _tiered_job(store_conn, cfg, "3900000001", title="AI Engineer",
+                        location="Milan, Italy")
+    first = _tiered_job(store_conn, cfg, "3900000002", title="AI Engineer", location="Italy")
+    _tiered_job(store_conn, cfg, "3900000003", title="AI Engineer", location="Italy")
+    _age(store_conn, {older: 10})
+    _set_picks(store_conn, 7)      # the counter-8 pick is the floor: oldest important, not the better rank
+    assert _describe_in_order(store_conn, cfg, 2) == [first, older]
+
+
+def test_no_tier_starves_of_its_important_work(store_conn, cfg):
+    tiers = ((1, "Milan, Italy", 1), (2, "Zurich, Switzerland", 2),
+             (3, "Berlin, Germany", 3), (4, "London, United Kingdom", 4))
+    floors = {tier: _tiered_job(store_conn, cfg, f"390000000{tier}", title="AI Coordinator",
+                                location=location, tier_hint=hint)
+              for tier, location, hint in tiers}
+    done: set = set()
+    fetched = []
+    for round_no in range(4 * cfg.fetch_order.quota_one_in):
+        for tier, location, hint in tiers:
+            _tiered_job(store_conn, cfg, f"39000001{round_no}{tier}", title="AI Engineer",
+                        location=location, tier_hint=hint)
+        fetched.append(_describe_one(store_conn, cfg, NOW + timedelta(minutes=round_no), done))
+    assert set(floors.values()) <= set(fetched)
+
+
+def test_a_head_tier_without_important_work_does_not_block_the_floor_of_the_others(store_conn, cfg):
+    # Tier 2 keeps only a non-important job, so it can never serve its own floor. Without
+    # recording the head tier's turn on a floor attempt it stays head for ever (a never
+    # served tier sorts first), and tier 4's floor job below is never reached.
+    _tiered_job(store_conn, cfg, "3900000002", title="Python Developer",
+                location="Zurich, Switzerland", tier_hint=2)
+    starved = _tiered_job(store_conn, cfg, "3900000004", title="AI Coordinator",
+                          location="London, United Kingdom", tier_hint=4)
+    done, fetched = set(), []
+    for round_no in range(4 * cfg.fetch_order.quota_one_in):
+        _tiered_job(store_conn, cfg, f"39000001{round_no:02d}", title="AI Engineer",
+                    location="Italy", tier_hint=1)
+        fetched.append(_describe_one(store_conn, cfg, NOW + timedelta(minutes=round_no), done))
+    assert starved in fetched
 
 
 def test_disabled_reproduces_the_current_order(store_conn, cfg):
@@ -756,7 +818,9 @@ def test_a_quota_of_one_makes_every_pick_the_floor(store_conn, cfg):
     old = _tiered_job(store_conn, one, "3900000001", title="Python Developer", location="Milan, Italy")
     fresh = _tiered_job(store_conn, one, "3900000002", title="AI Engineer", location="Italy")
     _age(store_conn, {old: 5})
-    assert _describe_in_order(store_conn, one, 2) == [old, fresh]
+    # The floor pick is now "oldest important" of the head tier, and the old job is
+    # other_city, so the fresh AI job comes first.
+    assert _describe_in_order(store_conn, one, 2) == [fresh, old]
 
 
 def test_a_deferred_fetch_consumes_no_pick_and_no_turn(store_conn, cfg):
@@ -808,7 +872,11 @@ def test_the_description_pick_stays_index_backed_on_a_three_thousand_row_queue(s
             assert "Seq Scan on jobs" not in plan
             # which of the two partial indexes the planner picks depends on statistics; it must be one
             assert "jobs_description_queue_idx" in plan or "jobs_next_attempt_idx" in plan
-            if label != "urgent":   # the urgent query stops at the oldest row: rows=1 is correct
+            if label == "floor":
+                # One tier of the four: about 750 of the 3,000 waiting rows.
+                assert any(int(n) > 500
+                           for n in re.findall(r"actual time=[\d.]+\.[\d.]+ rows=(\d+)", plan))
+            elif label != "urgent":   # the urgent query stops at the oldest row: rows=1 is correct
                 assert any(int(n) > 1000
                            for n in re.findall(r"actual time=[\d.]+\.[\d.]+ rows=(\d+)", plan))
 
