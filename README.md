@@ -96,7 +96,7 @@ playwright install chromium
 cp .env.template .env
 ```
 
-Set `JOBSTORE_URL` (the server PostgreSQL store) plus `LLM_API_KEY`, `GROQ_API_KEY`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `DATABASE_URL` (Neon archive), and `OUTPUT_PATH`. Tailoring also needs `CV_MASTER_PATH`, `CV_CSS_PATH`, and `JD_OUTPUT_ROOT`; the CV source files are not in this repo. `deploy/RUNBOOK.md` covers provisioning and the systemd units.
+Set `JOBSTORE_URL` (the server PostgreSQL store) plus `LLM_API_KEY`, `GROQ_API_KEY`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `DATABASE_URL` (Neon archive), and `OUTPUT_PATH`. Tailoring also needs `CV_MASTER_PATH`, `CV_CSS_PATH`, `CL_MASTER_PATH`, and `JD_OUTPUT_ROOT`; the CV and cover-letter source files are not in this repo. `deploy/RUNBOOK.md` covers provisioning and the systemd units.
 
 ```bash
 python -m src.linkedin.collector --sync-slices   # create/refresh the slices, then exit

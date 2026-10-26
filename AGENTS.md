@@ -72,11 +72,11 @@ configuration. This file only holds the standing rules and a short map.
   `tailor.py` for the env vars actually read. `LLM_API_KEY` is generic and currently
   holds an OpenRouter key (scoring, remote verification, tailoring). `GROQ_API_KEY` is
   only the verification fallback; its absence is not loud, OpenRouter still verifies.
-- The CV source files (`CV_master.md`, `CV_css.md`) are personal content outside git;
-  never commit them. `tailor.py` reads `CV_MASTER_PATH`, `CV_CSS_PATH` and
-  `JD_OUTPUT_ROOT`, with a fallback that only resolves on the author's own machine, so
-  every other host must set all three and place the files, or `jds-deliver` raises
-  `FileNotFoundError` up front.
+- The CV and cover-letter source files (`CV_master.md`, `CV_css.md`, `CL_master.md`) are
+  personal content outside git; never commit them. `tailor.py` reads `CV_MASTER_PATH`,
+  `CV_CSS_PATH`, `CL_MASTER_PATH` and `JD_OUTPUT_ROOT`, with a fallback that only resolves
+  on the author's own machine, so every other host must set all four and place the files, or
+  `jds-deliver` raises `FileNotFoundError` up front.
 
 ## Deploying to the VPS
 
