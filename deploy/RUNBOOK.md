@@ -284,10 +284,17 @@ configured in `config/schedule.json`:
 | `refusals.first_wait_seconds` | `60` | the first refusal waits 60 s |
 | `refusals.max_wait_seconds` | `1800` | the doubling wait is capped at 30 min |
 | `adaptive.enabled` | `true` | the ladder's off switch; `false` returns to exactly 75 s |
-| `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25` | the five levels (1x to 3x), the same every day |
+| `adaptive.levels_seconds` | `75, 50, 37.5, 30, 25, 18.75, 15, 10.7` | the ladder: 1x, 1.5x, 2x, 2.5x, 3x, 4x, 5x, 7x (two to eight entries, strictly decreasing; the code bound is `MAX_LADDER_LEVELS` = 8) |
+| `adaptive.max_level` | `8` | the ceiling: the ladder never climbs past this level. Lower it to `6` for 4x or `5` for 3x, with no code change; a stored level above the new ceiling is clamped on the next request |
 | `adaptive.protect_window_requests` / `protect_min_requests` | `20` / `10` | the trailing window and the minimum sample for the share tiers |
 | `adaptive.protect_drop_rate` / `protect_drop_two_rate` / `protect_drop_streak` | `0.30` / `0.50` / `4` | one level at 30 % refused, two at 50 % or four in a row |
-| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
+| `adaptive.climb_min_requests` / `climb_max_upper_refusal_rate` | `200` / `0.12` | the slow climb gate at and below 3x: the Wilson upper bound, on a clean answer, with a refused window share under `protect_drop_rate` and no refusal in the last `protect_drop_streak` requests |
+| `adaptive.climb_min_requests_above_3x` | `600` | a climb into or within the levels above 3x needs this many requests at the current level (about 4 h at 3x), on top of every other gate |
+| `adaptive.above_3x_climbs_per_day` | `1` | at most one climb above 3x per Rome day, so 7x takes at least three clean days |
+| `adaptive.rolling_24h_ceiling_requests` | `5000` | a rolling 24 h request ceiling, counted in hourly buckets inside the adaptive state; when it is reached the ladder may not climb above 3x and a level above 3x drops to 3x until the window falls back under it |
+| `adaptive.demand_hold_above_3x_waiting` | `250` | a level above 3x is dropped straight to 3x when fewer jobs than this are waiting for a description |
+| `adaptive.llm_above_4x_stop_share` | `0.75` | no climb above 4x once 75 % of the ladder's OpenRouter stop line is spent (600 of 800 by default), so the day can still finish scoring |
+| `adaptive.above_3x_hold_hours` | `24` | a protect drop or a brake from a level above 3x blocks any above-3x climb for this long |
 | `adaptive.climb_max_gap_seconds` | `3600` | a gap longer than this is capped when measuring successes per hour |
 | `adaptive.memory_first_hours` / `memory_max_hours` | `2` / `24` | a level that caused a drop waits 2, 4, 8, ... up to 24 h |
 | `adaptive.clean_day_min_requests` | `100` | a clean day with at least this many requests halves the memory |
@@ -412,8 +419,9 @@ that trades high-value latency against that tail (1 = pure FIFO, 4 = shipped); m
 capacity is a pace decision outside this change.
 
 A flat 75 s over 24 h is about 1,152 requests; with the +/-20 % jitter the mean stays at 75 s.
-Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's 3x
-level (25 s) is a ceiling of about 3,456 requests, not a promise: descriptions run last in a
+Nothing stops the evening: the only limit on volume is the spacing itself. The ladder's ceiling
+is the configured top level (7x as shipped, about 8,100 requests at 10.7 s), and the rolling
+24 h ceiling is 5,000 requests; neither is a promise, because descriptions run last in a
 processor tick and are bounded by `description_seconds_per_tick`.
 
 The resume timers `jds-resume-freehire.timer` and `jds-resume-himalayas.timer` run
@@ -522,6 +530,21 @@ If the extra night requests are the problem, also restore the closed window in t
 No database change and no code change is needed: the pace and the closed window are read from
 config at service start.
 
+**Lowering the ladder ceiling without a rollback.** Edit `adaptive.max_level` and nothing else:
+`6` is 4x, `5` is 3x. Restart the three LinkedIn units; a stored level above the new ceiling is
+clamped on the next request, and no code change is involved.
+
+**Rolling the code back.** Revert `config/schedule.json` in the same step as the code. The
+previous release's validator rejects `max_level` and the other new `adaptive` keys, so every
+LinkedIn service would refuse to start with the new config on disk. `config/processor.json`
+needs no such care: `load_processor_config` reads with `data.get`, so the new `age_out` and
+`value_rank` keys are harmless to an older checkout.
+
+**First deploy of the longer ladder.** Ship `adaptive.max_level: 5` and raise it to `6` after a
+clean day and to `8` after another. A live level-5 stint can already carry its 600 requests
+when the service restarts, so with the ceiling at 8 the first clean request after the deploy
+may climb straight to 4x; the staged ceiling makes the ramp visible instead.
+
 The title prefilter (`config/processor.json`, on for all four tiers) drops a title that matches
 its tier's `scoring.exclude_keywords`. That list is the four strict role words (Principal, Staff,
 VP, Director) plus `10+ years`, `8+ years`, `7+ years`, `C++`, `Rust`, `Java` and `on-site only`;
@@ -567,8 +590,8 @@ request path reads the `jobs` waiting count and the `llm_budget` row at most onc
 produce four dropped-connection events because a description request retries (5/15/45 s); three
 within ten minutes brake the pace. The climb gate admits at most 14 refusals in 200 (7.0
 percent), just under the 2026-10-19 rate (7.7 percent), so the ladder rarely climbs on a typical
-6 to 8 percent day. The 3x level is a ceiling, not a promise: descriptions run last in a
-processor tick and are bounded by `description_seconds_per_tick`.
+6 to 8 percent day. The configured top level is a ceiling, not a promise: descriptions run
+last in a processor tick and are bounded by `description_seconds_per_tick`.
 
 ### Deploying per-source request tracking
 

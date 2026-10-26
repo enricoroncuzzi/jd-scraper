@@ -242,13 +242,20 @@ def test_a_missing_closed_hours_key_is_rejected(tmp_path):
 
 ADAPTIVE = {
     "enabled": False,
-    "levels_seconds": [75, 50, 37.5, 30, 25],
+    "levels_seconds": [75, 50, 37.5, 30, 25, 18.75, 15, 10.7],
+    "max_level": 8,
     "protect_window_requests": 20,
     "protect_min_requests": 10,
     "protect_drop_rate": 0.30,
     "protect_drop_two_rate": 0.50,
     "protect_drop_streak": 4,
     "climb_min_requests": 200,
+    "climb_min_requests_above_3x": 600,
+    "above_3x_climbs_per_day": 1,
+    "rolling_24h_ceiling_requests": 5000,
+    "demand_hold_above_3x_waiting": 250,
+    "llm_above_4x_stop_share": 0.75,
+    "above_3x_hold_hours": 24,
     "climb_max_upper_refusal_rate": 0.12,
     "climb_max_gap_seconds": 3600,
     "memory_first_hours": 2,
@@ -272,7 +279,11 @@ def test_the_adaptive_block_ships_on_with_the_approved_defaults():
     cfg = load_schedule_config()
     a = cfg.adaptive
     assert shipped["enabled"] is True and a.enabled is True
-    assert a.levels_seconds == (75, 50, 37.5, 30, 25)
+    assert a.levels_seconds == (75, 50, 37.5, 30, 25, 18.75, 15, 10.7)
+    assert (a.max_level, a.climb_min_requests_above_3x) == (8, 600)
+    assert (a.above_3x_climbs_per_day, a.rolling_24h_ceiling_requests) == (1, 5000)
+    assert (a.demand_hold_above_3x_waiting, a.llm_above_4x_stop_share) == (250, 0.75)
+    assert a.above_3x_hold_hours == 24
     assert (a.protect_window_requests, a.protect_min_requests) == (20, 10)
     assert (a.protect_drop_rate, a.protect_drop_two_rate, a.protect_drop_streak) == (0.30, 0.50, 4)
     assert (a.climb_min_requests, a.climb_max_upper_refusal_rate) == (200, 0.12)
@@ -285,6 +296,22 @@ def test_the_adaptive_block_ships_on_with_the_approved_defaults():
     for key, value in shipped.items():
         expected = tuple(value) if key == "levels_seconds" else value
         assert expected == getattr(a, key), key
+
+
+def test_the_ladder_length_comes_from_config(tmp_path):
+    six = load_schedule_config(_write(tmp_path, {**DEFAULTS, "adaptive": {
+        **ADAPTIVE, "levels_seconds": [75, 50, 37.5, 30, 25, 18.75], "max_level": 6}}))
+    assert len(six.adaptive.levels_seconds) == 6 and six.adaptive.max_level == 6
+    five = load_schedule_config(_write(tmp_path, {**DEFAULTS, "adaptive": {
+        **ADAPTIVE, "levels_seconds": [75, 50, 37.5, 30, 25], "max_level": 5}}))
+    assert len(five.adaptive.levels_seconds) == 5 and five.adaptive.max_level == 5
+
+
+def test_a_ceiling_above_the_ladder_or_at_the_first_level_is_rejected(tmp_path):
+    for value in (9, 0):
+        with pytest.raises(ValueError, match="max_level"):
+            load_schedule_config(_write(tmp_path, {**DEFAULTS, "adaptive": {
+                **ADAPTIVE, "max_level": value}}))
 
 
 def test_the_emergency_base_change_loads_while_the_ladder_is_off(tmp_path):
@@ -300,7 +327,18 @@ def test_enabling_the_ladder_requires_the_first_level_to_match_the_base(tmp_path
 
 
 @pytest.mark.parametrize("override", [
+    # Four levels are legal now; this keeps raising only because the inherited
+    # max_level 8 exceeds the ladder, which is the ceiling rule.
     {"levels_seconds": [75, 50, 37.5, 30]},
+    {"levels_seconds": [75]},
+    {"levels_seconds": [75, 60, 50, 40, 30, 25, 20, 15, 10]},
+    {"max_level": 9},
+    {"climb_min_requests_above_3x": 0},
+    {"above_3x_climbs_per_day": 0},
+    {"rolling_24h_ceiling_requests": 0},
+    {"demand_hold_above_3x_waiting": 1001},
+    {"llm_above_4x_stop_share": 0},
+    {"above_3x_hold_hours": 0},
     {"levels_seconds": [75, 80, 37.5, 30, 25]},
     {"protect_min_requests": 0},
     {"protect_min_requests": 21},
@@ -311,7 +349,7 @@ def test_enabling_the_ladder_requires_the_first_level_to_match_the_base(tmp_path
     {"llm_climb_stop_share": 1.1},
     {"memory_max_hours": 1},
     {"demand_ease_waiting": 1001},
-    {"emergency_spacing_seconds": 25},
+    {"emergency_spacing_seconds": 10.7},   # must exceed the last level, now 10.7
     {"emergency_connection_errors": 0},
     {"pause_after_block_seconds": 30},
     {"protect_drop_rte": 0.4},
