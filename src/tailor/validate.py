@@ -25,6 +25,13 @@ _CONCRETE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The letter is written by Enrico as "I", so his own name breaks the voice. The
+# hook and bridge never use he, his or him for anyone (the prompt forbids it and
+# asks for other people by role or name), so any of them is flagged without
+# resolving who it refers to. Other third person ("the team ... their") is fine
+# and deliberately not matched here.
+_OWNER_REF_RE = re.compile(r"\b(?:Enrico|Roncuzzi|he|his|him)\b", re.IGNORECASE)
+
 
 def _cv_bullets(md: str) -> list[str]:
     m = re.search(r"## Experience\n(.*?)(?=\n## |\Z)", md, re.DOTALL)
@@ -46,6 +53,10 @@ def _section_order(md: str) -> list[str]:
         if re.match(r"^\*\*.+\*\*$", s) and not line.startswith(" "):
             names.append(s.strip("*").strip())
     return names
+
+
+def _sentences(text: str) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
 
 
 def validate_cv(assembled_md: str, canonical: CanonicalCV) -> list[str]:
@@ -87,10 +98,33 @@ def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
     if hook.strip().lower().startswith(company.strip().lower()):
         violations.append(
             "hook opens with the company describing itself (mail-merge tell); "
-            "open with Enrico first instead"
+            "open with your own interest or capability first instead"
+        )
+    for sentence in check_voice(combined, company):
+        violations.append(
+            f"third person (Enrico, or he/his/him) in the hook or bridge: {sentence!r}"
         )
     return violations
 
 
 def hook_claims(hook: str) -> list[str]:
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", hook.strip()) if s.strip()]
+    return _sentences(hook)
+
+
+def check_voice(text: str, company: str = "") -> list[str]:
+    """Sentences that refer to the letter's author in the third person.
+
+    The hook and the bridge are written by the owner in his own voice, so a
+    sentence naming him ("Enrico", "Roncuzzi") or using he/his/him at all is a
+    violation. Other third person about the company or other people ("they",
+    "their", a role or a name) is allowed. The company's own name is not
+    matched, so a company called "HE Space" does not read as a pronoun.
+    """
+    name = (
+        re.compile(rf"(?<!\w){re.escape(company.strip())}(?!\w)", re.IGNORECASE)
+        if company.strip() else None
+    )
+    return [
+        s for s in _sentences(text)
+        if _OWNER_REF_RE.search(name.sub(" ", s) if name else s)
+    ]
