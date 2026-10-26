@@ -15,8 +15,8 @@ from src.jobstore.db import connect, store_url, utcnow
 from src.jobstore.source_requests import daily_requests
 from src.llm_fallback import format_usage_lines, load_guard_config, stage_usages
 from src.linkedin.adaptive import (
-    climb_blockers, current_level, effective_spacing, normalize_state, parse_iso,
-    paused_day, signals_from_state,
+    above_3x_status, climb_blockers, current_level, effective_spacing, level_text,
+    normalize_state, parse_iso, paused_day, signals_from_state,
 )
 from src.linkedin.pace import Gate, PaceState, evaluate_gate
 from src.linkedin.schedule import (
@@ -44,16 +44,17 @@ def _gate_line(gate: Gate, schedule: ScheduleConfig, state: dict | None = None) 
     return f"LinkedIn gate: {count}, window open"
 
 
-def _pace_mode(controller: dict, schedule: ScheduleConfig) -> str:
+def _pace_mode(controller: dict, schedule: ScheduleConfig, now: datetime) -> str:
     policy = schedule.adaptive
     spacing = effective_spacing(policy, controller, base=start_spacing_seconds(schedule))
     if not policy.enabled:
         return f"adaptive off, fixed {spacing:g}s"
     level = current_level(controller)
     if isinstance(controller, dict) and controller.get("brake"):
-        return f"adaptive emergency {spacing:g}s (level {level}/5)"
-    ratio = policy.levels_seconds[0] / spacing if spacing else 1.0
-    return f"adaptive level {level}/5 ({spacing:g}s, {round(ratio, 1):g}x)"
+        return (f"adaptive emergency {spacing:g}s "
+                f"(level {level}/{len(policy.levels_seconds)})")
+    return (f"adaptive level {level_text(policy, level)}, ceiling {policy.max_level}, "
+            f"above 3x: {above_3x_status(policy, controller, now, schedule.zone)}")
 
 
 def _last_move_text(controller: dict, schedule: ScheduleConfig) -> str:
@@ -72,7 +73,7 @@ def _last_move_text(controller: dict, schedule: ScheduleConfig) -> str:
         return f"pause at {stamp} Rome ({reason})"
     if kind == "brake cleared":
         return f"brake cleared at {stamp} Rome"
-    if kind in ("drop", "climb", "demand"):
+    if kind in ("drop", "climb", "demand", "ceiling"):
         return (f"{kind} {move.get('from')} -> {move.get('to')} at {stamp} Rome "
                 f"({reason})")
     return f"{kind} at {stamp} Rome"
@@ -85,7 +86,7 @@ def _next_climb_text(controller: dict, schedule: ScheduleConfig, now: datetime) 
     if paused_day(controller) is not None:
         return "paused"
     level = current_level(controller)
-    if level >= 5:
+    if level >= policy.max_level:
         return "top level"
     blockers = climb_blockers(policy, controller, now, signals_from_state(controller),
                               zone=schedule.zone)
@@ -141,7 +142,7 @@ def render(conn, now: datetime, schedule: ScheduleConfig | None = None) -> str:
             success = (f", last success {rome(last_clean_at, schedule)}" if last_clean_at else "")
             waiting = (f", waiting until {rome(wait_until, schedule, '%H:%M:%S')}"
                        if wait_until and wait_until > now else "")
-            parts = [f"LinkedIn pace: {_pace_mode(controller, schedule)}, "
+            parts = [f"LinkedIn pace: {_pace_mode(controller, schedule, now)}, "
                      f"{trailing_refused}/{window} refused in trailing {window}, "
                      f"{refusals}/{today} refused today, {state.refusal_streak} refusals in a row"]
             if state.last_kind:

@@ -86,10 +86,12 @@ def linkedin_lines(conn, now: datetime, *, schedule: ScheduleConfig | None = Non
         spacing_line = f"Adaptive off; fixed spacing: {spacing:g}s"
     elif controller.get("brake"):
         spacing_line = (f"Fixed spacing: {spacing:g}s (emergency brake, "
-                        f"level {current_level(controller)} of 5)")
+                        f"level {current_level(controller)} of "
+                        f"{len(schedule.adaptive.levels_seconds)})")
     else:
         spacing_line = (f"Fixed spacing: {spacing:g}s (adaptive level "
-                        f"{current_level(controller)} of 5)")
+                        f"{current_level(controller)} of "
+                        f"{len(schedule.adaptive.levels_seconds)})")
     pct = 100.0 * refused / requests if requests else 0.0
     refusal_wait = (f"Longest refusal wait: {age_text(timedelta(seconds=longest))}"
                     if longest is not None else "Longest refusal wait: none")

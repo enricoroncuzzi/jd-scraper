@@ -44,8 +44,10 @@ from datetime import date, datetime, timedelta, timezone
 
 from src.jobstore.db import connect, store_url
 from src.linkedin.adaptive import (
+    above_3x_status,
     current_level,
     effective_spacing,
+    level_text,
     maybe_refresh_signals,
     normalize_state,
     paused_day,
@@ -382,6 +384,14 @@ class PaceBudget:
             payload = json.dumps(state.controller)
             state.controller = json.loads(payload)
             base = effective_spacing(policy, state.controller, base=base)
+            move = state.controller.get("last_move")
+            if (policy.enabled and level is not None and isinstance(move, dict)
+                    and move != (previous or {}).get("last_move")):
+                guard = above_3x_status(policy, state.controller, now, self.schedule.zone)
+                print(f"[pace] ladder {move.get('kind')} {move.get('from')} -> "
+                      f"{move.get('to')}: level {level_text(policy, move.get('to'))}, "
+                      f"ceiling {policy.max_level}, above 3x: {guard} "
+                      f"({move.get('reason', '')})")
         except Exception as exc:  # noqa: BLE001 - never unpace LinkedIn on a controller fault
             print(f"[pace] adaptive controller failed: {type(exc).__name__}: {exc}")
             state.controller = previous

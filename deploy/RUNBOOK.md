@@ -501,7 +501,7 @@ row and the last success, and adds any wait in Rome time:
 
 ```
 LinkedIn pace: adaptive off, fixed 75s, 0/20 refused in trailing 20, 0/342 refused today, 0 refusals in a row, last request: search, last success 2026-10-14 12:00 Rome, last move: disabled
-LinkedIn pace: adaptive level 2/5 (50s, 1.5x), 3/20 refused in trailing 20, 7/342 refused today, 1 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, last move: climb 1 -> 2 at 09:34 Rome (cautious upper 11.4%, 43/h vs 14/h), next climb: 41/200 requests at this level
+LinkedIn pace: adaptive level 2/8 (50s, 1.5x), ceiling 8, above 3x: n/a, 3/20 refused in trailing 20, 7/342 refused today, 1 refusals in a row, last request: description, last success 2026-10-14 11:40 Rome, last move: climb 1 -> 2 at 09:34 Rome (cautious upper 11.4%, 43/h vs 14/h), next climb: 41/200 requests at this level
 ```
 
 `last request` names the kind of the last request: `search`, `description` or `packaging`.
@@ -614,7 +614,7 @@ that first.
    the pace line. Then restart `jds-collect-linkedin` and `jds-deliver` back to back. The schema
    is already current, so their `init_store` runs no DDL.
 4. The ladder ships on: `adaptive.enabled` is true, so the pace line must read `LinkedIn pace:
-   adaptive level 1/5 (75s, 1x)`. The old live row may still carry `weekday_spacing_seconds`,
+   adaptive level 1/8 (75s, 1x), ceiling 8`. The old live row may still carry `weekday_spacing_seconds`,
    `weekend_spacing_seconds` and `nudge`; they are ignored.
 5. Enabling the ladder requires `adaptive.levels_seconds[0]` to match
    `pace.start_spacing_seconds` (75 as shipped); change the two together or not at all.
