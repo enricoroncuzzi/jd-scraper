@@ -179,7 +179,7 @@ def build_service() -> DeliverService:
     if any(p.autoapply_enabled for p in cfg.policies.values()):
         import tailor as tailor_cli
         packaging = PackagingConfig(tailor_cli._DEFAULT_MASTER, tailor_cli._DEFAULT_CSS,
-                                    os.environ["LLM_API_KEY"])
+                                    tailor_cli._DEFAULT_CL_MASTER, os.environ["LLM_API_KEY"])
         tailor_run = tailor_cli.run
     neon_url = settings.neon_url
     return DeliverService(cfg, settings, packaging, pace, tailor_run,

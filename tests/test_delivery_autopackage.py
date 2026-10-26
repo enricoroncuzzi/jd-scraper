@@ -17,6 +17,7 @@ from src.delivery.settings import DeliverySettings
 from src.linkedin.pace import Gate, PaceGateClosed
 from src.processor.config import load_processor_config
 from tests.delivery_helpers import NOW, scored_job
+from tests.tailor_helpers import write_cl_master
 from tests.linkedin_fakes import BusyPace, FakePace
 
 DAY = date(2026, 10, 14)
@@ -34,16 +35,17 @@ def env(tmp_path):
     css.write_text("css")
     settings = DeliverySettings(output_path=str(tmp_path / "out"), delivery_time=time(8, 0),
                                 timezone=ZoneInfo("Europe/Rome"), telegram_token="t", telegram_chat_id="c")
-    return settings, PackagingConfig(str(master), str(css), "llm-key")
+    return settings, PackagingConfig(str(master), str(css), write_cl_master(tmp_path), "llm-key")
 
 
 class Tailor:
     def __init__(self, tmp_path, fail=None):
-        self.calls, self.days, self.fail, self.tmp_path = [], [], fail or {}, tmp_path
+        self.calls, self.days, self.cl_masters, self.fail, self.tmp_path = [], [], [], fail or {}, tmp_path
 
-    def __call__(self, note, root, master, css, key, package_day=None):
+    def __call__(self, note, root, master, css, key, package_day=None, cl_master_path=None):
         self.calls.append(note)
         self.days.append(package_day)
+        self.cl_masters.append(cl_master_path)
         if note in self.fail:
             raise self.fail[note]
         directory = self.tmp_path / f"pkg{len(self.calls)}"
@@ -269,3 +271,28 @@ def test_build_service_gives_the_shared_pace_the_deliver_name_and_schedule(monke
     assert captured["service"] == "deliver"
     assert captured["schedule"].timezone == "Europe/Rome"
     assert captured["give_up_after"] == cfg.description_seconds_per_tick
+
+
+def test_packaging_refuses_to_start_without_a_letter_master(env):
+    from src.delivery.autopackage import check_cv_sources
+    _settings, pkg = env
+    with pytest.raises(FileNotFoundError, match="CL_MASTER_PATH"):
+        check_cv_sources(replace(pkg, cl_master_path="/nonexistent/CL_master.md"))
+
+
+def test_packaging_refuses_to_start_on_an_invalid_letter_master(env, tmp_path):
+    from src.delivery.autopackage import check_cv_sources
+    _settings, pkg = env
+    bad = tmp_path / "CL_master.md"
+    bad.write_text("## Letterhead\n- name: Alex Doe\n")
+    with pytest.raises(ValueError, match="missing section '## Letter'"):
+        check_cv_sources(replace(pkg, cl_master_path=str(bad)))
+
+
+def test_packaging_passes_the_letter_master_path_to_the_tailor(store_conn, env, cfg, tmp_path):
+    settings, pkg = env
+    tailor = Tailor(tmp_path)
+    _delivered(store_conn, 1)
+    run_packaging(store_conn, cfg, settings, pkg, FakePace(), now=NOW, tailor_run=tailor,
+                  classify=lambda link: "unknown")
+    assert tailor.cl_masters == [pkg.cl_master_path]
