@@ -260,23 +260,30 @@ def parse_cl_master(text: str) -> CoverLetterMaster:
 def validate_cl_master(master: CoverLetterMaster) -> list[str]:
     """The content rules on the hand-written text: the dash rule and the banned phrases the
     model's text passes, plus any checker a later change adds (the voice fix). Each violation
-    names its line."""
+    names its line.
+
+    The letterhead is held to the dash and banned-phrase rules only. The voice check is for
+    the prose the model writes and the letter speaks: the owner's own name and signature are
+    third person by nature, so running it there would reject the real master."""
     violations: list[str] = []
 
-    def check(text: str, line: int) -> None:
+    def check(text: str, line: int, voice: bool = True) -> None:
         if has_dash(text):
             violations.append(_err(line, "dash used (write with commas/periods)"))
         low = text.lower()
         for phrase in BANNED_PHRASES:
             if phrase in low:
                 violations.append(_err(line, f"banned phrase: {phrase!r}"))
+        if not voice:
+            return
         for checker in _additional_text_checks():
             for reason in checker(text):
                 violations.append(_err(line, reason))
 
     for key in LETTERHEAD_KEYS:
         value = getattr(master.letterhead, key)
-        check(" | ".join(value) if key == "contact" else value, master.letterhead_lines[key])
+        check(" | ".join(value) if key == "contact" else value,
+              master.letterhead_lines[key], voice=False)
     for part in master.parts:
         if part.kind == "fixed":
             check(part.text, part.line)

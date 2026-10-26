@@ -183,3 +183,27 @@ def test_load_letter_sources_takes_the_cl_pool_when_the_cv_has_none(tmp_path):
     assert canonical.bullet_text("lp.example.0") == master.proof_pool["lp.example.0"]
     assert "lp.example.0" in canonical.eligible_proof_ids()
     assert deprecated is False
+
+
+def test_a_letterhead_naming_the_owner_still_loads(tmp_path):
+    # The real master's letterhead names the owner. The voice check (validate.check_voice) is
+    # for the prose the model writes, so a name and a signature must not be rejected: the file
+    # the owner actually places would otherwise refuse to load.
+    from src.tailor.cl_master import load_cl_master
+    master = load_cl_master(write_cl_master(
+        tmp_path, EXAMPLE_CL_MASTER.replace("Alex Doe", "Enrico Roncuzzi")))
+    assert master.letterhead.name == "Enrico Roncuzzi"
+    assert master.letterhead.signature == "Enrico Roncuzzi"
+
+
+def test_the_voice_check_still_rejects_third_person_prose(tmp_path):
+    from src.tailor.cl_master import load_cl_master
+    with pytest.raises(ValueError, match=r"line \d+: He says"):
+        load_cl_master(write_cl_master(
+            tmp_path, EXAMPLE_CL_MASTER.replace(
+                "I am based in Italy.", "He says I am based in Italy.")))
+    with pytest.raises(ValueError, match=r"line \d+: .*built it for his team"):
+        load_cl_master(write_cl_master(
+            tmp_path, EXAMPLE_CL_MASTER.replace(
+                "schema validated model context protocol",
+                "schema validated model context protocol, built it for his team")))
