@@ -56,3 +56,18 @@ def test_handle_uri_failure_notifies_error(tmp_path, monkeypatch):
         )
     assert calls and calls[0][0] == "Tailoring halted"
     assert "generation returned no result" in calls[0][1]
+
+
+def test_handle_uri_passes_the_letter_master_as_a_keyword(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(tailor_cli, "run",
+                        lambda *a, **k: calls.append((a, k)) or str(tmp_path / "out"))
+    monkeypatch.setattr(tailor_cli, "notify", lambda title, msg: None)
+    monkeypatch.setattr(tailor_cli, "reveal", lambda p: None)
+
+    tailor_cli.handle_uri("tailor:2026-07-02/tier1/scraped/acme_1.md", str(tmp_path),
+                          "master.md", "css.md", "key", "/x/CL_master.md")
+
+    args, kwargs = calls[0]
+    assert len(args) == 5               # a 6th positional would be package_day
+    assert kwargs["cl_master_path"] == "/x/CL_master.md"

@@ -100,10 +100,11 @@ def test_prompt_asks_for_a_first_person_hook_and_bridge(tmp_path):
 _WORK_ARRANGEMENT_WORDS = ("remote", "hybrid", "on-site", "onsite", "in-office")
 
 
-def test_the_fixed_close_states_location_without_a_work_arrangement_claim():
-    from src.tailor.render_pdf import compose_cover_letter
+def test_the_master_close_states_location_without_a_work_arrangement_claim():
+    from src.tailor.cl_master import parse_cl_master
+    from tests.tailor_helpers import EXAMPLE_CL_MASTER
 
-    body = compose_cover_letter(
+    body = parse_cl_master(EXAMPLE_CL_MASTER).compose(
         company="Acme",
         hook="I follow how Acme builds travel tools.",
         bridge="At Hey Movo I built a coordinator agent using the Model Context Protocol.",
