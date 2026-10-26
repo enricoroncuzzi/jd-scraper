@@ -1,3 +1,5 @@
+import pytest
+
 from src.tailor.cv_master import load_canonical
 from src.tailor.validate import (
     validate_cv, validate_cover_letter, hook_claims, check_voice, REQUIRED_METRICS,
@@ -186,6 +188,18 @@ def test_validate_cover_letter_ignores_a_company_named_like_a_pronoun():
         "HE Space",
     )
     assert any("third person" in x.lower() for x in v)
+
+
+@pytest.mark.parametrize(
+    "company, hook",
+    [
+        ("Co", "Enrico builds agent systems for Co."),
+        ("Rico", "Enrico builds agent systems for Rico."),
+        ("IS", "I want to bring his agent work to IS."),
+    ],
+)
+def test_company_mask_never_hides_a_third_person_token(company, hook):
+    assert check_voice(hook, company) == [hook]
 
 
 def test_check_voice_is_case_insensitive():

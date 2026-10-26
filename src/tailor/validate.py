@@ -120,7 +120,10 @@ def check_voice(text: str, company: str = "") -> list[str]:
     "their", a role or a name) is allowed. The company's own name is not
     matched, so a company called "HE Space" does not read as a pronoun.
     """
-    name = re.compile(re.escape(company.strip()), re.IGNORECASE) if company.strip() else None
+    name = (
+        re.compile(rf"(?<!\w){re.escape(company.strip())}(?!\w)", re.IGNORECASE)
+        if company.strip() else None
+    )
     return [
         s for s in _sentences(text)
         if _OWNER_REF_RE.search(name.sub(" ", s) if name else s)
