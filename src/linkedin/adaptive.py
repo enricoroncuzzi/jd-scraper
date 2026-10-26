@@ -5,32 +5,51 @@ The state is a JSON-native dict persisted by `src/linkedin/pace.py` in
 their one advisory lock. This module never touches the network, the clock or the
 database; `review` is a pure function of its arguments.
 
-The ladder has five levels, the same on every day. After every request it protects
-itself on the trailing window (30 percent or more refused drops one level; 50 percent
-or four in a row drops two), climbs only on a clean answer after 200 requests at the
-level with a cautious upper refusal estimate under 12 percent, a refused share in the
-recent window below the protect drop rate and no refusal in the last few requests,
-remembers a level that caused a drop, eases back when the description
-backlog is small, and brakes to 150 s when a real block signal arrives. `review`
-returns JSON-native values only: datetimes are ISO-8601 strings and every read goes
-through `parse_iso`.
+The ladder's length comes from config (`levels_seconds`, eight as shipped: 75, 50, 37.5,
+30, 25, 18.75, 15 and 10.7 s, i.e. 1x to 7x) and so does its ceiling (`max_level`). After
+every request it protects itself on the trailing window (30 percent or more refused drops
+one level; 50 percent or four in a row drops two), climbs only on a clean answer after 200
+requests at the level with a cautious upper refusal estimate under 12 percent, a refused
+share in the recent window below the protect drop rate and no refusal in the last few
+requests, remembers a level that caused a drop, eases back when the description backlog is
+small, and brakes to 150 s when a real block signal arrives.
+
+Above 3x (`is_above_speed(policy, level, 3.0)`) the same protections apply plus five
+guards, all deterministic and all config values: a climb into or within the above-3x
+levels needs `climb_min_requests_above_3x` (600) requests at the current level, at most
+`above_3x_climbs_per_day` (one) such climb happens per Rome day, a rolling 24 h request
+count of `rolling_24h_ceiling_requests` (5,000) blocks above-3x climbs and drops the ladder
+back to 3x, a level above 3x is dropped the moment fewer than
+`demand_hold_above_3x_waiting` (250) descriptions wait, and no climb targets a level above
+4x once `llm_above_4x_stop_share` (75 percent) of the ladder's OpenRouter stop line is
+spent. A protect drop that starts above 3x never lands above 3x, and any protect drop or
+brake from above 3x blocks above-3x climbing for `above_3x_hold_hours` (24). The protect
+drop runs before the two holds, so a refusal cluster is always recorded even when the
+queue or the ceiling crosses at the same request.
+
+`review` returns JSON-native values only: datetimes are ISO-8601 strings and every read
+goes through `parse_iso`.
 """
 import copy
 import math
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from src.jobstore import budget as budget_module
 from src.llm_limits import limit_for
-from src.linkedin.schedule import AdaptivePolicy
+from src.linkedin.schedule import MAX_LADDER_LEVELS, AdaptivePolicy
 
 STATE_VERSION = 1
-LEVEL_COUNT = 5
+# The bound the state can hold. The ladder's own length is len(policy.levels_seconds) and
+# its ceiling is policy.max_level; both are validated against this constant at load time.
+MAX_LEVELS = MAX_LADDER_LEVELS
 OUTCOMES = ("clean", "refused", "neutral")
 BLOCK_KINDS = ("http_403", "http_999", "captcha", "max_refusal_wait")
-MOVE_KINDS = ("drop", "climb", "brake", "pause", "brake cleared", "demand", "resumed",
-              "enabled")
+MOVE_KINDS = ("drop", "climb", "brake", "pause", "brake cleared", "demand", "ceiling",
+              "resumed", "enabled")
+WINDOW_SECONDS = 24 * 3600
+WINDOW_BUCKET_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -102,12 +121,16 @@ def _blank_stint(cooldown_hours: float) -> dict:
 
 def blank_state(policy: AdaptivePolicy | None = None) -> dict:
     first = policy.memory_first_hours if policy is not None else 2
+    count = len(policy.levels_seconds) if policy is not None else MAX_LEVELS
     return {
         "version": STATE_VERSION,
         "active": False,
         "level": 1,
         "trailing": [],
-        "levels": {str(level): _blank_stint(first) for level in range(1, LEVEL_COUNT + 1)},
+        "window": [],
+        "day_above_3x_climbs": 0,
+        "above_3x_hold_until": None,
+        "levels": {str(level): _blank_stint(first) for level in range(1, count + 1)},
         "day": None,
         "day_requests": 0,
         "day_refusals": 0,
@@ -152,10 +175,14 @@ def normalize_state(loaded, policy: AdaptivePolicy) -> dict:
         state[key] = copy.deepcopy(value)
     state["version"] = STATE_VERSION
     state["active"] = bool(loaded.get("active", False))
-    state["level"] = max(1, min(LEVEL_COUNT, _int(loaded.get("level"), 1, 1)))
+    ceiling = min(policy.max_level, len(policy.levels_seconds), MAX_LEVELS)
+    state["level"] = max(1, min(ceiling, _int(loaded.get("level"), 1, 1)))
+    state["window"] = _normalize_window(loaded.get("window"))
+    state["day_above_3x_climbs"] = _int(loaded.get("day_above_3x_climbs"))
+    state["above_3x_hold_until"] = _iso(loaded.get("above_3x_hold_until"))
     levels = loaded.get("levels")
     if isinstance(levels, dict):
-        for level in range(1, LEVEL_COUNT + 1):
+        for level in range(1, len(state["levels"]) + 1):
             state["levels"][str(level)] = _normalize_stint(
                 levels.get(str(level)), policy.memory_first_hours)
     trailing = loaded.get("trailing")
@@ -184,7 +211,35 @@ def normalize_state(loaded, policy: AdaptivePolicy) -> dict:
 def current_level(state) -> int:
     if not isinstance(state, dict):
         return 1
-    return max(1, min(LEVEL_COUNT, _int(state.get("level"), 1, 1)))
+    return max(1, min(MAX_LEVELS, _int(state.get("level"), 1, 1)))
+
+
+def speed_multiple(policy: AdaptivePolicy, level: int) -> float:
+    """How much faster `level` is than the base spacing (level 1 is 1x)."""
+    level = max(1, min(len(policy.levels_seconds), int(level)))
+    return policy.levels_seconds[0] / policy.levels_seconds[level - 1]
+
+
+def is_above_speed(policy: AdaptivePolicy, level: int, speed: float) -> bool:
+    """True when `level` is faster than `speed` times the base spacing (above 3x for 3.0)."""
+    return speed_multiple(policy, level) > speed
+
+
+def hold_level(policy: AdaptivePolicy, speed: float = 3.0) -> int:
+    """The highest level that is not faster than `speed` times the base: the 3x level as
+    shipped, and where every above-3x hold and drop lands."""
+    best = 1
+    for level in range(1, min(policy.max_level, len(policy.levels_seconds)) + 1):
+        if speed_multiple(policy, level) <= speed:
+            best = level
+    return best
+
+
+def level_text(policy: AdaptivePolicy, level: int) -> str:
+    """`6/8 (18.75s, 4x)`: the level against the configured length, its spacing and speed."""
+    spacing = policy.levels_seconds[max(1, min(len(policy.levels_seconds), int(level))) - 1]
+    return (f"{level}/{len(policy.levels_seconds)} ({spacing:g}s, "
+            f"{round(speed_multiple(policy, level), 1):g}x)")
 
 
 def effective_spacing(policy: AdaptivePolicy, state, *, base: float | None = None) -> float:
@@ -193,7 +248,7 @@ def effective_spacing(policy: AdaptivePolicy, state, *, base: float | None = Non
     if state.get("brake"):
         return policy.emergency_spacing_seconds
     level = current_level(state)
-    return policy.levels_seconds[level - 1]
+    return policy.levels_seconds[min(level, len(policy.levels_seconds)) - 1]
 
 
 def paused_day(state) -> date | None:
@@ -253,8 +308,63 @@ def _signals_fresh(policy: AdaptivePolicy, signals: Signals | None, now: datetim
     return now - signals.refreshed_at <= timedelta(seconds=2 * policy.signal_refresh_seconds)
 
 
+def _normalize_window(raw) -> list:
+    """A safe rolling-window list of [hour_start_iso, count], newest 26 buckets kept."""
+    if not isinstance(raw, list):
+        return []
+    buckets = []
+    for entry in raw:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            continue
+        stamp, count = parse_iso(entry[0]), _int(entry[1])
+        if stamp is None:
+            continue
+        buckets.append([stamp.astimezone(timezone.utc).isoformat(), count])
+    buckets.sort(key=lambda item: item[0])
+    return buckets[-(WINDOW_SECONDS // WINDOW_BUCKET_SECONDS + 2):]
+
+
+def _bucket_start(now: datetime) -> datetime:
+    return now.replace(minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+def _window_add(state: dict, now: datetime) -> None:
+    """Count this request in its hourly bucket and drop the buckets whose whole hour is
+    already outside the window. Hourly buckets over-count by up to one hour, which makes
+    the ceiling bind early rather than late."""
+    start = _bucket_start(now)
+    buckets = _normalize_window(state.get("window"))
+    stamped = [(parse_iso(key), value) for key, value in buckets]
+    horizon = now - timedelta(seconds=WINDOW_SECONDS)
+    kept = [[stamp.isoformat(), value] for stamp, value in stamped
+            if stamp is not None
+            and stamp + timedelta(seconds=WINDOW_BUCKET_SECONDS) > horizon]
+    for entry in kept:
+        if entry[0] == start.isoformat():
+            entry[1] += 1
+            break
+    else:
+        kept.append([start.isoformat(), 1])
+    kept.sort(key=lambda item: item[0])
+    state["window"] = kept[-(WINDOW_SECONDS // WINDOW_BUCKET_SECONDS + 2):]
+
+
+def rolling_24h_requests(state, now: datetime) -> int:
+    """Requests in the last 24 hours, from the state's hourly buckets. A bucket counts
+    while its end is still inside the window, so the count never covers less than 24 h."""
+    if not isinstance(state, dict):
+        return 0
+    horizon = now - timedelta(seconds=WINDOW_SECONDS)
+    total = 0
+    for key, value in _normalize_window(state.get("window")):
+        stamp = parse_iso(key)
+        if stamp is not None and stamp + timedelta(seconds=WINDOW_BUCKET_SECONDS) > horizon:
+            total += value
+    return total
+
+
 def _level_stint(state: dict, level: int) -> dict:
-    return state["levels"][str(max(1, min(LEVEL_COUNT, level)))]
+    return state["levels"][str(max(1, min(len(state["levels"]), level)))]
 
 
 def _window_calm(policy: AdaptivePolicy, trailing: list) -> bool:
@@ -268,6 +378,57 @@ def _window_calm(policy: AdaptivePolicy, trailing: list) -> bool:
     return "refused" not in trailing[-policy.protect_drop_streak:]
 
 
+def _above_3x_blockers(policy: AdaptivePolicy, state: dict, now: datetime,
+                       signals: Signals | None, level: int, zone=None) -> list[str]:
+    """Why the ladder may not climb into or within the levels above 3x. Empty when the
+    next level is not above 3x, so levels 1 to 3x keep exactly their old gates."""
+    target = level + 1
+    if target > policy.max_level or not is_above_speed(policy, target, 3.0):
+        return []
+    blockers = []
+    count = rolling_24h_requests(state, now)
+    if count >= policy.rolling_24h_ceiling_requests:
+        blockers.append(f"rolling 24h {count}/{policy.rolling_24h_ceiling_requests} requests")
+    used = _int(state.get("day_above_3x_climbs"))
+    if used >= policy.above_3x_climbs_per_day:
+        blockers.append(f"climb already used today ({used}/{policy.above_3x_climbs_per_day})")
+    hold = parse_iso(state.get("above_3x_hold_until"))
+    if hold is not None and hold > now:
+        stamp = hold.astimezone(zone or ZoneInfo("UTC")).strftime("%H:%M")
+        blockers.append(f"held until {stamp} Rome" if zone is not None else f"held until {stamp}")
+    stint = _level_stint(state, level)
+    if stint["requests"] < policy.climb_min_requests_above_3x:
+        blockers.append(f"{stint['requests']}/{policy.climb_min_requests_above_3x} "
+                        "requests at this level")
+    if is_above_speed(policy, target, 4.0) and signals is not None:
+        limit = int(round(policy.llm_above_4x_stop_share * signals.llm_stop_requests))
+        if signals.llm_requests_today >= limit:
+            blockers.append(f"OpenRouter {signals.llm_requests_today}/{limit} above 4x")
+    return blockers
+
+
+def above_3x_guard(policy: AdaptivePolicy, state, now: datetime,
+                   signals: Signals | None = None, zone=None) -> str | None:
+    """The first above-3x blocker, or None when nothing above 3x is holding the ladder."""
+    state = normalize_state(state, policy)
+    if signals is None:
+        signals = signals_from_state(state)
+    blockers = _above_3x_blockers(policy, state, now, signals, current_level(state), zone)
+    return blockers[0] if blockers else None
+
+
+def above_3x_status(policy: AdaptivePolicy, state, now: datetime, zone=None) -> str:
+    """The `above 3x:` text the status page and the pace log both print."""
+    state = normalize_state(state, policy)
+    level = current_level(state)
+    if level >= policy.max_level:
+        return "at the ceiling" if is_above_speed(policy, policy.max_level, 3.0) else "n/a"
+    if not is_above_speed(policy, level + 1, 3.0):
+        return "n/a"
+    blockers = climb_blockers(policy, state, now, signals_from_state(state), zone=zone)
+    return blockers[0] if blockers else "ready"
+
+
 def climb_blockers(policy: AdaptivePolicy, state: dict, now: datetime,
                    signals: Signals | None, zone=None,
                    throughput_check: bool = True) -> list[str]:
@@ -279,10 +440,12 @@ def climb_blockers(policy: AdaptivePolicy, state: dict, now: datetime,
         return ["paused"]
     if state.get("brake") is not None:
         return ["climbing frozen"]
-    if level >= LEVEL_COUNT:
+    if level >= policy.max_level:
         return ["top level"]
+    if signals is None:
+        signals = signals_from_state(state)
+    blockers = _above_3x_blockers(policy, state, now, signals, level, zone)
     stint = _level_stint(state, level)
-    blockers = []
     if stint["requests"] < policy.climb_min_requests:
         blockers.append(f"{stint['requests']}/{policy.climb_min_requests} requests at this level")
     target = _level_stint(state, level + 1)
@@ -291,8 +454,6 @@ def climb_blockers(policy: AdaptivePolicy, state: dict, now: datetime,
         stamp = blocked.astimezone(zone or ZoneInfo("UTC")).strftime("%H:%M")
         suffix = " Rome" if zone is not None else ""
         blockers.append(f"level {level + 1} blocked until {stamp}{suffix}")
-    if signals is None:
-        signals = signals_from_state(state)
     if not _signals_fresh(policy, signals, now):
         blockers.append("signals unavailable")
     upper = wilson_upper(stint["refusals"], stint["requests"])
@@ -345,6 +506,9 @@ def _enter_brake(state: dict, now: datetime, reason: str,
     episode_over = clean_before_block >= _clean_stretch(policy)
     since = None if episode_over else parse_iso(previous.get("since"))
     old_level = current_level(state)
+    if is_above_speed(policy, old_level, 3.0):
+        state["above_3x_hold_until"] = (
+            now + timedelta(hours=policy.above_3x_hold_hours)).isoformat()
     state["brake"] = {
         "since": (since or now).isoformat(),
         "reason": reason,
@@ -426,10 +590,12 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
         state["day_refusals"] = 0
         state["day_drops"] = 0
         state["day_brakes"] = 0
+        state["day_above_3x_climbs"] = 0
 
-    level = max(1, min(LEVEL_COUNT, int(level)))
+    level = max(1, min(len(policy.levels_seconds), int(level)))
     state["trailing"] = (state["trailing"] + [outcome])[-policy.protect_window_requests:]
     state["day_requests"] += 1
+    _window_add(state, now)
     if outcome == "refused":
         state["day_refusals"] += 1
     if state.get("brake") is None:
@@ -507,6 +673,12 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
             stint["cooldown_hours"] = min(float(policy.memory_max_hours), wait * 2)
             state["day_drops"] += 1
             target = max(1, level - drop)
+            if is_above_speed(policy, level, 3.0):
+                # A cluster above 3x is evidence against the whole above-3x regime, not
+                # against one step: never land above 3x, and do not climb back up today.
+                target = min(target, hold_level(policy))
+                state["above_3x_hold_until"] = (
+                    now + timedelta(hours=policy.above_3x_hold_hours)).isoformat()
             state["level"] = target
             _reset_stint(state, target)
             state["trailing"] = []
@@ -514,6 +686,23 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
             return state
 
     fresh = _signals_fresh(policy, signals, now)
+    if is_above_speed(policy, level, 3.0):
+        if fresh and signals is not None and signals.demand_waiting < policy.demand_hold_above_3x_waiting:
+            target = hold_level(policy)
+            state["level"] = target
+            _reset_stint(state, target)
+            state["trailing"] = []
+            _move(state, now, "demand", level, target, "queue empty above 3x")
+            return state
+        count = rolling_24h_requests(state, now)
+        if count >= policy.rolling_24h_ceiling_requests:
+            target = hold_level(policy)
+            state["level"] = target
+            _reset_stint(state, target)
+            state["trailing"] = []
+            _move(state, now, "ceiling", level, target,
+                  f"rolling 24h {count}/{policy.rolling_24h_ceiling_requests}")
+            return state
     if fresh and signals is not None and level > 1:
         last_ease = parse_iso(state.get("last_ease_at"))
         if (signals.demand_waiting < policy.demand_ease_waiting
@@ -534,8 +723,10 @@ def review(state: dict, policy: AdaptivePolicy, now: datetime, *, day: date,
         upper = wilson_upper(stint["refusals"], stint["requests"])
         rate = _rate(stint)
         lower = _rate(_level_stint(state, level - 1)) if level > 1 else 0.0
-        target = level + 1
+        target = min(level + 1, policy.max_level)
         state["level"] = target
+        if is_above_speed(policy, target, 3.0):
+            state["day_above_3x_climbs"] += 1
         _reset_stint(state, target)
         state["trailing"] = []
         _move(state, now, "climb", level, target,
@@ -603,7 +794,7 @@ def replay(events: list[ReplayEvent], policy: AdaptivePolicy, *,
     state = normalize_state(start_state, policy) if start_state is not None else blank_state(policy)
     if start_state is None:
         state["active"] = True
-    state["level"] = max(1, min(LEVEL_COUNT, int(start_level)))
+    state["level"] = max(1, min(len(policy.levels_seconds), int(start_level)))
     moves, drops, brakes, pauses, levels = [], [], [], [], []
     for event in sorted(events, key=lambda item: item.at):
         block = event.block

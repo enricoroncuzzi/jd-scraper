@@ -4,8 +4,10 @@
         [--demand N] [--llm N] [--disabled] [--connection-errors-at HH:MM,...] [--json]
 
 The replay uses the recorded request timing (75 s history), so it cannot show a faster
-level's throughput; the throughput clause is skipped and the limitation is printed.
-No database and no network are touched.
+level's throughput; the throughput clause is skipped and the limitation is printed. It
+builds the shipped eight-level policy, but the recorded traces are far shorter than the
+above-3x gates need (600 requests per level, one climb per Rome day), so a replay never
+exercises them. No database and no network are touched.
 """
 import argparse
 import csv
