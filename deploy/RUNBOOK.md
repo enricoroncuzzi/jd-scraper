@@ -378,6 +378,37 @@ more specific reason. Tiers 1 and 2, and the AI-title classes, are never aged ou
 | `age_out.tiers` | `[3, 4]` | the tiers the rule applies to; tiers 1 and 2 are served on arrival and are never aged out |
 | `age_out.min_class` | `2` | the lowest `description_class` the rule applies to, so `other_country` and `other_city`; classes 0 and 1 are never aged out |
 
+**Deploying it, and the day 0 reset.** The first tick after the deploy is the reset; there is no
+separate purge. Do it in this order:
+
+1. `git pull --ff-only`, then `pip install -r requirements.txt`. The new code is on disk while
+   the old `jds-process` still runs, so the dry run can see the rule before it writes anything.
+2. `python -m src.processor.age_out --dry-run` (the default action, no writes). On 2026-10-26
+   it reads about 1,991 (tier 3 1,309, tier 4 682), about 21 `score >= 7` offers given up. The
+   number is "at most" the count the tick expires: the three older reasons run first, so a job
+   both past 96 h and past the 30-day posting age is counted here and expires as
+   `posting_too_old`.
+3. `sudo systemctl restart jds-process`. That tick performs the reset; nothing else to run.
+
+The first daily digest after it prints `expired 1309` for tier 3 and `expired 682` for tier 4,
+then the steady-state aged-out count: no aged-out job ever reaches delivery or an alert.
+`jds-deliver` copies `expired` jobs to Neon, so the day 0 jobs land there on the next delivery
+(small rows, no description); an undone job keeps its stale row there until it finishes again
+and the upsert overwrites it.
+
+**Undoing it.** Set `age_out.enabled` to `false` in `config/processor.json`, restart
+`jds-process` (otherwise the next tick re-expires the same still-old rows), then
+
+```
+python -m src.processor.age_out --undo
+Restored 1991 jobs from aged_out to seen
+```
+
+The undo writes only `stage`, `stage_reason`, `stage_changed_at` (now(), because the column is
+`NOT NULL`) and `archived_at = NULL`. It does not touch `next_attempt_at`, the description, the
+score or the verdict, so a job that was in a refusal backoff keeps its backoff. Switch the rule
+back on when the ordering or the pace has been fixed.
+
 The base is a constant 75 s on every day, jittered +/-20 %, and nothing clamps it: there is no
 request cap, so open hours do not set a floor and a finished day changes nothing (the
 2026-10-18 refusal study removed the hour nudge and the day verdict, which only cut
