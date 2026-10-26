@@ -175,6 +175,19 @@ def test_check_voice_passes_the_same_hook_rewritten_by_role():
     ) == []
 
 
+def test_validate_cover_letter_ignores_a_company_named_like_a_pronoun():
+    bridge = "At Hey Movo I built a coordinator agent using the Model Context Protocol."
+    assert validate_cover_letter(
+        "I want to bring my agent work to HE Space's mission tooling.", bridge, "HE Space"
+    ) == []
+    v = validate_cover_letter(
+        "I want to bring my agent work to HE Space's mission tooling, his focus.",
+        bridge,
+        "HE Space",
+    )
+    assert any("third person" in x.lower() for x in v)
+
+
 def test_check_voice_is_case_insensitive():
     assert check_voice("ENRICO builds production agent systems.") == [
         "ENRICO builds production agent systems."

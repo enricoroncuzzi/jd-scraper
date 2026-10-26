@@ -100,7 +100,7 @@ def validate_cover_letter(hook: str, bridge: str, company: str) -> list[str]:
             "hook opens with the company describing itself (mail-merge tell); "
             "open with your own interest or capability first instead"
         )
-    for sentence in check_voice(combined):
+    for sentence in check_voice(combined, company):
         violations.append(
             f"third person (Enrico, or he/his/him) in the hook or bridge: {sentence!r}"
         )
@@ -111,12 +111,17 @@ def hook_claims(hook: str) -> list[str]:
     return _sentences(hook)
 
 
-def check_voice(text: str) -> list[str]:
+def check_voice(text: str, company: str = "") -> list[str]:
     """Sentences that refer to the letter's author in the third person.
 
     The hook and the bridge are written by the owner in his own voice, so a
     sentence naming him ("Enrico", "Roncuzzi") or using he/his/him at all is a
     violation. Other third person about the company or other people ("they",
-    "their", a role or a name) is allowed.
+    "their", a role or a name) is allowed. The company's own name is not
+    matched, so a company called "HE Space" does not read as a pronoun.
     """
-    return [s for s in _sentences(text) if _OWNER_REF_RE.search(s)]
+    name = re.compile(re.escape(company.strip()), re.IGNORECASE) if company.strip() else None
+    return [
+        s for s in _sentences(text)
+        if _OWNER_REF_RE.search(name.sub(" ", s) if name else s)
+    ]
