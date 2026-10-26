@@ -55,9 +55,10 @@ PACKAGE_MAX_ATTEMPTS = 3
 
 
 def check_cv_sources(pkg: PackagingConfig) -> None:
-    """Fail up front, loudly, when the CV or letter source is not deployed (as run_autoapply
-    does). A missing or invalid CL_master.md stops packaging here, before any job is tried, so
-    it is one error rather than a retried failure per job (design 6.3)."""
+    """Fail up front, loudly, when the CV or letter source is not deployed or the masters do
+    not load (as run_autoapply does). A missing or invalid CL_master.md stops packaging here,
+    before any job is tried, so it is one error rather than a retried failure per job
+    (design 6.3)."""
     if not os.path.exists(pkg.cv_master_path):
         raise FileNotFoundError(
             f"CV master source not found at {pkg.cv_master_path!r} - set CV_MASTER_PATH")

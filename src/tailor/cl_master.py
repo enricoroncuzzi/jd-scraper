@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 
 from src.tailor.cv_master import CanonicalCV, load_canonical, parse_proof_pool_line
-from src.tailor.validate import BANNED_PHRASES, has_dash
+from src.tailor.validate import BANNED_PHRASES, check_voice, has_dash
 
 COMPANY_TOKEN = "{company}"
 SLOTS = ("hook", "bridge", "proof")
@@ -225,15 +225,6 @@ def _parse_proof_pool(body: list[tuple[int, str]]) -> tuple[dict[str, str], dict
     return pool, lines
 
 
-def _additional_text_checks():
-    """The voice fix's first-person checker, when that change is present. Optional on
-    purpose: this module must not depend on which PR merges first, and the fixed text must
-    pass the same check the model's hook and bridge do once it exists."""
-    from src.tailor import validate
-    check = getattr(validate, "check_voice", None)
-    return [check] if check else []
-
-
 def parse_cl_master(text: str) -> CoverLetterMaster:
     """Parse and structurally check the master. Raises ValueError naming the line."""
     stripped_text = _COMMENT_RE.sub(
@@ -276,9 +267,9 @@ def validate_cl_master(master: CoverLetterMaster) -> list[str]:
                 violations.append(_err(line, f"banned phrase: {phrase!r}"))
         if not voice:
             return
-        for checker in _additional_text_checks():
-            for reason in checker(text):
-                violations.append(_err(line, reason))
+        for sentence in check_voice(text):
+            violations.append(_err(
+                line, f"third person (Enrico, or he/his/him): {sentence!r}"))
 
     for key in LETTERHEAD_KEYS:
         value = getattr(master.letterhead, key)

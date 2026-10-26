@@ -98,19 +98,7 @@ def test_the_pool_can_be_swapped_into_a_copy_of_the_canonical_cv(tmp_path):
         "At Example Labs")
 
 
-def test_the_voice_check_runs_on_the_fixed_text_when_it_exists(tmp_path, monkeypatch):
-    import src.tailor.cl_master as cl_master
-    monkeypatch.setattr(
-        cl_master, "_additional_text_checks",
-        lambda: [lambda text: ["third person: 'he'"] if "he says" in text.lower() else []])
-    with pytest.raises(ValueError, match=r"line \d+: third person"):
-        cl_master.load_cl_master(write_cl_master(
-            tmp_path, EXAMPLE_CL_MASTER.replace("I am based in", "He says I am based in")))
-
-
-def test_the_example_master_loads_whatever_the_voice_check_state(tmp_path):
-    # Green with the voice fix absent and green once check_voice exists: the fixture's fixed
-    # text and pool sentence are first person.
+def test_the_example_master_passes_the_voice_check(tmp_path):
     from src.tailor.cl_master import load_cl_master
     load_cl_master(write_cl_master(tmp_path))
 
@@ -198,7 +186,7 @@ def test_a_letterhead_naming_the_owner_still_loads(tmp_path):
 
 def test_the_voice_check_still_rejects_third_person_prose(tmp_path):
     from src.tailor.cl_master import load_cl_master
-    with pytest.raises(ValueError, match=r"line \d+: He says"):
+    with pytest.raises(ValueError, match=r"line \d+: third person .*He says"):
         load_cl_master(write_cl_master(
             tmp_path, EXAMPLE_CL_MASTER.replace(
                 "I am based in Italy.", "He says I am based in Italy.")))
