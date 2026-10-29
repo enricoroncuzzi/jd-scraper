@@ -10,8 +10,9 @@ load_dotenv()
 
 from src.tailor.jd_source import parse_note
 from src.tailor.cl_master import load_letter_sources
-from src.tailor.generate import generate
+from src.tailor.generate import generate, _prompt_version
 from src.tailor.validate import validate_cv, validate_cover_letter, hook_claims
+from src.tailor.trace import build_trace, letter_parts, write_trace
 from src.tailor.render_pdf import (
     render_pdf, pdf_page_count, render_cover_letter_pdf,
 )
@@ -70,15 +71,17 @@ def run(
               "CL_master.md")
     print(f"[tailor] Tailoring for {jd.title} at {jd.company}...")
 
-    sel = generate(jd, canonical, api_key)
-    if sel is None:
+    gen = generate(jd, canonical, api_key)
+    if gen is None:
         raise ValueError("HALTED: generation returned no result")
+    sel = gen.selection
 
     # Always assemble the FULL canonical bullet set (protects the one-click flow: the
     # required-metrics gate can never fail on a legit run). included_bullet_ids stays in
     # the schema for a future page-overflow feature but is NOT used to filter yet.
     all_bullets = [bid for s in canonical.sections for bid in s.bullet_ids]
-    cv_markdown = canonical.assemble(all_bullets, _ordered_skill_ids(canonical, sel.skill_order))
+    skill_ids = _ordered_skill_ids(canonical, sel.skill_order)
+    cv_markdown = canonical.assemble(all_bullets, skill_ids)
     cv_violations = validate_cv(cv_markdown, canonical)
     cl = sel.cover_letter
     cl_violations = validate_cover_letter(cl.hook, cl.bridge, jd.company)
@@ -89,21 +92,41 @@ def run(
             f"cover-letter proof_id is not an eligible letter-grade proof: {cl.proof_id}"
         )
 
+    origin = "auto" if package_day else "manual"
+    parts = letter_parts(letter_master, jd.company, cl.proof_id)
+
+    def _trace(directory: str, status: str, stop: str | None,
+               fit_px: float | None) -> None:
+        """Record what made this package. Best-effort: the trace is advisory, so a
+        write failure must never change the packaging outcome, only print."""
+        try:
+            write_trace(directory, build_trace(
+                origin=origin, status=status, stop=stop,
+                cv_master_path=cv_master_path, cl_master_path=cl_master_path,
+                css_path=css_path, prompt_version=_prompt_version(), generation=gen,
+                skill_order=skill_ids, fit_px=fit_px, letter=parts,
+            ))
+        except OSError as exc:
+            print(f"[tailor] trace not written: {exc}")
+
     if cv_violations or cl_violations:
         directory = artifact_dir(jd, jd_output_root, package_day)
         write_review(directory, jd.company, cv_violations, cl_violations, claims)
         reason = "; ".join(cv_violations + cl_violations)
+        _trace(directory, "FAIL", reason, None)
         raise ValueError(f"HALTED: {reason}")
 
     directory = artifact_dir(jd, jd_output_root, package_day)
     css = open(css_path).read() if css_path and os.path.exists(css_path) else ""
 
     cv_pdf_path = os.path.join(directory, "Roncuzzi_CV.pdf")
-    render_pdf(cv_markdown, css, cv_pdf_path)
+    fit_px = render_pdf(cv_markdown, css, cv_pdf_path)
+    fit_px = float(fit_px) if isinstance(fit_px, (int, float)) else None
     n_pages = pdf_page_count(cv_pdf_path)
     if n_pages != 1:
         os.remove(cv_pdf_path)
         write_review(directory, jd.company, [f"tailored CV overflowed to {n_pages} pages"], [], claims)
+        _trace(directory, "FAIL", f"tailored CV overflowed to {n_pages} pages", fit_px)
         raise ValueError(f"HALTED: tailored CV overflowed to {n_pages} pages")
 
     cover_body = letter_master.compose(
@@ -119,9 +142,11 @@ def run(
         os.remove(cv_pdf_path)
         reason = f"tailored cover letter overflowed to {cl_pages} pages"
         write_review(directory, jd.company, [], [reason], claims)
+        _trace(directory, "FAIL", reason, fit_px)
         raise ValueError(f"HALTED: {reason}")
     write_sources(directory, cv_markdown, cover_body, sel.hr_message)
     write_review(directory, jd.company, cv_violations, cl_violations, claims)
+    _trace(directory, "PASS", None, fit_px)
 
     print(f"[tailor] Done -> {directory}")
     return directory

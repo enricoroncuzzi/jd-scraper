@@ -2,6 +2,7 @@ import functools
 import inspect
 import json
 import time
+from dataclasses import dataclass
 
 import openai
 from pydantic import BaseModel
@@ -29,6 +30,19 @@ class Selection(BaseModel):
     skill_order: list[str]
     cover_letter: CoverLetterParts
     hr_message: str
+
+
+@dataclass(frozen=True)
+class Generation:
+    """One tailoring answer, with the model that made it.
+
+    OpenRouter's fallback chain can answer with a different model than the one asked, so
+    the caller that records provenance needs both: what was requested, and what answered
+    (None when the provider does not say).
+    """
+    selection: Selection
+    model_requested: str
+    model_answered: str | None
 
 
 def build_prompt(jd: JobDescription, canonical: CanonicalCV) -> str:
@@ -171,7 +185,7 @@ def generate(
     canonical: CanonicalCV,
     api_key: str,
     model: str = _OPENROUTER_MODEL,
-) -> Selection:
+) -> Generation:
     chain = _build_chain(api_key, model)
     prompt = build_prompt(jd, canonical)
     counter = _TokenCounter()
@@ -189,7 +203,11 @@ def generate(
                                output_tokens=counter.last_completion_tokens)
                 if result is None:
                     raise _EmptyStructuredOutput()
-                return result
+                return Generation(
+                    selection=result,
+                    model_requested=model,
+                    model_answered=counter.last_model or None,
+                )
         except Exception as e:
             # Empty or malformed output keeps the old one-retry bound. Transient
             # provider errors use the same ladder as verification: a quota 429

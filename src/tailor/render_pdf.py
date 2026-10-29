@@ -117,7 +117,8 @@ def _fit_font_size(page) -> float:
     return font
 
 
-def render_pdf(cv_markdown: str, css: str, out_path: str) -> None:
+def render_pdf(cv_markdown: str, css: str, out_path: str) -> float:
+    """Render the CV to a one-page PDF and return the font size, in px, that fit it."""
     from playwright.sync_api import sync_playwright
 
     html = markdown_to_html(cv_markdown, css)
@@ -128,7 +129,7 @@ def render_pdf(cv_markdown: str, css: str, out_path: str) -> None:
         )
         page.set_content(html, wait_until="networkidle")
         page.emulate_media(media="print")
-        _fit_font_size(page)
+        fit_px = _fit_font_size(page)
         page.pdf(
             path=out_path,
             format="A4",
@@ -136,6 +137,7 @@ def render_pdf(cv_markdown: str, css: str, out_path: str) -> None:
             margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
         )
         browser.close()
+    return fit_px
 
 
 def pdf_page_count(path: str) -> int:
