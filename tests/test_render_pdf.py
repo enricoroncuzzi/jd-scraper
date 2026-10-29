@@ -104,3 +104,58 @@ def test_cover_letter_html_is_byte_identical_to_the_legacy_template():
     )
     assert "&amp; Agentic" in html          # "&" is escaped once
     assert "&amp;nbsp;" not in html         # the separator is html, not escaped text
+
+
+def test_render_pdf_returns_the_fitted_font_size(tmp_path, monkeypatch):
+    # The trace records the size the CV was actually set in, so render_pdf has to hand it
+    # back instead of swallowing it. No browser: the page is a stub that reports a height
+    # too tall until the body font reaches 14px.
+    sync_api = pytest.importorskip("playwright.sync_api")
+    from src.tailor.render_pdf import render_pdf, _PREVIEW_HEIGHT_JS
+
+    class _Page:
+        font = None
+
+        def set_content(self, html, wait_until=None):
+            pass
+
+        def emulate_media(self, media=None):
+            pass
+
+        def evaluate(self, js):
+            if js.startswith("document.body.style.fontSize"):
+                self.font = js.split("'")[1].removesuffix("px")
+                return None
+            assert js == _PREVIEW_HEIGHT_JS
+            return 1200 if self.font != "14.0" else 1100
+
+        def pdf(self, **kwargs):
+            pass
+
+    class _Browser:
+        page = _Page()
+
+        def new_page(self, **kwargs):
+            return self.page
+
+        def close(self):
+            pass
+
+    class _Chromium:
+        browser = _Browser()
+
+        def launch(self):
+            return self.browser
+
+    class _Playwright:
+        chromium = _Chromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: _Playwright())
+
+    assert render_pdf("# x", "", str(tmp_path / "o.pdf")) == 14.0

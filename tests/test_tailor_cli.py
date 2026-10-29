@@ -82,12 +82,20 @@ def _full_selection(master_path):
     )
 
 
+def _fake_render_pdf(md, css, out):
+    """A PDF is only the page count's input here, so write a stub and report the size the
+    fit loop would have picked."""
+    with open(out, "w") as f:
+        f.write("PDF")
+    return 14.5
+
+
 def _stub_pipeline(monkeypatch, master_path, pages=lambda path: 1):
     """Everything `run` calls below the model and the browser: a fixed selection, no PDFs,
     and a one-page count unless a test says otherwise."""
     monkeypatch.setattr(tailor_cli, "generate",
                         lambda jd, c, key, **kw: generation(_full_selection(master_path)))
-    monkeypatch.setattr(tailor_cli, "render_pdf", lambda md, css, out: open(out, "w").write("PDF"))
+    monkeypatch.setattr(tailor_cli, "render_pdf", _fake_render_pdf)
     monkeypatch.setattr(tailor_cli, "render_cover_letter_pdf",
                         lambda text, out, letterhead: open(out, "w").write("PDF"))
     monkeypatch.setattr(tailor_cli, "pdf_page_count", pages)
