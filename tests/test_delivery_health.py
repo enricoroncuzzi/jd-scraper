@@ -393,7 +393,14 @@ def test_the_new_jobs_alert_is_sent_at_most_once_a_day(store_conn, settings):
         assert bool([m for m in sent if "no new job in" in m]) is expected, at
 
 
-# a model stage with calls but no answers, for 6 h since its last answer
+# a model stage still making calls with no answer for 6 h since its last answer
+
+def _failing_calls(conn, stage, start, end, outcome="error"):
+    at = start
+    while at <= end:
+        _llm_call(conn, stage, at, model=None, outcome=outcome)
+        at += timedelta(hours=1)
+
 
 def test_a_stage_with_calls_but_no_answers_alerts(store_conn, settings):
     _quiet_but_healthy(store_conn, NOW)
@@ -413,8 +420,8 @@ def test_a_stage_that_only_gets_empty_answers_alerts(store_conn, settings):
     with store_conn.cursor() as cur:
         cur.execute("DELETE FROM llm_calls")
     store_conn.commit()
-    for _ in range(3):
-        _llm_call(store_conn, "verification", NOW - timedelta(hours=7), outcome="invalid_output")
+    for hours in (7, 4, 1):
+        _llm_call(store_conn, "verification", NOW - timedelta(hours=hours), outcome="invalid_output")
     issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
     assert "llm_stage:verification" in issues
     assert "made 3 model call(s)" in issues["llm_stage:verification"].message
@@ -436,29 +443,30 @@ def test_one_failed_call_after_an_idle_stretch_is_not_yet_an_issue(store_conn, s
     assert {i.key for i in evaluate_health(store_conn, settings, NOW)} == set()
 
 
-def test_a_silent_stage_stays_an_issue_while_it_makes_no_calls(store_conn, settings):
-    # Tailoring failed 10 h ago and has made no call since: nothing has answered, so the
-    # stage is still silent rather than healthy again.
+def test_a_stage_that_stopped_being_called_clears_within_the_threshold(store_conn, settings):
+    # Every call failed from 7 h to 5 h ago and the stage has not been called since (a
+    # stage switched off, such as the legacy combined call): it alerts while its last call
+    # is inside the threshold and clears once that call is older, so it cannot alert forever.
     _quiet_but_healthy(store_conn, NOW)
-    _llm_call(store_conn, "tailoring", NOW - timedelta(hours=10), model=None, outcome="error")
-    issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
-    assert "llm_stage:tailoring" in issues
-    assert "made 1 model call(s) in the last 10h00m" in issues["llm_stage:tailoring"].message
+    _failing_calls(store_conn, "combined", NOW - timedelta(hours=7), NOW - timedelta(hours=5))
+    outbox = Outbox()
+    assert [m for m in run_health_check(store_conn, settings, outbox, NOW)
+            if "the combined stage made 3 model call(s) in the last 7h00m" in m]
+    later = NOW + timedelta(hours=2)
+    _refresh(store_conn, later)
+    assert [m for m in run_health_check(store_conn, settings, outbox, later)
+            if "OK again: llm_stage combined is healthy" in m]
+    assert "llm_stage:combined" not in {i.key for i in evaluate_health(
+        store_conn, settings, later + timedelta(days=30))}
 
 
-def test_a_silent_stage_does_not_recover_without_an_answer(store_conn, settings):
+def test_a_silent_stage_clears_on_its_next_answer(store_conn, settings):
     _quiet_but_healthy(store_conn, NOW)
-    _llm_call(store_conn, "tailoring", NOW - timedelta(hours=6), model=None, outcome="error")
+    _failing_calls(store_conn, "tailoring", NOW - timedelta(hours=7), NOW - timedelta(hours=1))
     outbox = Outbox()
     assert [m for m in run_health_check(store_conn, settings, outbox, NOW) if "tailoring stage" in m]
-    later = NOW + timedelta(hours=7)
-    _quiet_but_healthy(store_conn, later)
-    assert not [m for m in run_health_check(store_conn, settings, outbox, later) if "tailoring" in m]
-    _llm_call(store_conn, "tailoring", later + timedelta(minutes=5), model=None, outcome="error")
-    assert not [m for m in run_health_check(store_conn, settings, outbox, later + timedelta(minutes=10))
-                if "tailoring" in m]
-    _llm_call(store_conn, "tailoring", later + timedelta(minutes=15))
-    assert [m for m in run_health_check(store_conn, settings, outbox, later + timedelta(minutes=20))
+    _llm_call(store_conn, "tailoring", NOW + timedelta(minutes=5))
+    assert [m for m in run_health_check(store_conn, settings, outbox, NOW + timedelta(minutes=10))
             if "OK again: llm_stage tailoring is healthy" in m]
 
 
@@ -467,20 +475,21 @@ def test_each_silent_stage_gets_its_own_issue(store_conn, settings):
     with store_conn.cursor() as cur:
         cur.execute("DELETE FROM llm_calls")
     store_conn.commit()
-    _llm_call(store_conn, "scoring", NOW - timedelta(hours=7), model=None, outcome="error")
-    _llm_call(store_conn, "tailoring", NOW - timedelta(hours=7), model=None, outcome="error")
+    _failing_calls(store_conn, "scoring", NOW - timedelta(hours=7), NOW - timedelta(hours=1))
+    _failing_calls(store_conn, "tailoring", NOW - timedelta(hours=7), NOW - timedelta(hours=1))
     keys = {i.key for i in evaluate_health(store_conn, settings, NOW)}
     assert keys == {"llm_stage:scoring", "llm_stage:tailoring"}
 
 
 def test_the_stage_alert_is_sent_at_most_once_a_day(store_conn, settings):
     _quiet_but_healthy(store_conn, NOW)
-    _llm_call(store_conn, "verification", NOW - timedelta(hours=7), model=None, outcome="error")
     outbox = Outbox()
+    last = NOW - timedelta(hours=7)
     for hours, expected in ((0, True), (6, False), (23, False), (24, True)):
         at = NOW + timedelta(hours=hours)
         _refresh(store_conn, at)
-        _llm_call(store_conn, "verification", at - timedelta(minutes=5), model=None, outcome="error")
+        _failing_calls(store_conn, "verification", last, at - timedelta(minutes=5))
+        last = at
         sent = run_health_check(store_conn, settings, outbox, at)
         assert bool([m for m in sent if "verification stage" in m]) is expected, at
 

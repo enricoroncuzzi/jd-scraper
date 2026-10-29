@@ -186,8 +186,8 @@ loses nothing.
   while requests are refused, so a blocked or paused LinkedIn is still one alert.
   `llm_stage:<stage>` means that stage has kept making model calls for 6 h with no usable answer
   (an `ok` call that named a model), that is every model failing or only returning empty or
-  malformed output; it holds until an answer arrives, however sparse the calls. The fallback
-  guard ignores unanswered calls by design.
+  malformed output. It clears on the next answer, or once the stage has made no call for 6 h
+  (a stage switched off or renamed). The fallback guard ignores unanswered calls by design.
   `scoring_silent` means no job reached `scored` in 24 h while the services keep beating, so
   scoring stalled, in the stage itself or upstream of it. Allow 24 to 48 h for it: the 08:00
   delivery re-stamps every job still at `scored` as it moves it to `delivered`, so the window
