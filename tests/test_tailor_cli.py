@@ -1,8 +1,11 @@
+import hashlib
+import json
 import os
 import pytest
 import tailor as tailor_cli
 from src.tailor.cv_master import parse_proof_pool_line
-from src.tailor.generate import Selection, CoverLetterParts
+from src.tailor.generate import Selection, CoverLetterParts, _prompt_version
+from src.tailor.trace import TRACE_FILENAME
 from tests.tailor_helpers import EXAMPLE_CL_MASTER, generation, write_cl_master
 
 MASTER = """# Enrico Roncuzzi
@@ -298,3 +301,186 @@ def test_run_stops_when_the_letter_master_is_missing(tmp_path, monkeypatch):
     with pytest.raises(FileNotFoundError, match="CL_MASTER_PATH"):
         tailor_cli.run(str(note), str(tmp_path / "o"), master, "", "fake",
                        cl_master_path=str(tmp_path / "absent_CL_master.md"))
+
+
+def _read_trace(out_dir):
+    with open(os.path.join(out_dir, TRACE_FILENAME)) as f:
+        return json.load(f)
+
+
+def test_run_writes_an_auto_trace_on_success_when_the_digest_day_is_passed(
+        tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master)
+
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake",
+                             package_day="2026-07-03", cl_master_path=cl)
+    trace = _read_trace(out_dir)
+
+    assert trace["origin"] == "auto"
+    assert trace["status"] == "PASS"
+    assert trace["stop"] is None
+    assert trace["fit_px"] == 14.5
+    assert trace["cv_master_sha256"] == hashlib.sha256(open(master, "rb").read()).hexdigest()
+    assert trace["cl_master_sha256"] == hashlib.sha256(open(cl, "rb").read()).hexdigest()
+    assert trace["css_sha256"] is None
+    assert trace["model_answered"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert trace["prompt_version"] == _prompt_version()
+    assert [p["kind"] for p in trace["letter_parts"]] == [
+        "fixed", "hook", "bridge", "proof", "fixed"]
+
+
+def test_run_writes_a_manual_trace_for_a_mac_retailor(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master)
+
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    assert _read_trace(out_dir)["origin"] == "manual"
+
+
+def test_the_trace_letter_parts_line_up_with_the_written_letter(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master)
+
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    trace = _read_trace(out_dir)
+    paragraphs = open(os.path.join(out_dir, "Roncuzzi_CL.md")).read().split("\n\n")
+
+    assert len(paragraphs) == len(trace["letter_parts"])
+    for index, part in enumerate(trace["letter_parts"]):
+        if part["kind"] == "fixed":
+            assert part["text"] == paragraphs[index]
+
+
+def test_the_trace_records_the_assembled_skill_order_not_the_raw_model_list(
+        tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master)
+
+    def selection(jd, c, key, **kw):
+        sel = _full_selection(master)
+        sel.skill_order = ["skill.bogus", "skill.ai_stack"]
+        return generation(sel)
+
+    monkeypatch.setattr(tailor_cli, "generate", selection)
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+
+    assert _read_trace(out_dir)["selection"]["skill_order"] == [
+        "skill.ai_stack", "skill.languages"]
+
+
+def test_run_writes_a_fail_trace_on_a_letter_violation(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    sel = _full_selection(master)
+    sel.cover_letter.hook = "I am excited to apply and passionate about this."
+    _stub_pipeline(monkeypatch, master)
+    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: generation(sel))
+
+    with pytest.raises(ValueError) as excinfo:
+        tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    d = os.path.join(str(root), "2026-07-02", "tier1", "tailored", "acme_ai_engineer_5")
+    trace = _read_trace(d)
+
+    assert trace["status"] == "FAIL"
+    assert trace["stop"] == str(excinfo.value).removeprefix("HALTED: ")
+    assert trace["fit_px"] is None
+
+
+def test_run_writes_a_fail_trace_on_cv_overflow(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master, pages=lambda path: 2)
+
+    with pytest.raises(ValueError, match="HALTED"):
+        tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    trace = _read_trace(os.path.join(
+        str(root), "2026-07-02", "tier1", "tailored", "acme_ai_engineer_5"))
+
+    assert trace["status"] == "FAIL"
+    assert trace["stop"] == "tailored CV overflowed to 2 pages"
+    assert trace["fit_px"] == 14.5
+
+
+def test_run_writes_a_fail_trace_on_letter_overflow(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master,
+                   pages=lambda path: 1 if path.endswith("Roncuzzi_CV.pdf") else 2)
+
+    with pytest.raises(ValueError, match="HALTED"):
+        tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    trace = _read_trace(os.path.join(
+        str(root), "2026-07-02", "tier1", "tailored", "acme_ai_engineer_5"))
+
+    assert trace["status"] == "FAIL"
+    assert trace["stop"] == "tailored cover letter overflowed to 2 pages"
+    assert trace["fit_px"] == 14.5
+
+
+def test_the_halt_messages_and_review_files_are_unchanged(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master, pages=lambda path: 2)
+
+    with pytest.raises(ValueError) as excinfo:
+        tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    assert str(excinfo.value) == "HALTED: tailored CV overflowed to 2 pages"
+    d = os.path.join(str(root), "2026-07-02", "tier1", "tailored", "acme_ai_engineer_5")
+    # That em dash is in today's write_review and stays byte-identical.
+    assert open(os.path.join(d, "CLAIMS_REVIEW.txt")).read().startswith(
+        "Send-readiness review — Acme\nOverall: FAIL")
+
+
+def test_the_trace_names_a_fallback_model_when_one_answered(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master)
+    monkeypatch.setattr(
+        tailor_cli, "generate",
+        lambda jd, c, key, **kw: generation(_full_selection(master),
+                                           answered="liquid/lfm-2.5-2.6b:free"))
+
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+    trace = _read_trace(out_dir)
+
+    assert trace["model_answered"] == "liquid/lfm-2.5-2.6b:free"
+    assert trace["model_requested"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def test_a_trace_that_cannot_be_written_does_not_fail_a_success(
+        tmp_path, monkeypatch, capsys):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master)
+
+    def broken(directory, trace):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tailor_cli, "write_trace", broken)
+    out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+
+    assert os.path.exists(os.path.join(out_dir, "Roncuzzi_CV.pdf"))
+    assert os.path.exists(os.path.join(out_dir, "Roncuzzi_CL.pdf"))
+    assert os.path.exists(os.path.join(out_dir, "CLAIMS_REVIEW.txt"))
+    assert not os.path.exists(os.path.join(out_dir, TRACE_FILENAME))
+    assert "[tailor] trace not written: disk full" in capsys.readouterr().out
+
+
+def test_a_trace_that_cannot_be_written_keeps_the_halt_message(tmp_path, monkeypatch):
+    master, note, cl = _setup(tmp_path)
+    root = tmp_path / "jd-output"
+    _stub_pipeline(monkeypatch, master, pages=lambda path: 2)
+
+    def broken(directory, trace):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tailor_cli, "write_trace", broken)
+    with pytest.raises(ValueError) as excinfo:
+        tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)
+
+    assert str(excinfo.value) == "HALTED: tailored CV overflowed to 2 pages"
