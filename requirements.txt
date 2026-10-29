@@ -1,14 +1,18 @@
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-langdetect>=1.0.9
-langchain-openai>=0.1.0
-langchain-core>=0.2.0
-pydantic>=2.0.0
-python-dotenv>=1.0.0
-pytest>=8.0.0
-psycopg2-binary>=2.9.0
-groq>=0.37.1
-markdown-it-py
-mdit-py-plugins
-playwright
-pypdf
+# Direct dependencies, pinned to the versions installed in the production VPS venv
+# (pip freeze, 2026-10-29) so a rebuild reproduces today's system. Transitive packages
+# stay unpinned; they move with these. Bump a pin deliberately, then deploy per
+# deploy/RUNBOOK.md section 6: a `>=` floor lets a rebuild land a version nobody ran.
+requests==2.34.2
+beautifulsoup4==4.15.0
+langdetect==1.0.9
+langchain-openai==1.3.2
+langchain-core==1.4.8
+pydantic==2.13.4
+python-dotenv==1.2.2
+pytest==9.1.1
+psycopg2-binary==2.9.12
+groq==1.7.0
+markdown-it-py==4.2.0
+mdit-py-plugins==0.6.1
+playwright==1.62.0
+pypdf==6.16.2

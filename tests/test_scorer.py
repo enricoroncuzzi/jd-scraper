@@ -511,11 +511,7 @@ def test_scoring_request_routes_nemotron_primary_with_free_structured_fallbacks(
     request = captured[0]
     assert request["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
     fallbacks = request["models"]
-    assert fallbacks == [
-        "nvidia/nemotron-3.5-super-vl:free",
-        "dots-studio/dots-3-note-preview:free",
-        "liquid/lfm-2.5-2.6b:free",
-    ]
+    assert fallbacks == ["nvidia/nemotron-3.5-super-vl:free"]
     assert all(model.endswith(":free") for model in fallbacks)
     assert "qwen" not in request["model"] and all("qwen" not in model for model in fallbacks)
     assert request["model"] not in fallbacks

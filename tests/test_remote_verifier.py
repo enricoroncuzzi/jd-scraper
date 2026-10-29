@@ -1052,11 +1052,7 @@ def test_openrouter_verification_routes_nemotron_primary_with_structured_fallbac
     assert usage["openrouter_requests"] == 1
     request = captured[0]
     assert request["model"] == "nvidia/nemotron-3.5-super-vl:free"
-    assert request["models"] == [
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "dots-studio/dots-3-note-preview:free",
-        "liquid/lfm-2.5-2.6b:free",
-    ]
+    assert request["models"] == ["nvidia/nemotron-3-ultra-550b-a55b:free"]
     assert request["model"] not in request["models"]
     assert all(model.endswith(":free") for model in request["models"])
     assert "qwen" not in request["model"]

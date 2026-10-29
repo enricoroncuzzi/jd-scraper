@@ -13,7 +13,7 @@ unless it says otherwise. Nothing here is run by a test.
 | `jds-process` | cheap checks, descriptions, language, remote check, scoring | LinkedIn (descriptions), OpenRouter, Groq, Postgres |
 | `jds-deliver` | alerts, daily delivery at 08:00 Rome time, packaging, Neon copy | Telegram, Neon, Postgres |
 | `jds-collect-freehire.timer`, `jds-collect-himalayas.timer` | one oneshot pull a day each (stage 2), clear of delivery and of each other | their public APIs, Postgres |
-| `jds-watchdog.timer` | every 10 minutes: alerts when a service or the store is down, or a fallback model answers a stage | Telegram, Postgres |
+| `jds-watchdog.timer` | every 10 minutes: alerts when a service or the store is down, a fallback model answers a stage, or the pipeline goes quiet | Telegram, Postgres |
 | `jds-backup.timer` | nightly `pg_dump` of the job store, keeping 7 days | Postgres, local disk |
 
 Services never call each other. Their only shared state is the PostgreSQL database
@@ -178,7 +178,21 @@ loses nothing.
 - Health: the day summary carries each service's state; the watchdog messages Telegram if a
   service is silent for over an hour, a daily source has missed its run or ended in error, no
   LinkedIn request has succeeded for 24 h of open time, a fallback model is answering a stage's
-  OpenRouter calls, or Postgres is down.
+  OpenRouter calls, the pipeline went quiet, or Postgres is down.
+- Went-quiet alerts (2026-10-29 seatbelt, `src/delivery/health.py`): three silent stalls the
+  checks above cannot see, each at most one alert a day. `linkedin_no_new_jobs` means LinkedIn
+  still answers requests successfully (`pace_events` shows an `ok` in the window) but has yielded
+  no new job for 24 h, which is what a page-layout or result change looks like. It stays quiet
+  while requests are refused, so a blocked or paused LinkedIn is still one alert.
+  `llm_stage:<stage>` means that stage has kept making model calls for 6 h with no usable answer
+  (an `ok` call that named a model), that is every model failing or only returning empty or
+  malformed output. It clears on the next answer, or once the stage has made no call for 6 h
+  (a stage switched off or renamed). The fallback guard ignores unanswered calls by design.
+  `scoring_silent` means no job reached `scored` in 24 h while the services keep beating, so
+  scoring stalled, in the stage itself or upstream of it. Allow 24 to 48 h for it: the 08:00
+  delivery re-stamps every job still at `scored` as it moves it to `delivered`, so the window
+  only empties a day after the stall starts. A fresh store that never scored says nothing.
+  Thresholds are the constants at the top of `src/delivery/health.py`, not config.
 - Logs: `journalctl -u jds-process --since today`. A refusal shows up as a
   `[pace] LinkedIn refused a ... request ... waiting Ns (refusal K in a row)` line, and the
   `status` pace line shows the refusals in a row and any wait (`waiting until ... Rome`).
@@ -358,7 +372,7 @@ age-out covers, and otherwise takes that tier's oldest AI-title job; it is a sha
 fetches, not absolute priority),
 `config/deliver.json`
 `linkedin_blocked_after_open_hours` (`24`) and `linkedin_blocked_repeat_hours` (`24`, the alert
-repeats at most once a day), `config/llm_fallback.json` `share` (`0.2`), `min_calls` (`5`) and
+and the went-quiet alerts repeat at most once a day), `config/llm_fallback.json` `share` (`0.2`), `min_calls` (`5`) and
 `enabled` (the fallback alert's off switch), and `config/sources.json` `spacing_seconds` (`[1, 2]`
 freehire, `[2, 5]` Himalayas) and the `throttle` block (`default_retry_after_seconds` 60,
 `max_wait_seconds` 300, `run_budget_seconds` 1700).
