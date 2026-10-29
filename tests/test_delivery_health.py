@@ -250,3 +250,257 @@ def test_the_pause_alert_is_retried_after_a_failed_send(store_conn, settings):
     sent = run_health_check(store_conn, settings, Outbox(), NOW + timedelta(minutes=5),
                             schedule=ACTIVE)
     assert len([m for m in sent if "LinkedIn paused" in m]) == 1
+
+
+# -- the "went quiet" checks ------------------------------------------------------------
+# Three silent failures the other alerts cannot see: LinkedIn answers requests but yields
+# no new job (a layout change), a model stage makes calls nobody answers (every model
+# failing, which the fallback guard leaves out by counting answers only), and nothing
+# reaches the scored stage at all. Each alerts at most once a day.
+
+def _pace_event(conn, at, outcome="ok"):
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pace_events (at, service, kind, outcome) "
+                    "VALUES (%s, 'collect-linkedin', 'search', %s)", (at, outcome))
+    conn.commit()
+
+
+def _llm_call(conn, stage, at, model="nvidia/nemotron-3-ultra-550b-a55b:free", outcome="ok"):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO llm_calls (id, stage, provider, request_model, response_model, latency_ms, "
+            "batch_size, attempt, outcome, prompt_version, started_at) "
+            "VALUES (gen_random_uuid(), %s, 'openrouter', 'requested', %s, 1000, 1, 1, %s, 'v', %s)",
+            (stage, model, outcome, at))
+    conn.commit()
+
+
+def _reached_scored(conn, at, stage="scored"):
+    job_id = record_sighting(conn, CardInput(source="linkedin", source_job_id=f"s-{at.isoformat()}",
+                                            source_url=f"https://l/{at.isoformat()}", title="t",
+                                            company="c"), at).job_id
+    with conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage = %s, stage_changed_at = %s WHERE id = %s",
+                    (stage, at, job_id))
+    conn.commit()
+    return job_id
+
+
+def _quiet_but_healthy(conn, at):
+    """Everything a healthy store shows at `at`: beats, a new LinkedIn job, successful
+    requests, an answered model call and a job that just reached scored."""
+    _refresh(conn, at)
+    _pace_event(conn, at - timedelta(hours=1))
+    _llm_call(conn, "scoring", at - timedelta(hours=1))
+    _reached_scored(conn, at - timedelta(hours=5))
+
+
+def test_a_quiet_healthy_day_has_no_issues(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    assert evaluate_health(store_conn, settings, NOW) == []
+
+
+# no new LinkedIn job in 24 h while requests succeed
+
+def test_no_new_linkedin_job_for_24h_while_requests_succeed_alerts(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    # The last new job is 25 h old, but the collector is still getting clean answers.
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE sightings SET seen_at = %s", (NOW - timedelta(hours=25),))
+    store_conn.commit()
+    _pace_event(store_conn, NOW - timedelta(hours=2))
+    issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
+    assert "linkedin_no_new_jobs" in issues
+    assert "no new job in 25h00m while requests still succeed" in issues["linkedin_no_new_jobs"].message
+
+
+def test_a_linkedin_job_23h_ago_is_not_an_issue(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE sightings SET seen_at = %s", (NOW - timedelta(hours=23),))
+    store_conn.commit()
+    _pace_event(store_conn, NOW - timedelta(minutes=1))
+    assert evaluate_health(store_conn, settings, NOW) == []
+
+
+def test_a_night_of_no_new_jobs_is_not_an_issue(store_conn, settings):
+    # The shipped config has no closed window, so 02:00 Rome with the last new job at 18:00
+    # is eight quiet hours, not a stall: the alert needs a full day of them.
+    night = datetime(2026, 10, 15, 0, 0, tzinfo=timezone.utc)   # 02:00 Rome
+    for name in ("collect-linkedin", "process", "deliver"):
+        heartbeat.start(store_conn, name, now=night)
+        heartbeat.beat(store_conn, name, "running", now=night)
+    record_sighting(store_conn, CardInput(source="linkedin", source_job_id="1", source_url="https://l/1",
+                                         title="t", company="c"), night - timedelta(hours=8))
+    store_conn.commit()
+    _pace_event(store_conn, night - timedelta(minutes=10))
+    _llm_call(store_conn, "scoring", night - timedelta(minutes=10))
+    _reached_scored(store_conn, night - timedelta(hours=5))
+    assert evaluate_health(store_conn, settings, night) == []
+
+
+def test_no_new_jobs_while_every_request_is_refused_is_left_to_the_block_alert(store_conn, settings):
+    # A blocked or paused LinkedIn needs no second alert: with no successful request in
+    # the window, the new-jobs check stays quiet and the block/pause alert owns it.
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE sightings SET seen_at = %s", (NOW - timedelta(hours=25),))
+    store_conn.commit()
+    with store_conn.cursor() as cur:
+        cur.execute("DELETE FROM pace_events")
+    store_conn.commit()
+    _pace_event(store_conn, NOW - timedelta(hours=2), outcome="refused")
+    assert "linkedin_no_new_jobs" not in {i.key for i in evaluate_health(store_conn, settings, NOW)}
+
+
+def test_a_linkedin_pause_day_does_not_add_a_new_jobs_alert(store_conn, settings):
+    # The pause is already alerted; a pause day stops the requests, so nothing succeeds
+    # and the new-jobs check has nothing to contradict.
+    _paused_today(store_conn)
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("DELETE FROM pace_events")
+        cur.execute("UPDATE sightings SET seen_at = %s", (NOW - timedelta(hours=30),))
+    store_conn.commit()
+    _pace_event(store_conn, NOW - timedelta(hours=5), outcome="refused")
+    keys = {i.key for i in evaluate_health(store_conn, settings, NOW, schedule=ACTIVE)}
+    assert keys == {"linkedin_paused"}
+
+
+def test_a_store_that_never_saw_a_linkedin_job_does_not_alert(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("DELETE FROM sightings")
+    store_conn.commit()
+    _pace_event(store_conn, NOW - timedelta(minutes=5))
+    assert "linkedin_no_new_jobs" not in {i.key for i in evaluate_health(store_conn, settings, NOW)}
+
+
+def test_the_new_jobs_alert_is_sent_at_most_once_a_day(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE sightings SET seen_at = %s", (NOW - timedelta(hours=25),))
+    store_conn.commit()
+    outbox = Outbox()
+    for at, expected in ((NOW, True), (NOW + timedelta(hours=6), False),
+                         (NOW + timedelta(hours=23), False), (NOW + timedelta(hours=24), True)):
+        _pace_event(store_conn, at - timedelta(minutes=1))
+        _refresh(store_conn, at)
+        with store_conn.cursor() as cur:
+            cur.execute("UPDATE sightings SET seen_at = %s", (NOW - timedelta(hours=25),))
+        store_conn.commit()
+        sent = run_health_check(store_conn, settings, outbox, at)
+        assert bool([m for m in sent if "no new job in" in m]) is expected, at
+
+
+# a model stage with calls but no answers, over the last 6 h
+
+def test_a_stage_with_calls_but_no_answers_alerts(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    _llm_call(store_conn, "verification", NOW - timedelta(hours=2), model=None, outcome="error")
+    _llm_call(store_conn, "verification", NOW - timedelta(hours=1), model=None, outcome="error")
+    issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
+    assert "llm_stage:verification" in issues
+    assert "made 2 model call(s)" in issues["llm_stage:verification"].message
+    assert "none answered" in issues["llm_stage:verification"].message
+
+
+def test_one_answer_in_the_window_is_enough(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    _llm_call(store_conn, "verification", NOW - timedelta(hours=1), model=None, outcome="error")
+    _llm_call(store_conn, "verification", NOW - timedelta(minutes=30))
+    assert {i.key for i in evaluate_health(store_conn, settings, NOW)} == set()
+
+
+def test_an_unanswered_call_older_than_six_hours_does_not_count(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    _llm_call(store_conn, "tailoring", NOW - timedelta(hours=7), model=None, outcome="error")
+    assert {i.key for i in evaluate_health(store_conn, settings, NOW)} == set()
+
+
+def test_each_silent_stage_gets_its_own_issue(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("DELETE FROM llm_calls")
+    store_conn.commit()
+    _llm_call(store_conn, "scoring", NOW - timedelta(hours=1), model=None, outcome="error")
+    _llm_call(store_conn, "tailoring", NOW - timedelta(hours=1), model=None, outcome="error")
+    keys = {i.key for i in evaluate_health(store_conn, settings, NOW)}
+    assert keys == {"llm_stage:scoring", "llm_stage:tailoring"}
+
+
+def test_the_stage_alert_is_sent_at_most_once_a_day(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    outbox = Outbox()
+    for hours, expected in ((0, True), (6, False), (23, False), (24, True)):
+        at = NOW + timedelta(hours=hours)
+        _refresh(store_conn, at)
+        _llm_call(store_conn, "verification", at - timedelta(minutes=5), model=None, outcome="error")
+        sent = run_health_check(store_conn, settings, outbox, at)
+        assert bool([m for m in sent if "verification stage" in m]) is expected, at
+
+
+# no job reaching the scored stage in 24 h
+
+def test_no_job_scored_for_24h_alerts(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage_changed_at = %s WHERE stage = 'scored'",
+                    (NOW - timedelta(hours=26),))
+    store_conn.commit()
+    issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
+    assert "scoring_silent" in issues
+    assert "no job has reached the scored stage in 26h00m" in issues["scoring_silent"].message
+
+
+def test_a_job_scored_23h_ago_is_not_an_issue(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage_changed_at = %s WHERE stage = 'scored'",
+                    (NOW - timedelta(hours=23),))
+    store_conn.commit()
+    assert {i.key for i in evaluate_health(store_conn, settings, NOW)} == set()
+
+
+def test_a_delivered_job_counts_as_having_reached_scored(store_conn, settings):
+    # Scored jobs move on to delivered at 08:00; the window must not empty out then.
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage = 'delivered', stage_changed_at = %s WHERE stage = 'scored'",
+                    (NOW - timedelta(hours=2),))
+    store_conn.commit()
+    assert {i.key for i in evaluate_health(store_conn, settings, NOW)} == set()
+
+
+def test_an_aged_out_job_is_not_a_scored_job(store_conn, settings):
+    # Tier 3/4 age-out moves `seen` jobs to `expired` without scoring them; a fresh
+    # expiry must not make a dead scoring stage look alive.
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage_changed_at = %s WHERE stage = 'scored'",
+                    (NOW - timedelta(hours=26),))
+    store_conn.commit()
+    _reached_scored(store_conn, NOW - timedelta(minutes=1), stage="expired")
+    assert "scoring_silent" in {i.key for i in evaluate_health(store_conn, settings, NOW)}
+
+
+def test_a_store_that_never_scored_a_job_does_not_alert(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("DELETE FROM jobs")
+    store_conn.commit()
+    assert "scoring_silent" not in {i.key for i in evaluate_health(store_conn, settings, NOW)}
+
+
+def test_the_scoring_alert_is_sent_at_most_once_a_day(store_conn, settings):
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET stage_changed_at = %s WHERE stage = 'scored'",
+                    (NOW - timedelta(hours=25),))
+    store_conn.commit()
+    outbox = Outbox()
+    for hours, expected in ((0, True), (6, False), (23, False), (24, True)):
+        at = NOW + timedelta(hours=hours)
+        _refresh(store_conn, at)
+        sent = run_health_check(store_conn, settings, outbox, at)
+        assert bool([m for m in sent if "scored stage" in m]) is expected, at

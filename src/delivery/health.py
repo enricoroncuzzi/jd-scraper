@@ -1,15 +1,22 @@
 """Service health (design section 4.7): what the day summary shows and what the
 watchdog alerts on.
 
-Three checks remain: a service that has not beaten its heart in over an hour (or,
-for a timer-driven source, past its interval plus slack), a daily source whose
-last run ended in error, and LinkedIn having no successful request for 24 h of
-open time. A fired alert repeats on its own cadence and says so once when it
-clears; the ledger lives in kv_state.
+Checks: a service that has not beaten its heart in over an hour (or, for a
+timer-driven source, past its interval plus slack), a daily source whose last run
+ended in error, and LinkedIn having no successful request for 24 h of open time. A
+fired alert repeats on its own cadence and says so once when it clears; the ledger
+lives in kv_state.
 
 The old all-source "nothing collected for six hours" check is gone. The LinkedIn
 silence counts only open time: with the shipped config there is no closed window,
 so open time is wall time; a restored window is subtracted as before.
+
+The 2026-10-29 "went quiet" seatbelt adds the three silent stalls no other alert
+can see, each alerted at most once a day: successful LinkedIn requests that yield
+no new job (a page-layout or result change), a model stage whose calls nobody
+answers (every model failing, which the fallback guard leaves out because it counts
+answers only), and no job reaching the scored stage (a stall upstream of scoring
+while every service keeps beating).
 """
 import json
 from dataclasses import dataclass
@@ -24,6 +31,19 @@ from src.linkedin.schedule import (
 
 SERVICE_DOWN_AFTER = timedelta(hours=1)
 REPEAT_ALERT_AFTER = timedelta(hours=6)
+
+# The "went quiet" thresholds (2026-10-29 seatbelt), each a full day except a model
+# stage, where six hours without a single answer is already past every retry.
+LINKEDIN_NEW_JOB_SILENCE_AFTER = timedelta(hours=24)
+LLM_STAGE_ANSWER_SILENCE_AFTER = timedelta(hours=6)
+SCORING_SILENCE_AFTER = timedelta(hours=24)
+# A job reached `scored` while its stage is one of these: `expired` is left out because
+# the age-out retires `seen` jobs there without ever scoring them.
+SCORED_STAGES = ("scored", "delivered")
+LLM_STAGE_ISSUE_PREFIX = "llm_stage:"
+# Alerts that fire at most once a day: the LinkedIn silence, pause and quiet feed, a
+# silent model stage and a stalled scoring stage would otherwise repeat every six hours.
+ONCE_A_DAY_ISSUES = ("linkedin_blocked", "linkedin_paused", "linkedin_no_new_jobs", "scoring_silent")
 
 # Where the operator lists extra sources, and how the watchdog and the day summary learn about
 # them: one source of truth for both, so the summary cannot disagree with the watchdog.
@@ -136,13 +156,78 @@ def linkedin_paused_issue(conn, settings: DeliverySettings, now: datetime,
                        f"LinkedIn paused for the rest of the day (block persisted 1h: {reason})")
 
 
+def linkedin_new_job_issue(conn, now: datetime,
+                           schedule: ScheduleConfig | None = None) -> HealthIssue | None:
+    """LinkedIn answers requests but yields no new job: a page-layout or result change
+    that the request-success check cannot see. None when LinkedIn never yielded a job
+    (the service check covers that) and None while requests are refused, so a blocked
+    or paused LinkedIn stays one alert."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(seen_at) FROM sightings WHERE source = 'linkedin'")
+        last = cur.fetchone()[0]
+        if last is None:
+            return None
+        cur.execute("SELECT count(*) FROM pace_events WHERE outcome = 'ok' AND at >= %s",
+                    (now - LINKEDIN_NEW_JOB_SILENCE_AFTER,))
+        succeeded = cur.fetchone()[0]
+    quiet = now - last
+    if not succeeded or quiet < LINKEDIN_NEW_JOB_SILENCE_AFTER:
+        return None
+    schedule = schedule or load_schedule_config()
+    last_rome = last.astimezone(schedule.zone).strftime("%Y-%m-%d %H:%M")
+    return HealthIssue("linkedin_no_new_jobs",
+                       f"LinkedIn: no new job in {age_text(quiet)} while requests still succeed "
+                       f"(last new job {last_rome} Rome)")
+
+
+def llm_stage_issues(conn, now: datetime) -> list[HealthIssue]:
+    """A stage that made model calls nobody answered. The fallback guard counts answers
+    only, so every model failing is invisible there; here it is one issue per stage."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT stage, count(*) AS calls, count(response_model) AS answered "
+            "FROM llm_calls WHERE started_at >= %s GROUP BY stage ORDER BY stage",
+            (now - LLM_STAGE_ANSWER_SILENCE_AFTER,))
+        rows = cur.fetchall()
+    return [HealthIssue(f"{LLM_STAGE_ISSUE_PREFIX}{stage}",
+                        f"the {stage} stage made {calls} model call(s) in the last "
+                        f"{age_text(LLM_STAGE_ANSWER_SILENCE_AFTER)} and none answered")
+            for stage, calls, answered in rows if not answered]
+
+
+def scoring_silence_issue(conn, now: datetime,
+                          schedule: ScheduleConfig | None = None) -> HealthIssue | None:
+    """No job reached the scored stage: the processor keeps beating and the cheap stages
+    keep running, so nothing else shows that scoring stopped. None when no job has ever
+    been scored (a fresh store; the service checks cover its start)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(stage_changed_at) FROM jobs WHERE stage = ANY(%s)",
+                    (list(SCORED_STAGES),))
+        last = cur.fetchone()[0]
+    if last is None:
+        return None
+    quiet = now - last
+    if quiet < SCORING_SILENCE_AFTER:
+        return None
+    schedule = schedule or load_schedule_config()
+    last_rome = last.astimezone(schedule.zone).strftime("%Y-%m-%d %H:%M")
+    return HealthIssue("scoring_silent",
+                       f"no job has reached the scored stage in {age_text(quiet)} "
+                       f"(last {last_rome} Rome)")
+
+
 def evaluate_health(conn, settings: DeliverySettings, now: datetime,
                     silence_allowance: dict[str, timedelta] | None = None,
                     schedule: ScheduleConfig | None = None) -> list[HealthIssue]:
+    schedule = schedule or load_schedule_config()
     issues = service_issues(conn, settings, now, silence_allowance)
-    blocked = linkedin_blocked_issue(conn, settings, now, schedule)
-    paused = linkedin_paused_issue(conn, settings, now, schedule)
-    return issues + ([blocked] if blocked else []) + ([paused] if paused else [])
+    for issue in (linkedin_blocked_issue(conn, settings, now, schedule),
+                  linkedin_paused_issue(conn, settings, now, schedule),
+                  linkedin_new_job_issue(conn, now, schedule),
+                  scoring_silence_issue(conn, now, schedule)):
+        if issue:
+            issues.append(issue)
+    return issues + llm_stage_issues(conn, now)
 
 
 def health_lines(conn, settings: DeliverySettings, now: datetime,
@@ -163,9 +248,9 @@ def health_lines(conn, settings: DeliverySettings, now: datetime,
 
 
 def repeat_after(key: str, settings: DeliverySettings) -> timedelta:
-    """How long before one alert key fires again: the LinkedIn block at most once a
-    day, every other alert every six hours."""
-    if key in ("linkedin_blocked", "linkedin_paused"):
+    """How long before one alert key fires again: the LinkedIn block, the pause and the
+    went-quiet checks at most once a day, every other alert every six hours."""
+    if key in ONCE_A_DAY_ISSUES or key.startswith(LLM_STAGE_ISSUE_PREFIX):
         return timedelta(hours=settings.linkedin_blocked_repeat_hours)
     return REPEAT_ALERT_AFTER
 

@@ -102,10 +102,10 @@ _OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 # 2 days before being caught; keep this at 3 items, one per provider.
 _OPENROUTER_FALLBACK_MODELS = [
     "nvidia/nemotron-3.5-super-vl:free",
-    # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
-    # an unknown models entry can 400 the whole request.
-    "dots-studio/dots-3-note-preview:free",
-    "liquid/lfm-2.5-2.6b:free",
+    # One known-good fallback only (2026-10-29 seatbelt): the 2.6B liquid model once
+    # answered scoring for ~30 h and inflated the digest, and the dots preview stops
+    # being offered on 2026-12-31 (an unknown entry can 400 the whole request). A
+    # short list beats a wide one: a stalled stage is visible and fixed by one re-pin.
 ]
 
 _PROMPT_VERSION = telemetry.prompt_version(_SYSTEM, _HUMAN)

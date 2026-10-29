@@ -19,6 +19,12 @@ VL = "nvidia/nemotron-3.5-super-vl:free"
 DOTS = "dots-studio/dots-3-note-preview:free"
 LFM = "liquid/lfm-2.5-2.6b:free"
 
+# Retired from every chain on 2026-10-29. LFM (2.6B) silently answered scoring for
+# about 30 hours on 2026-10-20/21 and filled the digest with noise; DOTS stops being
+# offered on 2026-12-31, and an entry OpenRouter cannot resolve can 400 the whole
+# request. They may still appear in tests as an arbitrary "model that answered" string.
+RETIRED = (DOTS, LFM)
+
 # The slugs the eval measured as unusable: Nemotron Super 404s on every call
 # since 2026-10-20 10:13 Rome, and apodex is not in OpenRouter's model list.
 REMOVED = (
@@ -37,10 +43,20 @@ PINS = {
 
 def test_each_stage_pins_the_approved_primary_and_fallback_order():
     assert PINS == {
-        "scoring": (ULTRA, [VL, DOTS, LFM]),
-        "verification": (VL, [ULTRA, DOTS, LFM]),
-        "tailoring": (ULTRA, [DOTS, LFM, VL]),
+        "scoring": (ULTRA, [VL]),
+        "verification": (VL, [ULTRA]),
+        "tailoring": (ULTRA, [VL]),
     }
+
+
+@pytest.mark.parametrize("stage", sorted(PINS))
+def test_no_stage_pins_a_retired_fallback_and_each_keeps_one(stage):
+    primary, fallbacks = PINS[stage]
+    assert primary not in RETIRED
+    assert set(fallbacks).isdisjoint(RETIRED)
+    # Keep a chain: a stage with no fallback dies on the first busy primary. The pins
+    # are still independent per stage, so one stage's chain is not the other's.
+    assert len(fallbacks) >= 1
 
 
 @pytest.mark.parametrize("stage", sorted(PINS))

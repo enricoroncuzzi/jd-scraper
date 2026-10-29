@@ -177,10 +177,9 @@ _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_MODEL = "nvidia/nemotron-3.5-super-vl:free"
 _OPENROUTER_FALLBACK_MODELS = [
     "nvidia/nemotron-3-ultra-550b-a55b:free",
-    # expires 2026-12-31 (OpenRouter expiration_date). Re-check before then:
-    # an unknown models entry can 400 the whole request.
-    "dots-studio/dots-3-note-preview:free",
-    "liquid/lfm-2.5-2.6b:free",
+    # One known-good fallback only (2026-10-29 seatbelt): the 2.6B liquid model once
+    # answered for ~30 h and inflated the digest, and the dots preview stops being
+    # offered on 2026-12-31 (an unknown entry can 400 the whole request).
 ]
 # Verification may use 4/10 of the account-wide daily request allowance.
 # Scoring and tailoring share that allowance and are not capped here.

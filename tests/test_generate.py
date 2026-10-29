@@ -344,11 +344,7 @@ def test_tailoring_request_routes_nemotron_with_structured_fallbacks(tmp_path, m
     assert selection.cover_letter.proof_id == "exp.0.b0"
     request = captured[0]
     assert request["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
-    assert request["models"] == [
-        "dots-studio/dots-3-note-preview:free",
-        "liquid/lfm-2.5-2.6b:free",
-        "nvidia/nemotron-3.5-super-vl:free",
-    ]
+    assert request["models"] == ["nvidia/nemotron-3.5-super-vl:free"]
     assert "qwen" not in request["model"]
     assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]
 
