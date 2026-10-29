@@ -13,10 +13,10 @@ so open time is wall time; a restored window is subtracted as before.
 
 The 2026-10-29 "went quiet" seatbelt adds the three silent stalls no other alert
 can see, each alerted at most once a day: successful LinkedIn requests that yield
-no new job (a page-layout or result change), a model stage whose calls nobody
-answers (every model failing, which the fallback guard leaves out because it counts
-answers only), and no job reaching the scored stage (a stall upstream of scoring
-while every service keeps beating).
+no new job (a page-layout or result change), a model stage whose calls produce no
+usable answer (every model failing, or only empty output, which the fallback guard
+leaves out because it counts answers only), and no job reaching the scored stage (a
+stall in or upstream of scoring, while every service keeps beating).
 """
 import json
 from dataclasses import dataclass
@@ -181,17 +181,21 @@ def linkedin_new_job_issue(conn, now: datetime,
 
 
 def llm_stage_issues(conn, now: datetime) -> list[HealthIssue]:
-    """A stage that made model calls nobody answered. The fallback guard counts answers
-    only, so every model failing is invisible there; here it is one issue per stage."""
+    """A stage that made model calls and got no usable answer. The fallback guard counts
+    answers only, so every model failing is invisible there; here it is one issue per
+    stage. A call counts as answered only when it ended `ok` with a model named: a
+    provider that keeps returning empty or malformed structured output (`invalid_output`)
+    has answered nothing either."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT stage, count(*) AS calls, count(response_model) AS answered "
+            "SELECT stage, count(*) AS calls, "
+            "count(*) FILTER (WHERE outcome = 'ok' AND response_model IS NOT NULL) AS answered "
             "FROM llm_calls WHERE started_at >= %s GROUP BY stage ORDER BY stage",
             (now - LLM_STAGE_ANSWER_SILENCE_AFTER,))
         rows = cur.fetchall()
     return [HealthIssue(f"{LLM_STAGE_ISSUE_PREFIX}{stage}",
                         f"the {stage} stage made {calls} model call(s) in the last "
-                        f"{age_text(LLM_STAGE_ANSWER_SILENCE_AFTER)} and none answered")
+                        f"{age_text(LLM_STAGE_ANSWER_SILENCE_AFTER)} and none produced a usable answer")
             for stage, calls, answered in rows if not answered]
 
 

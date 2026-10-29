@@ -402,7 +402,22 @@ def test_a_stage_with_calls_but_no_answers_alerts(store_conn, settings):
     issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
     assert "llm_stage:verification" in issues
     assert "made 2 model call(s)" in issues["llm_stage:verification"].message
-    assert "none answered" in issues["llm_stage:verification"].message
+    assert "none produced a usable answer" in issues["llm_stage:verification"].message
+
+
+def test_a_stage_that_only_gets_empty_answers_alerts(store_conn, settings):
+    # A provider can answer on time with a well-formed but empty or invalid payload (the
+    # dots-3 `{"offers": []}` pattern). The call names a model, so `response_model` is set,
+    # but the stage produced nothing usable: that is a dead stage, not an answer.
+    _quiet_but_healthy(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("DELETE FROM llm_calls")
+    store_conn.commit()
+    for _ in range(3):
+        _llm_call(store_conn, "verification", NOW - timedelta(hours=1), outcome="invalid_output")
+    issues = {i.key: i for i in evaluate_health(store_conn, settings, NOW)}
+    assert "llm_stage:verification" in issues
+    assert "made 3 model call(s)" in issues["llm_stage:verification"].message
 
 
 def test_one_answer_in_the_window_is_enough(store_conn, settings):

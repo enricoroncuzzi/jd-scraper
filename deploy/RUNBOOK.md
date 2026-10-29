@@ -184,11 +184,14 @@ loses nothing.
   still answers requests successfully (`pace_events` shows an `ok` in the window) but has yielded
   no new job for 24 h, which is what a page-layout or result change looks like. It stays quiet
   while requests are refused, so a blocked or paused LinkedIn is still one alert.
-  `llm_stage:<stage>` means that stage made model calls in the last 6 h and none was answered,
-  that is every model failing (the fallback guard ignores unanswered calls by design).
-  `scoring_silent` means no job reached `scored` in 24 h while the services keep beating, so the
-  stall is upstream of scoring; a fresh store that never scored says nothing. Thresholds are the
-  constants at the top of `src/delivery/health.py`, not config.
+  `llm_stage:<stage>` means that stage made model calls in the last 6 h and none produced a
+  usable answer (an `ok` call that named a model), that is every model failing or only returning
+  empty or malformed output; the fallback guard ignores unanswered calls by design.
+  `scoring_silent` means no job reached `scored` in 24 h while the services keep beating, so
+  scoring stalled, in the stage itself or upstream of it. Allow 24 to 48 h for it: the 08:00
+  delivery re-stamps every job still at `scored` as it moves it to `delivered`, so the window
+  only empties a day after the stall starts. A fresh store that never scored says nothing.
+  Thresholds are the constants at the top of `src/delivery/health.py`, not config.
 - Logs: `journalctl -u jds-process --since today`. A refusal shows up as a
   `[pace] LinkedIn refused a ... request ... waiting Ns (refusal K in a row)` line, and the
   `status` pace line shows the refusals in a row and any wait (`waiting until ... Rome`).
