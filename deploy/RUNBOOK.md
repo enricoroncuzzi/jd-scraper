@@ -184,9 +184,10 @@ loses nothing.
   still answers requests successfully (`pace_events` shows an `ok` in the window) but has yielded
   no new job for 24 h, which is what a page-layout or result change looks like. It stays quiet
   while requests are refused, so a blocked or paused LinkedIn is still one alert.
-  `llm_stage:<stage>` means that stage made model calls in the last 6 h and none produced a
-  usable answer (an `ok` call that named a model), that is every model failing or only returning
-  empty or malformed output; the fallback guard ignores unanswered calls by design.
+  `llm_stage:<stage>` means that stage has kept making model calls for 6 h with no usable answer
+  (an `ok` call that named a model), that is every model failing or only returning empty or
+  malformed output; it holds until an answer arrives, however sparse the calls. The fallback
+  guard ignores unanswered calls by design.
   `scoring_silent` means no job reached `scored` in 24 h while the services keep beating, so
   scoring stalled, in the stage itself or upstream of it. Allow 24 to 48 h for it: the 08:00
   delivery re-stamps every job still at `scored` as it moves it to `delivered`, so the window
