@@ -3,7 +3,7 @@ import pytest
 import tailor as tailor_cli
 from src.tailor.cv_master import parse_proof_pool_line
 from src.tailor.generate import Selection, CoverLetterParts
-from tests.tailor_helpers import EXAMPLE_CL_MASTER, write_cl_master
+from tests.tailor_helpers import EXAMPLE_CL_MASTER, generation, write_cl_master
 
 MASTER = """# Enrico Roncuzzi
 
@@ -86,7 +86,7 @@ def _stub_pipeline(monkeypatch, master_path, pages=lambda path: 1):
     """Everything `run` calls below the model and the browser: a fixed selection, no PDFs,
     and a one-page count unless a test says otherwise."""
     monkeypatch.setattr(tailor_cli, "generate",
-                        lambda jd, c, key, **kw: _full_selection(master_path))
+                        lambda jd, c, key, **kw: generation(_full_selection(master_path)))
     monkeypatch.setattr(tailor_cli, "render_pdf", lambda md, css, out: open(out, "w").write("PDF"))
     monkeypatch.setattr(tailor_cli, "render_cover_letter_pdf",
                         lambda text, out, letterhead: open(out, "w").write("PDF"))
@@ -150,7 +150,8 @@ def test_failed_tailoring_does_not_overwrite_another_offer_from_the_same_company
     bad.cover_letter.hook = "I am excited to apply and passionate about this."
     selections = iter([good, bad])
     _stub_pipeline(monkeypatch, str(master))
-    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: next(selections))
+    monkeypatch.setattr(tailor_cli, "generate",
+                        lambda jd, c, key, **kw: generation(next(selections)))
 
     first_dir = tailor_cli.run(str(first), str(root), str(master), "", "fake", cl_master_path=cl)
     with pytest.raises(ValueError, match="HALTED"):
@@ -176,7 +177,7 @@ def test_run_halts_on_cover_letter_violation(tmp_path, monkeypatch):
     sel = _full_selection(master)
     sel.cover_letter.hook = "I am excited to apply and passionate about this."  # banned phrases
     _stub_pipeline(monkeypatch, master)
-    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: sel)
+    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: generation(sel))
     monkeypatch.setattr(tailor_cli, "render_cover_letter_pdf", lambda text, out, letterhead: None)
 
     with pytest.raises(ValueError, match="HALTED"):
@@ -192,7 +193,7 @@ def test_run_halts_on_invalid_proof_id(tmp_path, monkeypatch):
     sel = _full_selection(master)
     sel.cover_letter.proof_id = "exp.9.b9"  # not a real bullet
     _stub_pipeline(monkeypatch, master)
-    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: sel)
+    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: generation(sel))
     monkeypatch.setattr(tailor_cli, "render_cover_letter_pdf", lambda text, out, letterhead: None)
     with pytest.raises(ValueError, match="HALTED"):
         tailor_cli.run(str(note), str(tmp_path / "o"), master, "", "fake", cl_master_path=cl)
@@ -208,7 +209,7 @@ def test_run_halts_on_a_third_person_cover_letter(tmp_path, monkeypatch):
     sel = _full_selection(master)
     sel.cover_letter.hook = "Enrico builds production grade multi-agent systems for live platforms."
     _stub_pipeline(monkeypatch, master)
-    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: sel)
+    monkeypatch.setattr(tailor_cli, "generate", lambda jd, c, key, **kw: generation(sel))
 
     with pytest.raises(ValueError, match="HALTED"):
         tailor_cli.run(str(note), str(tmp_path / "o"), master, "", "fake", cl_master_path=cl)
@@ -240,7 +241,7 @@ def test_run_picks_the_pool_sentence_that_only_the_letter_master_has(tmp_path, m
     def selection(jd, c, key, **kw):
         sel = _full_selection(master)
         sel.cover_letter.proof_id = "lp.example.0"
-        return sel
+        return generation(sel)
 
     monkeypatch.setattr(tailor_cli, "generate", selection)
     out_dir = tailor_cli.run(str(note), str(root), master, "", "fake", cl_master_path=cl)

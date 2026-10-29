@@ -70,9 +70,10 @@ def run(
               "CL_master.md")
     print(f"[tailor] Tailoring for {jd.title} at {jd.company}...")
 
-    sel = generate(jd, canonical, api_key)
-    if sel is None:
+    gen = generate(jd, canonical, api_key)
+    if gen is None:
         raise ValueError("HALTED: generation returned no result")
+    sel = gen.selection
 
     # Always assemble the FULL canonical bullet set (protects the one-click flow: the
     # required-metrics gate can never fail on a legit run). included_bullet_ids stays in

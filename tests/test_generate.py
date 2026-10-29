@@ -166,7 +166,7 @@ def test_tailoring_generation_is_recorded(tmp_path):
     with patch("src.tailor.generate._build_chain", return_value=chain), patch(
         "src.tailor.generate.telemetry.llm_call", side_effect=spy
     ):
-        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+        selection = generate(_jd(), _canon(tmp_path), api_key="k").selection
 
     assert selection.cover_letter.proof_id == "exp.0.b0"
     assert len(recorded) == 1
@@ -184,7 +184,7 @@ def test_tailoring_retries_empty_structured_output_once(tmp_path):
     chain.invoke.side_effect = [None, _selection()]
 
     with patch("src.tailor.generate._build_chain", return_value=chain):
-        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+        selection = generate(_jd(), _canon(tmp_path), api_key="k").selection
 
     assert chain.invoke.call_count == 2
     assert selection.cover_letter.proof_id == "exp.0.b0"
@@ -202,7 +202,7 @@ def test_tailoring_retries_validation_error_once(tmp_path):
         chain.invoke.side_effect = [invalid, _selection()]
 
     with patch("src.tailor.generate._build_chain", return_value=chain):
-        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+        selection = generate(_jd(), _canon(tmp_path), api_key="k").selection
 
     assert chain.invoke.call_count == 2
     assert selection.cover_letter.proof_id == "exp.0.b0"
@@ -240,7 +240,7 @@ def test_tailoring_retries_rate_limit_then_succeeds(tmp_path, monkeypatch):
     chain.invoke.side_effect = [_rate_limit(30), _selection()]
 
     with patch("src.tailor.generate._build_chain", return_value=chain):
-        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+        selection = generate(_jd(), _canon(tmp_path), api_key="k").selection
 
     assert chain.invoke.call_count == 2
     assert selection.cover_letter.proof_id == "exp.0.b0"
@@ -257,7 +257,7 @@ def test_tailoring_retries_upstream_200_error_body_then_succeeds(tmp_path, monke
     ]
 
     with patch("src.tailor.generate._build_chain", return_value=chain):
-        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+        selection = generate(_jd(), _canon(tmp_path), api_key="k").selection
 
     assert chain.invoke.call_count == 2
     assert selection.cover_letter.proof_id == "exp.0.b0"
@@ -337,7 +337,7 @@ def test_tailoring_request_routes_nemotron_with_structured_fallbacks(tmp_path, m
         f"http://127.0.0.1:{server.server_port}/api/v1",
     )
     try:
-        selection = generate(_jd(), _canon(tmp_path), api_key="k")
+        selection = generate(_jd(), _canon(tmp_path), api_key="k").selection
     finally:
         server.shutdown()
 
@@ -351,3 +351,96 @@ def test_tailoring_request_routes_nemotron_with_structured_fallbacks(tmp_path, m
     ]
     assert "qwen" not in request["model"]
     assert request["tool_choice"]["function"]["name"] == request["tools"][0]["function"]["name"]
+
+
+def test_generation_names_the_model_that_answered(tmp_path, monkeypatch):
+    # OpenRouter's fallback chain can answer with a different model than the one asked;
+    # the trace must name the one that did, not the one that was requested.
+    from src.tailor.generate import Generation, generate
+
+    captured = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            captured.append(body)
+            tool_name = body["tools"][0]["function"]["name"]
+            payload = {
+                "id": "gen-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "dots-studio/dots-3-note-preview:free",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps({
+                                    "included_bullet_ids": ["exp.0.b0"],
+                                    "skill_order": ["skill.languages", "skill.ai_stack"],
+                                    "cover_letter": {
+                                        "hook": "I focus on agents.",
+                                        "bridge": "I built pipelines.",
+                                        "proof_id": "exp.0.b0",
+                                    },
+                                    "hr_message": "Hi, I saw the role.",
+                                }),
+                            },
+                        }],
+                    },
+                }],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 12, "total_tokens": 52},
+            }
+            raw = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(
+        "src.tailor.generate._OPENROUTER_BASE_URL",
+        f"http://127.0.0.1:{server.server_port}/api/v1",
+    )
+    try:
+        gen = generate(_jd(), _canon(tmp_path), api_key="k")
+    finally:
+        server.shutdown()
+
+    assert isinstance(gen, Generation)
+    assert gen.selection.cover_letter.proof_id == "exp.0.b0"
+    assert gen.model_requested == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert gen.model_answered == "dots-studio/dots-3-note-preview:free"
+
+
+def test_generation_model_answered_is_none_when_the_provider_does_not_say(tmp_path):
+    # The stub chain fires no callback, so counter.last_model stays None: the trace has to
+    # record "unknown", never the requested model pretending to be the answering one.
+    from src.tailor.generate import generate
+
+    chain = MagicMock()
+    chain.invoke.return_value = _selection()
+
+    with patch("src.tailor.generate._build_chain", return_value=chain):
+        gen = generate(_jd(), _canon(tmp_path), api_key="k")
+
+    assert gen.model_answered is None
+    assert gen.model_requested == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+
+def test_the_prompt_version_does_not_move_with_the_generation_wrapper():
+    # Generation is a plain dataclass outside the pydantic schema; adding it must not
+    # change the Selection JSON schema the prompt hash is computed from.
+    assert "model_answered" not in json.dumps(Selection.model_json_schema())
