@@ -115,11 +115,11 @@ def test_html_rejected_by_telegram_falls_back_to_plain_text(capsys):
         calls.append(parse_mode)
         return parse_mode is None
 
-    assert send_with_fallback(settings, "<b>x</b>", formatted=True, sender=sender) is True
+    assert bool(send_with_fallback(settings, "<b>x</b>", formatted=True, sender=sender)) is True
     assert calls == ["HTML", None]
     # The plain-text resend is logged so a silently degraded digest is visible.
     assert "resending as plain text" in capsys.readouterr().out
-    assert send_with_fallback(settings, "plain", formatted=False, sender=sender) is True
+    assert bool(send_with_fallback(settings, "plain", formatted=False, sender=sender)) is True
     assert calls[-1] is None
 
 
@@ -238,7 +238,7 @@ def _malformed_html(text: str) -> bool:
     return "<" in stripped or ">" in stripped or _BARE_AMPERSAND.search(stripped) is not None
 
 
-def _telegram_simulator():
+def _telegram_simulator(limit: int | None = None, reject=None):
     calls = []
 
     def post(url, json, timeout):
@@ -246,10 +246,133 @@ def _telegram_simulator():
         if json.get("parse_mode") == "HTML" and _malformed_html(json["text"]):
             return _Response(False, 400, '{"ok":false,"error_code":400,"description":"Bad Request: '
                                          "can't parse entities: Unsupported start tag")
+        if post.limit is not None and len(json["text"]) > post.limit:
+            # Telegram's real answer to an oversized message, to both the HTML
+            # send and the plain-text resend.
+            return _Response(False, 400, '{"ok":false,"error_code":400,"description":"Bad Request: '
+                                         'message is too long"}')
+        if post.reject is not None and (status := post.reject(json["text"])):
+            return _Response(False, status, '{"ok":false,"error_code":%d}' % status)
         return _Response(True, 200, '{"ok":true}')
 
     post.calls = calls
+    post.limit = limit
+    post.reject = reject
     return post
+
+
+def _service(tmp_path, post, monkeypatch):
+    """A deliver service whose Telegram is the `post` stand-in, going through the
+    real send_with_fallback."""
+    monkeypatch.setattr(telegram.requests, "post", post)
+    settings = DeliverySettings(output_path=str(tmp_path), delivery_time=time(8, 0),
+                                timezone=ZoneInfo("Europe/Rome"), archive_every_minutes=30,
+                                telegram_token="t", telegram_chat_id="c")
+    return DeliverService(cfg=load_processor_config(), settings=settings, packaging=None,
+                          pace=FakePace(), tailor_run=None,
+                          connect_neon=lambda: (_ for _ in ()).throw(RuntimeError("no neon in tests")))
+
+
+def _tier1_parts(post):
+    """The tier 1 digest and its continuation parts, in send order: everything
+    between the first tier 1 message and the first tier 2 message."""
+    start = next(i for i, call in enumerate(post.calls)
+                 if call["text"].startswith("Hey Enrico! Tier 1"))
+    end = next(i for i, call in enumerate(post.calls)
+               if call["text"].startswith("Hey Enrico! Tier 2"))
+    return post.calls[start:end]
+
+
+def test_a_long_tier_digest_goes_out_in_several_messages(store_conn, tmp_path, monkeypatch):
+    # 2026-11-02: 204 delivered jobs rendered a 5,388-character tier 1 digest, and
+    # Telegram refused it as "message is too long" on both attempts.
+    for n in range(1, 6):
+        scored_job(store_conn, n, 9, when=BEFORE_EIGHT, summary="x" * 900)
+    post = _telegram_simulator(limit=4096)
+    service = _service(tmp_path, post, monkeypatch)
+    service.tick(store_conn, BEFORE_EIGHT)  # the immediate alerts, plain text
+    post.calls.clear()
+
+    tick = service.tick(store_conn, NOW)
+
+    parts = _tier1_parts(post)
+    assert len(parts) > 1
+    assert all(len(part["text"]) <= 4096 for part in parts)
+    assert all(part.get("parse_mode") == "HTML" for part in parts)  # no fallback needed
+    assert tick.detail["delivered"] is True
+    # Every part accepted, so the tier counts as sent and the day summary follows.
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT telegram_sent_at FROM delivery_runs WHERE day = %s AND tier = 1", (DAY,))
+        assert cur.fetchone()[0] is not None
+    assert post.calls[-1]["text"].startswith("Day summary")
+
+
+def test_a_tier_digest_telegram_refuses_with_4xx_is_not_resent_every_minute(
+        store_conn, tmp_path, monkeypatch):
+    scored_job(store_conn, 1, 9, when=BEFORE_EIGHT)
+    post = _telegram_simulator(reject=lambda text: 400 if text.startswith("Hey Enrico! Tier 1") else 0)
+    service = _service(tmp_path, post, monkeypatch)
+    service.tick(store_conn, BEFORE_EIGHT)
+    post.calls.clear()
+
+    for minute in range(5):
+        service.tick(store_conn, NOW + timedelta(minutes=minute))
+
+    # The HTML send plus the plain-text resend, once: not two attempts every minute
+    # until local midnight (1,855 refused sends on 2026-11-02).
+    assert len(_tier1_parts(post)) == 2
+    assert _tier1_parts(post)[0]["parse_mode"] == "HTML"
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM kv_state WHERE key = %s", (f"telegram_refused:{DAY}:1",))
+        assert cur.fetchone() is not None
+        cur.execute("SELECT telegram_sent_at FROM delivery_runs WHERE day = %s AND tier = 1", (DAY,))
+        assert cur.fetchone()[0] is None
+    # A permanently refused tier must not hold the day summary back all day.
+    assert any(call["text"].startswith("Day summary") for call in post.calls)
+
+
+def test_a_telegram_5xx_keeps_retrying_the_tier_digest(store_conn, tmp_path, monkeypatch):
+    scored_job(store_conn, 1, 9, when=BEFORE_EIGHT)
+    post = _telegram_simulator(reject=lambda text: 503 if text.startswith("Hey Enrico! Tier 1") else 0)
+    service = _service(tmp_path, post, monkeypatch)
+    service.tick(store_conn, BEFORE_EIGHT)
+    post.calls.clear()
+
+    # A 5xx is an outage, not a refusal: tier 1 (HTML then plain text) is tried
+    # again on the next tick, after the other three tier digests went out.
+    service.tick(store_conn, NOW)
+    assert len(post.calls) == 5
+    assert _tier1_parts(post)[0]["parse_mode"] == "HTML"
+    assert _tier1_parts(post)[1].get("parse_mode") is None
+    post.calls.clear()
+    service.tick(store_conn, NOW + timedelta(minutes=1))
+    assert len(post.calls) == 2
+    assert not any(call["text"].startswith("Day summary") for call in post.calls)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM kv_state WHERE key = %s", (f"telegram_refused:{DAY}:1",))
+        assert cur.fetchone() is None
+    # ... and it goes out as soon as Telegram answers again.
+    post.calls.clear()
+    post.reject = None
+    service.tick(store_conn, NOW + timedelta(minutes=2))
+    assert post.calls[-1]["text"].startswith("Day summary")
+
+
+def test_send_with_fallback_counts_only_a_double_4xx_as_a_refusal():
+    import requests as requests_module
+    settings = DeliverySettings(output_path="o", delivery_time=time(8), timezone=ZoneInfo("UTC"),
+                                telegram_token="t", telegram_chat_id="c")
+
+    def refusing(text, token, chat, parse_mode="Markdown"):
+        return telegram.TelegramReply(False, 400)
+
+    def outage(text, token, chat, parse_mode="Markdown"):
+        raise requests_module.ConnectionError("telegram unreachable")
+
+    refused = send_with_fallback(settings, "too long", formatted=True, sender=refusing)
+    assert bool(refused) is False and refused.refused is True
+    outage_reply = send_with_fallback(settings, "x", formatted=True, sender=outage)
+    assert bool(outage_reply) is False and outage_reply.refused is False
 
 
 def test_a_markup_job_title_reaches_telegram_without_a_plain_text_fallback(store_conn, tmp_path, monkeypatch):

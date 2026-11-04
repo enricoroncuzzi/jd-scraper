@@ -1,10 +1,13 @@
+from dataclasses import dataclass
 from datetime import date
 import requests
 from src import remote_verdicts
 from src.models import ScoredOffer
 
 _API_URL = "https://api.telegram.org/bot{token}/sendMessage"
-_MAX_CHARS = 4096
+# Telegram's documented maximum for one message's text. A longer text is refused
+# whole with 400 "Bad Request: message is too long" (2026-11-02 tier 1 digest).
+MAX_MESSAGE_CHARS = 4096
 _TOP_N = 5
 
 # Telegram's HTML parse mode. The digest used legacy "Markdown", but tdlib's
@@ -40,6 +43,36 @@ def send_summary(
 
 
 def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "Markdown") -> bool:
+    return send_message_reply(text, token, chat_id, parse_mode=parse_mode).ok
+
+
+@dataclass(frozen=True)
+class TelegramReply:
+    """What Telegram's answer means for the caller. `status_code` is None when no
+    answer arrived (a network error or a timeout), so this is not just a bool: a
+    4xx answer to some text will never succeed on a retry of the same text, while
+    an outage or a 5xx is transient."""
+    ok: bool
+    status_code: int | None = None
+
+    @property
+    def refused(self) -> bool:
+        """A 4xx answer: resending the same text cannot succeed."""
+        return not self.ok and self.status_code is not None and 400 <= self.status_code < 500
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def as_reply(value) -> TelegramReply:
+    """Normalise a sender's answer: a test's fake sender returns a plain bool."""
+    return value if isinstance(value, TelegramReply) else TelegramReply(bool(value))
+
+
+def send_message_reply(text: str, token: str, chat_id: str,
+                       parse_mode: str | None = "Markdown") -> TelegramReply:
+    """Like send_message, but keeps Telegram's status code. An exception from the
+    request still propagates: the caller decides whether it can retry."""
     url = _API_URL.format(token=token)
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
@@ -51,11 +84,10 @@ def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "
     )
     if not response.ok:
         print(f"[telegram] Send failed: {response.status_code} {response.text}")
-        return False
-    return True
+    return TelegramReply(bool(response.ok), response.status_code)
 
 
-def _offer_block(o: ScoredOffer) -> list[str]:
+def _offer_block(o: ScoredOffer) -> str:
     lines = [
         f"- <b>{escape_html(o.title)} - {escape_html(o.company)}</b> ({o.score}/10)",
         f"  {escape_html(o.location)}",
@@ -65,17 +97,17 @@ def _offer_block(o: ScoredOffer) -> list[str]:
     if advice:
         # D3: remote but the eligibility needs a human look. Delivered, not dropped.
         lines.append(f"  ⚠ {escape_html(advice)}")
-    lines.append(f"  {escape_html(o.link)}\n")
-    return lines
+    lines.append(f"  {escape_html(o.link)}")
+    return "\n".join(lines)
 
 
-def _append_section(lines: list[str], header: str, ranked: list[ScoredOffer], budget: int) -> int:
+def _append_section(blocks: list[str], header: str, ranked: list[ScoredOffer], budget: int) -> int:
     shown, rest = ranked[:budget], ranked[budget:]
-    lines.append(f"{header}\n")
+    blocks.append(header)
     for o in shown:
-        lines.extend(_offer_block(o))
+        blocks.append(_offer_block(o))
     if rest:
-        lines.append(f"<i>+{len(rest)} more above threshold - check vault for full list.</i>\n")
+        blocks.append(f"<i>+{len(rest)} more above threshold - check vault for full list.</i>")
     return budget - len(shown)
 
 
@@ -87,6 +119,21 @@ def _format_message(
     verification_degraded: bool = False,
     deferred_count: int = 0,
 ) -> str:
+    return "\n\n".join(message_blocks(
+        offers, threshold, greeting, verification_enabled, verification_degraded, deferred_count))
+
+
+def message_blocks(
+    offers: list[ScoredOffer],
+    threshold: int,
+    greeting: str,
+    verification_enabled: bool = False,
+    verification_degraded: bool = False,
+    deferred_count: int = 0,
+) -> list[str]:
+    """The digest as blocks: one per section header and one per offer, joined by a
+    blank line. Splitting a message between blocks therefore never cuts an offer
+    in half and every block carries its own balanced HTML tags."""
     today = date.today().isoformat()
     high = [o for o in offers if o.score >= threshold]
     low = [o for o in offers if o.score < threshold]
@@ -97,19 +144,19 @@ def _format_message(
         # reached (see src/retry_queue.py). Claiming "no new offers after
         # dedup" on a day 222 offers went unscored hid a real loss.
         if deferred_count:
-            return (
+            return [
                 f"{escape_html(greeting)}\n\nJob Digest - {today}\n\n"
                 f"No offers scored today: {deferred_count} offer(s) are still unscored and "
                 f"queued for the next run (scoring did not finish)."
-            )
-        return f"{escape_html(greeting)}\n\nJob Digest - {today}\n\nNo new offers after dedup filter."
+            ]
+        return [f"{escape_html(greeting)}\n\nJob Digest - {today}\n\nNo new offers after dedup filter."]
 
-    lines = [f"{escape_html(greeting)}\n\nJob Digest - {today}\n"]
+    blocks = [f"{escape_html(greeting)}\n\nJob Digest - {today}"]
 
     if high:
         ranked = sorted(high, key=lambda x: x.score, reverse=True)
         if not verification_enabled:
-            _append_section(lines, f"<b>High-score offers ({len(high)}):</b>", ranked, _TOP_N)
+            _append_section(blocks, f"<b>High-score offers ({len(high)}):</b>", ranked, _TOP_N)
         else:
             confirmed = [o for o in ranked
                          if remote_verdicts.is_confirmed_or_unchecked(o.remote_verdict)]
@@ -121,34 +168,34 @@ def _format_message(
             budget = _TOP_N
             if confirmed:
                 budget = _append_section(
-                    lines, f"<b>Confirmed full-remote ({len(confirmed)}):</b>", confirmed, budget
+                    blocks, f"<b>Confirmed full-remote ({len(confirmed)}):</b>", confirmed, budget
                 )
             if advised:
                 budget = _append_section(
-                    lines, f"<b>Remote, eligibility to check ({len(advised)}):</b>",
+                    blocks, f"<b>Remote, eligibility to check ({len(advised)}):</b>",
                     advised, budget
                 )
             if not_stated:
                 # D1: kept in the digest, clearly separated, and never alerted.
                 _append_section(
-                    lines, f"<b>Work mode not stated ({len(not_stated)}):</b>",
+                    blocks, f"<b>Work mode not stated ({len(not_stated)}):</b>",
                     not_stated, budget
                 )
 
     if low:
-        lines.append(f"Low-score: {len(low)} offers below threshold. Check vault for notes.")
+        blocks.append(f"Low-score: {len(low)} offers below threshold. Check vault for notes.")
 
     if deferred_count:
-        lines.append(
-            f"\n<i>{deferred_count} offer(s) still unscored and queued for the next run "
+        blocks.append(
+            f"<i>{deferred_count} offer(s) still unscored and queued for the next run "
             f"(scoring stopped early).</i>"
         )
 
     if verification_degraded:
-        lines.append(
-            "\n<i>Remote verification was incomplete for this tier; some offers may show "
+        blocks.append(
+            "<i>Remote verification was incomplete for this tier; some offers may show "
             "'work mode not stated' because a stage failure, not a real judgement, left them "
             "that way.</i>"
         )
 
-    return "\n".join(lines)
+    return blocks

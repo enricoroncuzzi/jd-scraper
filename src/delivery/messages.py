@@ -21,7 +21,7 @@ from src.llm_limits import limit_for
 from src.processor.config import ProcessorConfig, TierPolicy
 from src.report_data import TIER_FLAGS, TIER_NAMES
 from src.report_render import pack_messages
-from src.telegram import _format_message
+from src.telegram import MAX_MESSAGE_CHARS, _format_message, message_blocks
 
 # The monitoring line turns amber at this share of the daily request limit (spec 6.5).
 BUDGET_WARN_REQUESTS = 800
@@ -32,6 +32,17 @@ def tier_digest_message(delivery: TierDelivery, policy: TierPolicy) -> str:
         [to_scored_offer(job) for job in delivery.jobs], policy.threshold, policy.greeting,
         verification_enabled=policy.remote_check_enabled, verification_degraded=False,
         deferred_count=delivery.waiting)
+
+
+def tier_digest_messages(delivery: TierDelivery, policy: TierPolicy) -> list[str]:
+    """The tier digest as Telegram messages. A busy tier renders past Telegram's
+    4,096-character limit and is then refused whole, so its digest goes out as
+    several messages, split between offer blocks by the same packer the day
+    summary uses."""
+    blocks = message_blocks(
+        [to_scored_offer(job) for job in delivery.jobs], policy.threshold, policy.greeting,
+        verification_enabled=policy.remote_check_enabled, deferred_count=delivery.waiting)
+    return pack_messages(blocks, limit=MAX_MESSAGE_CHARS)
 
 
 def _one(cur, sql: str, params: tuple = ()):
