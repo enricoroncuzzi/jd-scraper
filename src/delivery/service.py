@@ -5,9 +5,11 @@ A day sends the four tier digest messages plus one day summary (the captain's
 Telegram volume decision); the per-tier collection reports are folded into the day
 summary by src/delivery/messages.py rather than sent separately. A tier digest
 longer than Telegram's limit goes out as several messages, split between offers,
-and a tier Telegram refuses as such (a 4xx answer to both the HTML and the
-plain-text attempt, rate limits and timeouts aside) is recorded once in `kv_state`
-instead of being retried every minute until midnight.
+and a tier whose text Telegram refuses as such (a 400 "message is too long" to
+both the HTML and the plain-text attempt) is recorded once in `kv_state` instead
+of being retried every minute until midnight. How far a split digest got is kept
+in `kv_state` too, so a retry after a transient failure resumes at the first part
+Telegram has not answered instead of repeating the accepted ones.
 
     python -m src.delivery.service --once    # one tick, then exit
     python -m src.delivery.service           # run forever (systemd)
@@ -48,11 +50,10 @@ def send_with_fallback(settings: DeliverySettings, text: str, *, formatted: bool
     rejects the markup. Total: a network error, timeout or rejection never propagates, so a
     Telegram outage cannot abort the tick and stop packaging or the archive.
 
-    The answer says whether resending the same text could ever work: only a 4xx
-    answer to both attempts does (Telegram's "message is too long" on the
-    2026-11-02 tier 1 digest), and Telegram's flood control (429) or a 408 timeout
-    is not such an answer. An outage, a timeout or a 5xx carries no status code
-    here, so the caller keeps retrying it."""
+    The answer says whether resending the same text could ever work: it is a
+    refusal only when both attempts refused the text itself (Telegram's "message is
+    too long" on the 2026-11-02 tier 1 digest). Anything else, an outage, a 5xx, a
+    rate limit or a bot or chat problem, is not, so the caller keeps retrying it."""
     first = _attempt(sender, settings, text, HTML_PARSE_MODE if formatted else None)
     if first:
         return first
@@ -62,8 +63,7 @@ def send_with_fallback(settings: DeliverySettings, text: str, *, formatted: bool
     second = _attempt(sender, settings, text, None)
     if second:
         return second
-    # Both attempts refused as such, or at least one failure was transient.
-    return TelegramReply(False, second.status_code if first.refused and second.refused else None)
+    return second if first.refused and second.refused else TelegramReply(False)
 
 
 def _attempt(sender, settings: DeliverySettings, text: str, parse_mode: str | None) -> TelegramReply:
@@ -108,8 +108,8 @@ class DeliverService:
         conn.commit()
 
     def _telegram_refused(self, conn, day, tier: int) -> bool:
-        """True when Telegram answered 4xx to both attempts at this tier's digest,
-        so no retry of the same text can succeed."""
+        """True when Telegram refused the text of a part of this tier's digest on
+        both attempts, so no retry of the same text can succeed."""
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM kv_state WHERE key = %s", (f"telegram_refused:{day}:{tier}",))
             return cur.fetchone() is not None
@@ -129,35 +129,48 @@ class DeliverService:
               f"{accepted} of {parts} message(s) accepted, not retrying it")
 
     def _unsent_tiers(self, conn, day) -> list[int]:
-        """Tiers still waiting for their digest, minus the ones Telegram permanently
+        """Tiers still waiting for their digest, minus the ones whose text Telegram
         refused: retrying those all day was 1,855 refused sends on 2026-11-02, and
         it also held the day summary back until midnight."""
         return [tier for tier in unsent_telegram(conn, day) if not self._telegram_refused(conn, day, tier)]
 
+    def _digest_progress(self, conn, day, tier: int) -> dict:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM kv_state WHERE key = %s", (f"telegram_progress:{day}:{tier}",))
+            row = cur.fetchone()
+        return row[0] if row else {"next": 0, "accepted": 0, "refused_status": None}
+
+    def _save_digest_progress(self, conn, day, tier: int, progress: dict, now) -> None:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO kv_state (key, value, updated_at) VALUES (%s, %s::jsonb, %s) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+                        "updated_at = EXCLUDED.updated_at",
+                        (f"telegram_progress:{day}:{tier}", json.dumps(progress), now))
+        conn.commit()
+
     def _send_tier_digest(self, conn, tier: int, delivery: TierDelivery, day, now) -> bool:
         policy = self.cfg.policies[tier]
         parts = tier_digest_messages(delivery, policy)
-        accepted = 0
-        refused: TelegramReply | None = None
-        for part in parts:
-            reply = self._send_reply(part, formatted=True)
+        progress = self._digest_progress(conn, day, tier)
+        for index in range(progress["next"], len(parts)):
+            reply = self._send_reply(parts[index], formatted=True)
             if reply:
-                accepted += 1
+                progress["accepted"] += 1
             elif reply.refused:
                 # One part Telegram will never accept must not block the rest.
-                refused = refused or reply
+                progress["refused_status"] = progress["refused_status"] or reply.status_code
             else:
-                # An outage, a timeout, a 5xx or a rate limit: the whole tier is
-                # retried next tick. Nothing is recorded as refused here, or this
-                # part, which was never refused, would be lost for the rest of the
-                # day, and later parts are left for that retry so they cannot
-                # overtake it.
+                # An outage, a 5xx, a rate limit or a bot or chat problem: the
+                # tier is retried next tick from this part, which was never
+                # refused, and later parts wait for it so they cannot overtake it.
                 return False
-        if refused is None:
+            progress["next"] = index + 1
+            self._save_digest_progress(conn, day, tier, progress, now)
+        if progress["refused_status"] is None:
             mark_telegram_sent(conn, day, tier, now)
             return True
-        self._mark_telegram_refused(conn, day, tier, now, accepted=accepted, parts=len(parts),
-                                    status=refused.status_code)
+        self._mark_telegram_refused(conn, day, tier, now, accepted=progress["accepted"],
+                                    parts=len(parts), status=progress["refused_status"])
         return False
 
     def _daily(self, conn, now: datetime) -> bool:

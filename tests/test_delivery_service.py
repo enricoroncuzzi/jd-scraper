@@ -251,8 +251,10 @@ def _telegram_simulator(limit: int | None = None, reject=None):
             # send and the plain-text resend.
             return _Response(False, 400, '{"ok":false,"error_code":400,"description":"Bad Request: '
                                          'message is too long"}')
-        if post.reject is not None and (status := post.reject(json["text"])):
-            return _Response(False, status, '{"ok":false,"error_code":%d}' % status)
+        if post.reject is not None and (answer := post.reject(json["text"])):
+            status, description = answer if isinstance(answer, tuple) else (answer, "")
+            return _Response(False, status, '{"ok":false,"error_code":%d,"description":"%s"}'
+                             % (status, description))
         return _Response(True, 200, '{"ok":true}')
 
     post.calls = calls
@@ -307,10 +309,11 @@ def test_a_long_tier_digest_goes_out_in_several_messages(store_conn, tmp_path, m
     assert post.calls[-1]["text"].startswith("Day summary")
 
 
-def test_a_tier_digest_telegram_refuses_with_4xx_is_not_resent_every_minute(
+def test_a_tier_digest_telegram_refuses_as_too_long_is_not_resent_every_minute(
         store_conn, tmp_path, monkeypatch):
     scored_job(store_conn, 1, 9, when=BEFORE_EIGHT)
-    post = _telegram_simulator(reject=lambda text: 400 if text.startswith("Hey Enrico! Tier 1") else 0)
+    post = _telegram_simulator(reject=lambda text: (400, "Bad Request: message is too long")
+                               if text.startswith("Hey Enrico! Tier 1") else 0)
     service = _service(tmp_path, post, monkeypatch)
     service.tick(store_conn, BEFORE_EIGHT)
     post.calls.clear()
@@ -358,28 +361,52 @@ def test_a_telegram_5xx_keeps_retrying_the_tier_digest(store_conn, tmp_path, mon
     assert post.calls[-1]["text"].startswith("Day summary")
 
 
-def test_send_with_fallback_counts_only_a_double_4xx_as_a_refusal():
+def test_send_with_fallback_counts_only_a_refused_text_as_a_refusal():
     import requests as requests_module
     settings = DeliverySettings(output_path="o", delivery_time=time(8), timezone=ZoneInfo("UTC"),
                                 telegram_token="t", telegram_chat_id="c")
 
-    def refusing(status):
+    def refusing(status, description=""):
         def sender(text, token, chat, parse_mode="Markdown"):
-            return telegram.TelegramReply(False, status)
+            return telegram.TelegramReply(False, status, description)
         return sender
 
     def outage(text, token, chat, parse_mode="Markdown"):
         raise requests_module.ConnectionError("telegram unreachable")
 
-    refused = send_with_fallback(settings, "too long", formatted=True, sender=refusing(400))
+    refused = send_with_fallback(settings, "too long", formatted=True,
+                                 sender=refusing(400, "Bad Request: message is too long"))
     assert bool(refused) is False and refused.refused is True
     # 429 is Telegram's flood control and 408 a timeout: transient, so the same
-    # text is worth resending (a busy split digest makes 429s more likely).
-    for status in (429, 408):
-        transient = send_with_fallback(settings, "x", formatted=True, sender=refusing(status))
+    # text is worth resending (a busy split digest makes 429s more likely). A bad
+    # token, a blocked bot or a missing chat rejects the bot or the chat, not the
+    # text, and is fixed in .env, so the day's digests must still go out after it.
+    for status, description in ((429, "Too Many Requests: retry after 5"), (408, ""),
+                                (401, "Unauthorized"),
+                                (403, "Forbidden: bot was blocked by the user"),
+                                (400, "Bad Request: chat not found")):
+        transient = send_with_fallback(settings, "x", formatted=True,
+                                       sender=refusing(status, description))
         assert bool(transient) is False and transient.refused is False
     outage_reply = send_with_fallback(settings, "x", formatted=True, sender=outage)
     assert bool(outage_reply) is False and outage_reply.refused is False
+
+
+def test_a_bad_chat_id_does_not_give_up_the_day_digests(store_conn, tmp_path, monkeypatch):
+    scored_job(store_conn, 1, 9, when=BEFORE_EIGHT)
+    post = _telegram_simulator(reject=lambda text: (400, "Bad Request: chat not found"))
+    service = _service(tmp_path, post, monkeypatch)
+    service.tick(store_conn, NOW)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM kv_state WHERE key LIKE %s", ("telegram_refused:%",))
+        assert cur.fetchone()[0] == 0
+
+    # The owner fixes the chat id and restarts: that day's digests still go out.
+    post.calls.clear()
+    post.reject = None
+    service.tick(store_conn, NOW + timedelta(minutes=1))
+    assert _tier1_parts(post)
+    assert post.calls[-1]["text"].startswith("Day summary")
 
 
 def test_a_telegram_rate_limit_keeps_the_tier_digest_for_the_next_tick(
@@ -435,9 +462,10 @@ def test_a_transient_failure_mid_digest_stops_the_tick_without_giving_up(
     post.reject = None
     service.tick(store_conn, NOW + timedelta(minutes=1))
     retried = [call["text"] for call in post.calls if "<b>AI Engineer" in call["text"]]
-    assert len(retried) == 3  # all three parts, in order
-    assert "<b>AI Engineer 1 - Acme 1</b>" in retried[0]  # already accepted, so it repeats
-    assert "<b>AI Engineer 5 - Acme 5</b>" in retried[2]
+    assert len(retried) == 2  # the failed part, then the one after it, in order
+    assert "<b>AI Engineer 1 - Acme 1</b>" not in "\n".join(retried)  # accepted, not repeated
+    assert "<b>AI Engineer 3 - Acme 3</b>" in retried[0]
+    assert "<b>AI Engineer 5 - Acme 5</b>" in retried[1]
     assert post.calls[-1]["text"].startswith("Day summary")
 
 

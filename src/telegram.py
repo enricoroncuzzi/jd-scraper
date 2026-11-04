@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from datetime import date
 import requests
@@ -18,6 +19,11 @@ _TOP_N = 5
 # everywhere, including inside <b>/<i>, so dynamic text can never break the
 # message and the rendered format is unchanged.
 HTML_PARSE_MODE = "HTML"
+
+# Telegram's 400 descriptions that reject the text itself, so resending it can never
+# work. Every other failure, a bad token, a blocked bot or a missing chat included,
+# is fixable outside the message and stays worth retrying.
+_TEXT_REFUSALS = ("message is too long", "message text is empty")
 
 
 def escape_html(text: str) -> str:
@@ -49,19 +55,18 @@ def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "
 @dataclass(frozen=True)
 class TelegramReply:
     """What Telegram's answer means for the caller. `status_code` is None when no
-    answer arrived (a network error or a timeout), so this is not just a bool: some
-    answers will never succeed on a retry of the same text, while an outage, a 5xx
-    or a rate limit is transient."""
+    answer arrived (a network error or a timeout), so this is not just a bool: an
+    answer refusing the text will never succeed on a retry of the same text, while
+    an outage, a 5xx, a rate limit or a bot or chat problem may."""
     ok: bool
     status_code: int | None = None
+    description: str = ""
 
     @property
     def refused(self) -> bool:
-        """A 4xx answer that resending the same text cannot fix. Telegram's flood
-        control (429) and a request timeout (408) are transient, so they are not
-        refusals even though they are 4xx."""
-        return (not self.ok and self.status_code is not None
-                and 400 <= self.status_code < 500 and self.status_code not in (408, 429))
+        """A 400 answer about the text itself, which resending it cannot fix."""
+        return (not self.ok and self.status_code == 400
+                and any(reason in self.description for reason in _TEXT_REFUSALS))
 
     def __bool__(self) -> bool:
         return self.ok
@@ -85,9 +90,17 @@ def send_message_reply(text: str, token: str, chat_id: str,
         json=payload,
         timeout=10,
     )
-    if not response.ok:
-        print(f"[telegram] Send failed: {response.status_code} {response.text}")
-    return TelegramReply(bool(response.ok), response.status_code)
+    if response.ok:
+        return TelegramReply(True, response.status_code)
+    print(f"[telegram] Send failed: {response.status_code} {response.text}")
+    return TelegramReply(False, response.status_code, _description(response.text))
+
+
+def _description(body: str) -> str:
+    try:
+        return str(json.loads(body).get("description", ""))
+    except (ValueError, AttributeError):
+        return ""
 
 
 def _offer_block(o: ScoredOffer) -> str:
