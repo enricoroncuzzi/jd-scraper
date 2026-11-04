@@ -49,16 +49,19 @@ def send_message(text: str, token: str, chat_id: str, parse_mode: str | None = "
 @dataclass(frozen=True)
 class TelegramReply:
     """What Telegram's answer means for the caller. `status_code` is None when no
-    answer arrived (a network error or a timeout), so this is not just a bool: a
-    4xx answer to some text will never succeed on a retry of the same text, while
-    an outage or a 5xx is transient."""
+    answer arrived (a network error or a timeout), so this is not just a bool: some
+    answers will never succeed on a retry of the same text, while an outage, a 5xx
+    or a rate limit is transient."""
     ok: bool
     status_code: int | None = None
 
     @property
     def refused(self) -> bool:
-        """A 4xx answer: resending the same text cannot succeed."""
-        return not self.ok and self.status_code is not None and 400 <= self.status_code < 500
+        """A 4xx answer that resending the same text cannot fix. Telegram's flood
+        control (429) and a request timeout (408) are transient, so they are not
+        refusals even though they are 4xx."""
+        return (not self.ok and self.status_code is not None
+                and 400 <= self.status_code < 500 and self.status_code not in (408, 429))
 
     def __bool__(self) -> bool:
         return self.ok

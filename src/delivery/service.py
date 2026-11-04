@@ -6,8 +6,8 @@ Telegram volume decision); the per-tier collection reports are folded into the d
 summary by src/delivery/messages.py rather than sent separately. A tier digest
 longer than Telegram's limit goes out as several messages, split between offers,
 and a tier Telegram refuses as such (a 4xx answer to both the HTML and the
-plain-text attempt) is recorded once in `kv_state` instead of being retried every
-minute until midnight.
+plain-text attempt, rate limits and timeouts aside) is recorded once in `kv_state`
+instead of being retried every minute until midnight.
 
     python -m src.delivery.service --once    # one tick, then exit
     python -m src.delivery.service           # run forever (systemd)
@@ -50,8 +50,9 @@ def send_with_fallback(settings: DeliverySettings, text: str, *, formatted: bool
 
     The answer says whether resending the same text could ever work: only a 4xx
     answer to both attempts does (Telegram's "message is too long" on the
-    2026-11-02 tier 1 digest). An outage, a timeout or a 5xx carries no status
-    code here, so the caller keeps retrying it."""
+    2026-11-02 tier 1 digest), and Telegram's flood control (429) or a 408 timeout
+    is not such an answer. An outage, a timeout or a 5xx carries no status code
+    here, so the caller keeps retrying it."""
     first = _attempt(sender, settings, text, HTML_PARSE_MODE if formatted else None)
     if first:
         return first
@@ -136,14 +137,27 @@ class DeliverService:
     def _send_tier_digest(self, conn, tier: int, delivery: TierDelivery, day, now) -> bool:
         policy = self.cfg.policies[tier]
         parts = tier_digest_messages(delivery, policy)
-        replies = [self._send_reply(part, formatted=True) for part in parts]
-        if all(replies):
+        accepted = 0
+        refused: TelegramReply | None = None
+        for part in parts:
+            reply = self._send_reply(part, formatted=True)
+            if reply:
+                accepted += 1
+            elif reply.refused:
+                # One part Telegram will never accept must not block the rest.
+                refused = refused or reply
+            else:
+                # An outage, a timeout, a 5xx or a rate limit: the whole tier is
+                # retried next tick. Nothing is recorded as refused here, or this
+                # part, which was never refused, would be lost for the rest of the
+                # day, and later parts are left for that retry so they cannot
+                # overtake it.
+                return False
+        if refused is None:
             mark_telegram_sent(conn, day, tier, now)
             return True
-        refused = [reply for reply in replies if reply.refused]
-        if refused:
-            self._mark_telegram_refused(conn, day, tier, now, accepted=sum(map(bool, replies)),
-                                        parts=len(parts), status=refused[0].status_code)
+        self._mark_telegram_refused(conn, day, tier, now, accepted=accepted, parts=len(parts),
+                                    status=refused.status_code)
         return False
 
     def _daily(self, conn, now: datetime) -> bool:

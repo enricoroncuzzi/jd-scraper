@@ -363,16 +363,82 @@ def test_send_with_fallback_counts_only_a_double_4xx_as_a_refusal():
     settings = DeliverySettings(output_path="o", delivery_time=time(8), timezone=ZoneInfo("UTC"),
                                 telegram_token="t", telegram_chat_id="c")
 
-    def refusing(text, token, chat, parse_mode="Markdown"):
-        return telegram.TelegramReply(False, 400)
+    def refusing(status):
+        def sender(text, token, chat, parse_mode="Markdown"):
+            return telegram.TelegramReply(False, status)
+        return sender
 
     def outage(text, token, chat, parse_mode="Markdown"):
         raise requests_module.ConnectionError("telegram unreachable")
 
-    refused = send_with_fallback(settings, "too long", formatted=True, sender=refusing)
+    refused = send_with_fallback(settings, "too long", formatted=True, sender=refusing(400))
     assert bool(refused) is False and refused.refused is True
+    # 429 is Telegram's flood control and 408 a timeout: transient, so the same
+    # text is worth resending (a busy split digest makes 429s more likely).
+    for status in (429, 408):
+        transient = send_with_fallback(settings, "x", formatted=True, sender=refusing(status))
+        assert bool(transient) is False and transient.refused is False
     outage_reply = send_with_fallback(settings, "x", formatted=True, sender=outage)
     assert bool(outage_reply) is False and outage_reply.refused is False
+
+
+def test_a_telegram_rate_limit_keeps_the_tier_digest_for_the_next_tick(
+        store_conn, tmp_path, monkeypatch):
+    scored_job(store_conn, 1, 9, when=BEFORE_EIGHT)
+    post = _telegram_simulator(reject=lambda text: 429 if text.startswith("Hey Enrico! Tier 1") else 0)
+    service = _service(tmp_path, post, monkeypatch)
+    service.tick(store_conn, BEFORE_EIGHT)
+    post.calls.clear()
+
+    service.tick(store_conn, NOW)
+    # HTML and plain text, both answered 429 by flood control (one part here).
+    assert len([c for c in post.calls if c["text"].startswith("Hey Enrico! Tier 1")]) == 2
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM kv_state WHERE key = %s", (f"telegram_refused:{DAY}:1",))
+        assert cur.fetchone() is None  # transient: nothing is given up for the day
+        cur.execute("SELECT telegram_sent_at FROM delivery_runs WHERE day = %s AND tier = 1", (DAY,))
+        assert cur.fetchone()[0] is None
+
+    # The limit lifts: the same digest goes out and the day summary follows it.
+    post.calls.clear()
+    post.reject = None
+    service.tick(store_conn, NOW + timedelta(minutes=1))
+    assert len([c for c in post.calls if c["text"].startswith("Hey Enrico! Tier 1")]) == 1
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT telegram_sent_at FROM delivery_runs WHERE day = %s AND tier = 1", (DAY,))
+        assert cur.fetchone()[0] is not None
+    assert post.calls[-1]["text"].startswith("Day summary")
+
+
+def test_a_transient_failure_mid_digest_stops_the_tick_without_giving_up(
+        store_conn, tmp_path, monkeypatch):
+    # Three parts: offers 1-2, 3-4, then 5. A 503 on the second part is an outage,
+    # so the third part is not sent in that tick and nothing is marked refused.
+    for n in range(1, 6):
+        scored_job(store_conn, n, 9, when=BEFORE_EIGHT, summary="x" * 1800)
+    # Only the HTML digest carries these tags; the plain-text alert does not, so the
+    # outage cannot stop the alert pass.
+    post = _telegram_simulator(
+        reject=lambda text: 503 if "<b>AI Engineer 3 - Acme 3</b>" in text else 0)
+    service = _service(tmp_path, post, monkeypatch)
+    service.tick(store_conn, BEFORE_EIGHT)
+    post.calls.clear()
+
+    service.tick(store_conn, NOW)
+    assert "<b>AI Engineer 5 - Acme 5</b>" not in "\n".join(call["text"] for call in post.calls)
+    with store_conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM kv_state WHERE key = %s", (f"telegram_refused:{DAY}:1",))
+        assert cur.fetchone() is None
+
+    # The outage clears and the rest of the digest follows; only then the summary.
+    post.calls.clear()
+    post.reject = None
+    service.tick(store_conn, NOW + timedelta(minutes=1))
+    retried = [call["text"] for call in post.calls if "<b>AI Engineer" in call["text"]]
+    assert len(retried) == 3  # all three parts, in order
+    assert "<b>AI Engineer 1 - Acme 1</b>" in retried[0]  # already accepted, so it repeats
+    assert "<b>AI Engineer 5 - Acme 5</b>" in retried[2]
+    assert post.calls[-1]["text"].startswith("Day summary")
 
 
 def test_a_markup_job_title_reaches_telegram_without_a_plain_text_fallback(store_conn, tmp_path, monkeypatch):
