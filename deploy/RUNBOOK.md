@@ -866,6 +866,6 @@ Not part of the switch-over. Remove `orchestrator.py`, `main.py`, `src/scraper.p
 sections of `AGENTS.md` and `README.md`. Keep what the new code still imports: the
 formatters in `src/writer.py` (`_format_note`, `_format_digest`, `_note_filename`, `_slugify`),
 `TIER_NAMES` and `TIER_FLAGS` from `src/report_data.py`, `pack_messages` from
-`src/report_render.py`, and `src/telegram.py::_format_message`; move those into
+`src/report_render.py`, and `_format_message` and `message_blocks` from `src/telegram.py`; move those into
 `src/delivery/` first so the old modules can go. Do it in its own pull request with the
 suite green.

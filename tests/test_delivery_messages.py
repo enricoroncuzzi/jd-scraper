@@ -5,7 +5,9 @@ import pytest
 
 from src import telegram
 from src.delivery.daily import deliver_tier
-from src.delivery.messages import render_day_summary, render_tier_report, tier_digest_message
+from src.delivery.messages import (
+    render_day_summary, render_tier_report, tier_digest_message, tier_digest_messages,
+)
 from src.delivery.settings import DeliverySettings
 from src.jobstore import budget, heartbeat
 from src.processor.config import load_processor_config
@@ -39,6 +41,34 @@ def test_the_tier_digest_message_is_the_legacy_formatter_output(store_conn, cfg,
     text = tier_digest_message(delivery, cfg.policies[1])
     assert text.startswith("Hey Enrico! Tier 1 (Italy, full remote) digest is ready.\n\nJob Digest - 2026-10-14")
     assert "<b>Confirmed full-remote (1):</b>" in text and "AI Engineer 1 - Acme 1" in text
+
+
+def test_a_long_tier_digest_is_split_on_offer_boundaries(store_conn, cfg, settings):
+    # The 2026-11-02 tier 1 digest rendered to 5,388 characters, past Telegram's
+    # 4,096 limit, so both the HTML send and the plain-text resend were refused.
+    for n in range(1, 6):
+        scored_job(store_conn, n, 9, summary="x" * 900)
+    delivery = deliver_tier(store_conn, cfg, settings, 1, DAY, NOW)
+    parts = tier_digest_messages(delivery, cfg.policies[1])
+    assert len(parts) > 1
+    assert all(len(part) <= 4096 for part in parts)
+    # Nothing is dropped and nothing is reordered: the parts are the message.
+    assert "\n\n".join(parts) == tier_digest_message(delivery, cfg.policies[1])
+    # Split on offer boundaries: every offer block sits whole inside one part and
+    # each part is valid HTML on its own (balanced tags).
+    for n in range(1, 6):
+        title = f"<b>AI Engineer {n} - Acme {n}</b>"
+        link = f"https://www.linkedin.com/jobs/view/job-{n}"
+        assert any(title in part and link in part for part in parts)
+    for part in parts:
+        assert part.count("<b>") == part.count("</b>")
+        assert part.count("<i>") == part.count("</i>")
+
+
+def test_a_short_tier_digest_stays_one_message(store_conn, cfg, settings):
+    scored_job(store_conn, 1, 9)
+    delivery = deliver_tier(store_conn, cfg, settings, 1, DAY, NOW)
+    assert tier_digest_messages(delivery, cfg.policies[1]) == [tier_digest_message(delivery, cfg.policies[1])]
 
 
 def test_an_empty_tier_message_says_nothing_new(store_conn, cfg, settings):

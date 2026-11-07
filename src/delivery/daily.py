@@ -9,7 +9,10 @@ Crash and restart rules:
 - Files are written before the transaction and are idempotent, so a crash between
   the two simply redelivers the same jobs and rewrites the same files.
 - A Telegram failure never undoes a delivery; telegram_sent_at stays NULL and the
-  message is sent again on the next tick.
+  message is sent again on the next tick, unless Telegram refused the text itself
+  (a 400 "message is too long") on both the HTML send and the plain-text resend, so
+  `src/delivery/service.py` records it once and stops retrying it (see
+  `unsent_telegram` users there).
 """
 import os
 from dataclasses import dataclass
@@ -115,6 +118,9 @@ def mark_telegram_sent(conn, day: date, tier: int, now: datetime) -> None:
 
 
 def unsent_telegram(conn, day: date) -> list[int]:
+    """Tiers whose digest Telegram has not accepted yet. A tier whose text
+    Telegram refused is excluded by the caller, not here: telegram_sent_at
+    stays NULL for it, because it was never sent."""
     with conn.cursor() as cur:
         cur.execute("SELECT tier FROM delivery_runs WHERE day = %s AND telegram_sent_at IS NULL "
                     "ORDER BY tier", (day,))
