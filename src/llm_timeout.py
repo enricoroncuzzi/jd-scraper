@@ -13,23 +13,28 @@ What the limit is, and is not:
   would not trip it.
 - It is not a bound on a whole stuck call. Each ladder retries a timed-out
   request, and the scorer's client keeps the SDK default of 2 retries, so one
-  scorer ladder attempt can take about 3 x 180 s = 9 minutes.
+  scorer ladder attempt can take about 3 x 300 s = 15 minutes.
 
-Why 180 s: the openai SDK's default is a 600 s read (the ten-minute stall of
-2026-10-21; `ChatOpenAI` without a timeout sets none at all) and the stall of
-2026-11-11 lasted an hour. A batch is 5 to 8 offers and the answer is a few
-hundred tokens of structured output, so even a slow free model answers in well
-under a minute; 180 s leaves headroom for a slow one.
+Why 300 s: the stall this stops lasted 3601 s, and the openai SDK's own
+default is a 600 s read (`ChatOpenAI` without a timeout sets none at all). A
+limit has to stay above real slow answers, though. Production telemetry, last 30
+days, OpenRouter calls with outcome ok (latency_ms):
+- scoring, 5640 calls: p50 33 s, p99 199 s, 65 over 180 s, 26 over 300 s, 7 over 600 s
+- tailoring, 321 calls: p50 43 s, 8 over 180 s, 5 over 300 s, 3 over 600 s
+- verification, 2464 calls: 22 over 180 s, 7 over 300 s, 4 over 600 s
+So 180 s would have cut off real answers; 300 s keeps about 99.5% of successful
+ones and caps a hung request at 5 minutes.
 
-Groq already ships a 60 s read (and 5 s connect) as the SDK default, so its
-client takes the smaller of the two and is never loosened.
+Groq already ships a 60 s read (and 5 s connect) as the SDK default and its
+calls never exceed 4 s, so its client takes the smaller of the two and is never
+loosened.
 
 The helpers read the constant at call time, so a test can shorten it through
 `llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS`.
 """
 import httpx
 
-LLM_REQUEST_TIMEOUT_SECONDS = 180.0
+LLM_REQUEST_TIMEOUT_SECONDS = 300.0
 
 _CONNECT_SECONDS = 5.0           # the SDKs' own default: a dead host fails fast
 _GROQ_SDK_DEFAULT_SECONDS = 60.0  # groq.DEFAULT_TIMEOUT read/write/pool

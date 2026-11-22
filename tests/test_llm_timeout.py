@@ -191,8 +191,9 @@ def test_the_verifier_retries_a_stalled_groq_call_with_its_existing_backoff(fake
 
 def test_the_production_limit_is_a_few_minutes_not_the_sdk_default():
     # openai's own default is a 600 s read (the 2026-10-21 ten-minute hang); the
-    # limit must stay well under that and above a slow free-model answer.
-    assert 60 <= llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS <= 300
+    # limit must stay under that, and at or above 300 s, which keeps about 99.5%
+    # of the successful answers seen in production telemetry (180 s cut real ones).
+    assert 300 <= llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS < 600
 
 
 def test_the_production_groq_client_is_no_looser_than_groqs_own_default():
