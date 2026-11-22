@@ -4,7 +4,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field
-from src import telemetry
+from src import llm_timeout, telemetry
 from src.models import JobOffer, ScoredOffer
 
 BATCH_SIZE = 5
@@ -171,6 +171,7 @@ def _build_chain(llm_api_key: str):
         api_key=llm_api_key,
         base_url=_OPENROUTER_BASE_URL,
         extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
+        timeout=llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS,
     )
     return (
         ChatPromptTemplate.from_messages([
