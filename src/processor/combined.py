@@ -14,7 +14,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator
 
-from src import telemetry
+from src import llm_timeout, telemetry
 from src.processor.config import ProcessorConfig
 from src.processor.llm_stages import (
     LlmKeys, budget_open, due_batch, retry_delay, to_offers, waiting_rows,
@@ -80,7 +80,8 @@ _PROMPT_VERSION = telemetry.prompt_version(_SYSTEM, _HUMAN)
 def build_chain(llm_api_key: str):
     llm = ChatOpenAI(
         model=_OPENROUTER_MODEL, api_key=llm_api_key, base_url=_OPENROUTER_BASE_URL,
-        extra_body={"models": _OPENROUTER_FALLBACK_MODELS}, temperature=0.0, max_retries=0)
+        extra_body={"models": _OPENROUTER_FALLBACK_MODELS}, temperature=0.0, max_retries=0,
+        timeout=llm_timeout.openrouter_timeout())
     return (
         ChatPromptTemplate.from_messages([("system", _SYSTEM), ("human", _HUMAN)])
         | llm.with_structured_output(CombinedOutput, method="function_calling")

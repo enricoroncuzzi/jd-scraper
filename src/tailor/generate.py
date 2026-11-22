@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import openai
 from pydantic import BaseModel
-from src import telemetry
+from src import llm_timeout, telemetry
 from src.remote_verifier import _is_malformed_output_error
 from src.scorer import (
     _EmptyStructuredOutput,
@@ -168,6 +168,7 @@ def _build_chain(api_key: str, model: str = _OPENROUTER_MODEL):
         extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
         temperature=0.4,
         max_retries=0,
+        timeout=llm_timeout.openrouter_timeout(),
     )
     return (
         ChatPromptTemplate.from_messages([("human", "{prompt}")])
