@@ -11,6 +11,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import groq
+import httpx
 import openai
 import pytest
 
@@ -192,3 +193,36 @@ def test_the_production_limit_is_a_few_minutes_not_the_sdk_default():
     # openai's own default is a 600 s read (the 2026-10-21 ten-minute hang); the
     # limit must stay well under that and above a slow free-model answer.
     assert 60 <= llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS <= 300
+
+
+def test_the_production_groq_client_is_no_looser_than_groqs_own_default():
+    # Groq already ships Timeout(connect=5, read=60, write=60, pool=60); the one
+    # shared limit must never loosen it.
+    timeout = rv._client("key").timeout
+    default = groq.DEFAULT_TIMEOUT
+    assert isinstance(timeout, httpx.Timeout)
+    for field in ("connect", "read", "write", "pool"):
+        assert getattr(timeout, field) <= getattr(default, field), field
+
+
+@pytest.mark.parametrize("site", ["scorer", "verifier", "combined", "tailor"])
+def test_the_production_openrouter_clients_use_the_limit_and_fail_fast_on_connect(site, monkeypatch):
+    chain = _openrouter_sites(monkeypatch, "http://127.0.0.1:9")[site]("key")
+    llm = next(step for step in _walk(chain) if hasattr(step, "root_client"))
+    timeout = llm.root_client.timeout
+    assert timeout.read == llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS
+    assert timeout.connect == 5.0
+
+
+def _walk(runnable):
+    seen, stack = [], [runnable]
+    while stack:
+        node = stack.pop()
+        seen.append(node)
+        for attr in ("steps", "first", "middle", "last", "bound"):
+            child = getattr(node, attr, None)
+            if isinstance(child, list):
+                stack.extend(child)
+            elif child is not None:
+                stack.append(child)
+    return seen

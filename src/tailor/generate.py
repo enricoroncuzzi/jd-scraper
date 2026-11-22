@@ -168,7 +168,7 @@ def _build_chain(api_key: str, model: str = _OPENROUTER_MODEL):
         extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
         temperature=0.4,
         max_retries=0,
-        timeout=llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS,
+        timeout=llm_timeout.openrouter_timeout(),
     )
     return (
         ChatPromptTemplate.from_messages([("human", "{prompt}")])

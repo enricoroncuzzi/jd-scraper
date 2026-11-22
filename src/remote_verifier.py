@@ -446,7 +446,7 @@ def _client(api_key: str):
     # max_retries=0: _verify_batch's own ladder is the only retry layer, so a
     # TPD 429 is seen on the first hit instead of after the SDK's retries.
     return Groq(api_key=api_key, max_retries=0,
-                timeout=llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS)
+                timeout=llm_timeout.groq_timeout())
 
 
 def _is_daily_quota_exceeded(e: Exception) -> bool:
@@ -614,7 +614,7 @@ def _openrouter_chain(llm_api_key: str):
         # _verify_batch_openrouter's own ladder is the only retry layer, so
         # every HTTP request is one counted against this stage's share.
         max_retries=0,
-        timeout=llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS,
+        timeout=llm_timeout.openrouter_timeout(),
     )
     return (
         ChatPromptTemplate.from_messages([("human", "{prompt}")])

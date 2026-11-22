@@ -81,7 +81,7 @@ def build_chain(llm_api_key: str):
     llm = ChatOpenAI(
         model=_OPENROUTER_MODEL, api_key=llm_api_key, base_url=_OPENROUTER_BASE_URL,
         extra_body={"models": _OPENROUTER_FALLBACK_MODELS}, temperature=0.0, max_retries=0,
-        timeout=llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS)
+        timeout=llm_timeout.openrouter_timeout())
     return (
         ChatPromptTemplate.from_messages([("system", _SYSTEM), ("human", _HUMAN)])
         | llm.with_structured_output(CombinedOutput, method="function_calling")

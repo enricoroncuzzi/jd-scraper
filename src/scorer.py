@@ -171,7 +171,7 @@ def _build_chain(llm_api_key: str):
         api_key=llm_api_key,
         base_url=_OPENROUTER_BASE_URL,
         extra_body={"models": _OPENROUTER_FALLBACK_MODELS},
-        timeout=llm_timeout.LLM_REQUEST_TIMEOUT_SECONDS,
+        timeout=llm_timeout.openrouter_timeout(),
     )
     return (
         ChatPromptTemplate.from_messages([
